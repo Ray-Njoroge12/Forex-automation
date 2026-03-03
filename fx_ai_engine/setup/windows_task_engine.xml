@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  FX AI Engine — Windows Task Scheduler definition.
+
+  Import instructions:
+    1. Open Task Scheduler (taskschd.msc)
+    2. Action → Import Task…
+    3. Select this file
+    4. Adjust <UserId> to your Windows username
+    5. Update the paths below if you installed to a different directory
+
+  Default assumed paths:
+    Engine root : C:\FxEngine\fx_ai_engine\
+    Python      : C:\FxEngine\.venv\Scripts\pythonw.exe
+
+  After import, enable the task and verify it shows "Ready" in the task list.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>FX AI Engine — autonomous Forex trading engine (demo mode).</Description>
+    <Author>FX AI Engine</Author>
+  </RegistrationInfo>
+
+  <Triggers>
+    <!-- Start at logon so the engine is always running when you're logged in. -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <!-- Delay 60 s to let MT5 terminal finish loading first. -->
+      <Delay>PT1M</Delay>
+    </LogonTrigger>
+  </Triggers>
+
+  <Principals>
+    <Principal id="Author">
+      <!-- Replace YOURPC\YourUsername with your actual Windows username. -->
+      <UserId>YOURPC\YourUsername</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <!-- No time limit — engine runs until manually stopped or watchdog restarts it. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <Priority>7</Priority>
+  </Settings>
+
+  <Actions Context="Author">
+    <Exec>
+      <!-- pythonw.exe = no console window. -->
+      <Command>C:\FxEngine\.venv\Scripts\pythonw.exe</Command>
+      <Arguments>main.py --mode demo</Arguments>
+      <WorkingDirectory>C:\FxEngine\fx_ai_engine</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

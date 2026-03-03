@@ -1,0 +1,52 @@
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT UNIQUE,
+    trade_ticket INTEGER UNIQUE,
+    symbol TEXT NOT NULL,
+    direction TEXT,
+    order_type TEXT,
+    lot_size REAL,
+    entry_price REAL,
+    stop_loss REAL,
+    take_profit REAL,
+    risk_percent REAL,
+    market_regime TEXT,
+    status TEXT DEFAULT 'PENDING',
+    reason_code TEXT,
+    profit_loss REAL DEFAULT 0.0,
+    r_multiple REAL DEFAULT 0.0,
+    spread_entry REAL,
+    slippage REAL,
+    open_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    close_time DATETIME,
+    regime_confidence REAL DEFAULT 0.0,
+    rsi_at_entry REAL DEFAULT 0.0,
+    atr_ratio REAL DEFAULT 1.0,
+    is_london_session INTEGER DEFAULT 0,
+    is_newyork_session INTEGER DEFAULT 0,
+    rate_differential REAL DEFAULT 0.0,
+    risk_reward REAL DEFAULT 0.0
+);
+
+CREATE TABLE IF NOT EXISTS account_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    balance REAL NOT NULL,
+    equity REAL NOT NULL,
+    open_risk_percent REAL DEFAULT 0.0,
+    open_usd_exposure_count INTEGER DEFAULT 0,
+    daily_loss_percent REAL DEFAULT 0.0,
+    weekly_loss_percent REAL DEFAULT 0.0,
+    drawdown_percent REAL DEFAULT 0.0,
+    consecutive_losses INTEGER DEFAULT 0,
+    is_trading_halted BOOLEAN DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS risk_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    rule_name TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    trade_id TEXT
+);

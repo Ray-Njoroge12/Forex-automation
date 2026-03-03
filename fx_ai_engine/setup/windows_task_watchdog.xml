@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  FX AI Engine Watchdog — Windows Task Scheduler definition.
+
+  Import instructions:
+    1. Open Task Scheduler (taskschd.msc)
+    2. Action → Import Task…
+    3. Select this file
+    4. Adjust <UserId> to your Windows username
+    5. Update the paths if needed
+
+  Default assumed paths:
+    Engine root : C:\FxEngine\fx_ai_engine\
+    Python      : C:\FxEngine\.venv\Scripts\pythonw.exe
+
+  The watchdog runs every 5 minutes indefinitely.  It checks whether main.py
+  is running and restarts it if not.  Install BOTH tasks; import the engine
+  task first, then this watchdog task.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>FX AI Engine watchdog — restarts the engine if it stops.</Description>
+    <Author>FX AI Engine</Author>
+  </RegistrationInfo>
+
+  <Triggers>
+    <!-- Fire once at logon… -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT2M</Delay>
+      <!-- …then repeat every 5 minutes indefinitely. -->
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <Duration>P9999D</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+  </Triggers>
+
+  <Principals>
+    <Principal id="Author">
+      <!-- Replace YOURPC\YourUsername with your actual Windows username. -->
+      <UserId>YOURPC\YourUsername</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <!-- Allow concurrent runs — each 5-min instance checks then exits quickly. -->
+    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <!-- Each watchdog invocation runs as a long-lived loop — no time limit. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <Priority>7</Priority>
+  </Settings>
+
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\FxEngine\.venv\Scripts\pythonw.exe</Command>
+      <Arguments>watchdog.py</Arguments>
+      <WorkingDirectory>C:\FxEngine\fx_ai_engine</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
