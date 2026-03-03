@@ -1,0 +1,30 @@
+# Python
+**/__pycache__/
+*.pyc
+**/.pytest_cache/
+**/.venv/
+
+# Local environment
+.env
+.env.local
+fx_ai_engine/.env
+fx_ai_engine/.env.local
+
+# Runtime artifacts
+*.log
+fx_ai_engine/bridge/pending_signals/*.json
+fx_ai_engine/bridge/feedback/*.json
+fx_ai_engine/bridge/active_locks/*.lock
+fx_ai_engine/bridge/trade_id_registry.json
+
+# SQLite runtime
+fx_ai_engine/database/trading_state.db
+
+# macOS
+.DS_Store
+**/.DS_Store
+**/.pycache_local/
+
+# Temporary files & AI logs
+tmp/
+.claude/
