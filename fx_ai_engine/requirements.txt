@@ -1,0 +1,16 @@
+MetaTrader5; platform_system == "Windows"
+mt5-wrapper; platform_system == "Windows" and python_version >= "3.13"
+MMetaTrader5; platform_system == "Windows"
+pandas
+numpy
+pytest
+backtrader
+opentelemetry-api
+opentelemetry-sdk
+prometheus-client
+streamlit>=1.30.0
+transformers>=4.35.0
+feedparser>=6.0.0
+psutil>=5.9.0
+scikit-learn>=1.3.0
+joblib>=1.3.0

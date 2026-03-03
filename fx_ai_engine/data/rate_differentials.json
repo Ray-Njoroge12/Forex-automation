@@ -1,0 +1,11 @@
+{
+  "_comment": "Rate differential = base currency rate minus quote currency rate (%). Update monthly after central bank meetings.",
+  "_last_updated": "2026-02-28",
+  "_sources": "ECB 2.5%, Fed 4.5%, BOE 4.5%, BOJ 0.5%, RBA 4.35%, BOC 3.5%, SNB 1.5%",
+  "EURUSD": -2.0,
+  "GBPUSD":  0.0,
+  "USDJPY":  4.0,
+  "AUDUSD": -0.15,
+  "USDCAD":  1.0,
+  "USDCHF":  3.0
+}

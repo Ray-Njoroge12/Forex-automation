@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Local environment
+.env
+.env.local
+
+# Runtime artifacts
+*.log
+bridge/pending_signals/*.json
+bridge/feedback/*.json
+bridge/active_locks/*.lock
+bridge/trade_id_registry.json
+
+# SQLite runtime
+database/trading_state.db
+
+# macOS
+.DS_Store
+.pycache_local/

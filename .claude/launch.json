@@ -1,0 +1,41 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "FX Engine - Demo (Mock MT5)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 python main.py --mode demo"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "FX Engine - Smoke Test (Mock MT5)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 python main.py --mode smoke"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "FX Engine - Demo + Prometheus (Mock MT5)",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 PROM_ENABLED=1 PROM_PORT=8000 python main.py --mode demo"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "Backtesting - EURUSD Fixture",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && python -m backtesting.bt_runner --csv tests/fixtures/ohlc_fixture.csv --symbol EURUSD"
+      ],
+      "port": 8000
+    }
+  ]
+}
