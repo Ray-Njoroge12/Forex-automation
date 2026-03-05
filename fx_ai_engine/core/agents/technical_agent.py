@@ -155,3 +155,35 @@ class TechnicalAgent:
     def _get_atr_multiplier(volatility_state: str) -> float:
         """Widen stops in high volatility, tighten in low — preserves R:R edge."""
         return {"HIGH": 1.5, "NORMAL": 1.2, "LOW": 1.0}.get(volatility_state, 1.2)
+
+    def _detect_structural_sl(
+        self,
+        m15: pd.DataFrame,
+        direction: str,
+        atr_stop_pips: float,
+        current_price: float,
+    ) -> tuple[float, float | None]:
+        """Snap ATR-based stop to nearest swing high/low if within [0.8×, 1.5×] window.
+
+        Returns (final_stop_pips, structural_sl_pips_or_None).
+        structural_sl_pips is None when no snap occurred (ATR stop used).
+        """
+        lookback = 20
+        pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
+        window = m15.tail(lookback)
+
+        if direction == "BUY":
+            structural_level = float(window["low"].min())
+            structural_pips = (current_price - structural_level) / pip_value
+        else:
+            structural_level = float(window["high"].max())
+            structural_pips = (structural_level - current_price) / pip_value
+
+        if structural_pips <= 0 or atr_stop_pips <= 0:
+            return atr_stop_pips, None
+
+        ratio = structural_pips / atr_stop_pips
+        if 0.8 <= ratio <= 1.5:
+            return round(structural_pips, 2), round(structural_pips, 2)
+
+        return atr_stop_pips, None

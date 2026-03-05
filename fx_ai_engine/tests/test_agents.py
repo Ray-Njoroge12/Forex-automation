@@ -138,3 +138,53 @@ def test_portfolio_manager_applies_trade_and_exposure_caps() -> None:
     decision = manager.evaluate(signal, adversarial_ok, status)
     assert decision.approved is False
     assert decision.reason_code == "PM_MAX_TRADES_REACHED"
+
+
+def _make_m15_with_swing(rows: int = 30, low_at: int = 25, swing_low: float = 1.0770) -> pd.DataFrame:
+    """M15 frame with a clear swing low inserted at bar `low_at`."""
+    from datetime import datetime, timedelta, timezone
+    start = datetime(2026, 3, 5, tzinfo=timezone.utc)
+    times = [start + timedelta(minutes=15 * i) for i in range(rows)]
+    closes = [1.0800] * rows
+    opens = closes[:]
+    highs = [c + 0.0005 for c in closes]
+    lows = [c - 0.0003 for c in closes]
+    lows[low_at] = swing_low  # insert structural low
+    return pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes,
+         "tick_volume": [100] * rows, "spread": [10] * rows, "real_volume": [100] * rows},
+        index=pd.DatetimeIndex(times, name="time"),
+    )
+
+
+def test_structural_sl_snaps_to_swing_low_for_buy() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    m15 = _make_m15_with_swing(rows=30, low_at=25, swing_low=1.0770)
+    current_price = 1.0800
+    # ATR stop ~12 pips; structural low is 30 pips away → too wide, keep ATR
+    final_stop, snapped = agent._detect_structural_sl(m15, "BUY", atr_stop_pips=12.0, current_price=current_price)
+    assert final_stop == 12.0
+    assert snapped is None
+
+
+def test_structural_sl_snaps_when_within_window() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    m15 = _make_m15_with_swing(rows=30, low_at=25, swing_low=1.0789)
+    current_price = 1.0800
+    # Swing low is 11 pips away; ATR stop 12 pips → ratio 0.917 → inside [0.8, 1.5] window
+    final_stop, snapped = agent._detect_structural_sl(m15, "BUY", atr_stop_pips=12.0, current_price=current_price)
+    assert abs(final_stop - 11.0) < 0.5   # snapped to structural
+    assert snapped is not None
+
+
+def test_structural_sl_keeps_atr_when_too_tight() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    m15 = _make_m15_with_swing(rows=30, low_at=25, swing_low=1.0796)
+    current_price = 1.0800
+    # Swing low 4 pips → ratio 0.33 → below 0.8 window, too tight → keep ATR
+    final_stop, snapped = agent._detect_structural_sl(m15, "BUY", atr_stop_pips=12.0, current_price=current_price)
+    assert final_stop == 12.0
+    assert snapped is None
