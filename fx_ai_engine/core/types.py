@@ -28,6 +28,9 @@ class TechnicalSignal:
     timestamp_utc: str
     rsi_at_entry: float = 0.0  # M15 RSI at signal generation time
     spread_entry: float = 0.0  # spread at signal time in pips
+    rsi_slope: float = 0.0     # RSI change over last 3 bars (for ML)
+    order_type: str = "MARKET" # MARKET or LIMIT
+    limit_price: float = 0.0   # target entry price for LIMIT orders
 
 
 @dataclass(frozen=True)

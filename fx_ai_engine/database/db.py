@@ -9,8 +9,8 @@ from typing import Any, Iterator
 from core.account_status import AccountStatus
 from core.types import TechnicalSignal
 
-DB_PATH = Path("database/trading_state.db")
-SCHEMA_PATH = Path("database/schema.sql")
+DB_PATH = Path(__file__).parent / "trading_state.db"
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 @contextmanager
@@ -87,6 +87,7 @@ def migrate_add_ml_feature_columns() -> None:
         _ensure_column(conn, "trades", "is_newyork_session", "INTEGER")
         _ensure_column(conn, "trades", "rate_differential", "REAL")
         _ensure_column(conn, "trades", "risk_reward", "REAL")
+        _ensure_column(conn, "trades", "rsi_slope", "REAL")
 
 
 def insert_trade_proposal(
@@ -106,16 +107,19 @@ def insert_trade_proposal(
         conn.execute(
             """
             INSERT OR REPLACE INTO trades (
-                trade_id, symbol, direction, stop_loss, take_profit,
+                trade_id, symbol, direction, order_type, lot_size, 
+                stop_loss, take_profit,
                 risk_percent, market_regime, status, reason_code, open_time,
                 regime_confidence, rsi_at_entry, atr_ratio,
                 is_london_session, is_newyork_session, rate_differential, risk_reward
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.trade_id,
                 signal.symbol,
                 signal.direction,
+                "MARKET",  # order_type
+                0.0,       # lot_size (placeholder until execution)
                 signal.stop_pips,
                 signal.take_profit_pips,
                 risk_percent,
@@ -159,6 +163,25 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                 payload.get("r_multiple", 0.0),
                 payload.get("close_time", datetime.now(timezone.utc).isoformat()),
                 payload.get("trade_id"),
+            ),
+        )
+
+
+def update_trade_exit_result(payload: dict[str, Any]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trades
+               SET status = ?,
+                   profit_loss = ?,
+                   close_time = ?
+             WHERE trade_ticket = ?
+            """,
+            (
+                payload.get("status", "CLOSED"),
+                payload.get("profit_loss", 0.0),
+                payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                payload.get("ticket"),
             ),
         )
 

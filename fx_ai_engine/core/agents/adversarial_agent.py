@@ -93,20 +93,34 @@ class AdversarialAgent:
             )
 
         last_rsi = float(df["rsi"].iloc[-1]) if not pd.isna(df["rsi"].iloc[-1]) else 50.0
-        if technical_signal.direction == "BUY" and last_rsi > 75:
+
+        # --- Bollinger Band RSI exhaustion (dynamic overbought/oversold) ---
+        rsi_series = df["rsi"].dropna()
+        if len(rsi_series) >= 20:
+            rsi_ma = rsi_series.rolling(20).mean().iloc[-1]
+            rsi_std = rsi_series.rolling(20).std().iloc[-1]
+            if not pd.isna(rsi_ma) and not pd.isna(rsi_std) and rsi_std > 0:
+                rsi_upper_bb = rsi_ma + 2 * rsi_std
+                rsi_lower_bb = rsi_ma - 2 * rsi_std
+            else:
+                rsi_upper_bb, rsi_lower_bb = 75.0, 25.0  # fallback
+        else:
+            rsi_upper_bb, rsi_lower_bb = 75.0, 25.0  # fallback
+
+        if technical_signal.direction == "BUY" and last_rsi > rsi_upper_bb:
             return AdversarialDecision(
                 approved=False,
                 risk_modifier=0.0,
                 reason_code="ADV_RSI_EXHAUSTION_BUY",
-                details=f"rsi={last_rsi:.2f}",
+                details=f"rsi={last_rsi:.2f} bb_upper={rsi_upper_bb:.2f}",
                 timestamp_utc=now,
             )
-        if technical_signal.direction == "SELL" and last_rsi < 25:
+        if technical_signal.direction == "SELL" and last_rsi < rsi_lower_bb:
             return AdversarialDecision(
                 approved=False,
                 risk_modifier=0.0,
                 reason_code="ADV_RSI_EXHAUSTION_SELL",
-                details=f"rsi={last_rsi:.2f}",
+                details=f"rsi={last_rsi:.2f} bb_lower={rsi_lower_bb:.2f}",
                 timestamp_utc=now,
             )
 

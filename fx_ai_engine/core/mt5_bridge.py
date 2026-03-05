@@ -61,29 +61,53 @@ class MT5Connection:
             return False
         return True
 
-    def connect(self) -> bool:
-        """Establishes connection to local MT5 terminal."""
+    def connect(self, retry_count: int = 3) -> bool:
+        """Establishes connection to local MT5 terminal with retries."""
         if not self._require_mt5():
             return False
 
-        logger.info("Initializing MT5 connection for server=%s", self.server)
-        ok = mt5.initialize(login=self.login, server=self.server, password=self.password)
-        if not ok:
-            self._make_error(
-                "MT5_INIT_FAILED",
-                f"Initialization failed, mt5.last_error={mt5.last_error()}",
-            )
-            self.connected = False
-            return False
+        for i in range(retry_count):
+            logger.info("Initializing MT5 connection for server=%s (attempt %d/%d)", self.server, i+1, retry_count)
+            ok = mt5.initialize(login=self.login, server=self.server, password=self.password)
+            if ok:
+                self.connected = True
+                self.last_error = None
+                logger.info("Connected to MT5 server=%s", self.server)
+                return True
+            
+            err = mt5.last_error()
+            logger.warning("MT5 init failed attempt %d: %s", i+1, err)
+            import time
+            time.sleep(1)
 
-        self.connected = True
-        self.last_error = None
-        logger.info("Connected to MT5 server=%s", self.server)
+        self._make_error(
+            "MT5_INIT_FAILED",
+            f"Initialization failed after {retry_count} attempts, last_error={mt5.last_error()}",
+        )
+        self.connected = False
+        return False
+
+    def _ensure_connected(self) -> bool:
+        """Checks if connection is alive, attempts reconnect if not."""
+        if not self.connected:
+            return self.connect()
+        
+        # Test connection with a lightweight call
+        try:
+            if mt5.terminal_info() is None:
+                logger.warning("MT5 connection lost (terminal_info is None), reconnecting...")
+                self.connected = False
+                return self.connect()
+        except AttributeError:
+            # Mocks or alternative environments might not have terminal_info.
+            # Safely bypass check if attribute doesn't exist.
+            pass
+        
         return True
 
     def get_account_snapshot(self) -> dict[str, Any] | None:
         """Returns live account state or explicit error object."""
-        if not self.connected:
+        if not self._ensure_connected():
             return {
                 "error": self._make_error(
                     "MT5_NOT_CONNECTED",
@@ -111,6 +135,7 @@ class MT5Connection:
             "equity": float(account_info.equity),
             "margin_free": float(account_info.margin_free),
             "open_positions_count": int(len(open_positions)),
+            "open_symbols": list(set(pos.symbol for pos in open_positions)),
             "floating_pnl": floating_pnl,
         }
         logger.info(
@@ -125,7 +150,7 @@ class MT5Connection:
         self, symbol: str, timeframe: int, num_candles: int = 300
     ) -> pd.DataFrame:
         """Fetches broker-native OHLC data; returns empty frame with attrs['error'] on failure."""
-        if not self.connected:
+        if not self._ensure_connected():
             err = self._make_error(
                 "MT5_NOT_CONNECTED",
                 "Cannot fetch OHLC because MT5 is not connected.",
@@ -176,7 +201,7 @@ class MT5Connection:
 
     def get_live_spread(self, symbol: str) -> float | None:
         """Returns spread as ask-bid or None on failure."""
-        if not self.connected:
+        if not self._ensure_connected():
             self._make_error(
                 "MT5_NOT_CONNECTED",
                 "Cannot fetch spread because MT5 is not connected.",

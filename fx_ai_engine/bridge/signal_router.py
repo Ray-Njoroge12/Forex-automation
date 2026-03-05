@@ -108,3 +108,10 @@ class SignalRouter:
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
             raise
+    def clear_signals(self) -> None:
+        """Purge all pending signals and locks."""
+        for p in self.pending_dir.glob("*.json"):
+            p.unlink(missing_ok=True)
+        for p in self.lock_dir.glob("*.lock"):
+            p.unlink(missing_ok=True)
+        logger.info("Cleared all pending signals and active locks.")

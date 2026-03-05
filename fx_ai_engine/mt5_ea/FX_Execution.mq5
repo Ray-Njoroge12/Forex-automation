@@ -2,19 +2,31 @@
 
 #include <Trade/Trade.mqh>
 
-input string RootFolder = "fx_ai_engine/bridge";
-input double MaxSpreadPips = 2.0;
+input string RootFolder = "bridge";
+input double MaxSpreadPips = 5.0; 
 input int PollIntervalSeconds = 1;
+
+// --- Trade Management Inputs ---
+input double BreakEvenTriggerR = 1.0;     // Move SL to entry when profit reaches this R-multiple
+input double BreakEvenBufferPips = 1.0;   // Buffer pips above entry for break-even SL
+input double PartialCloseR = 1.5;         // Close 50% at this R-multiple (0 = disabled)
+input double TrailingATRMultiplier = 2.0; // Trail SL using N * ATR (0 = disabled)
+input int    TrailingATRPeriod = 14;       // ATR period for trailing calculation
 
 CTrade trade;
 
-string PendingFolder() { return RootFolder + "/pending_signals"; }
-string LockFolder() { return RootFolder + "/active_locks"; }
-string FeedbackFolder() { return RootFolder + "/feedback"; }
+// Helper to sanitize paths
+string CleanPath(string p) { return p; }
+
+string PendingFolder() { return RootFolder + "\\pending_signals"; }
+string LockFolder() { return RootFolder + "\\active_locks"; }
+string FeedbackFolder() { return RootFolder + "\\feedback"; }
+string ExitsFolder() { return RootFolder + "\\exits"; }
 
 int OnInit()
 {
    EventSetTimer(PollIntervalSeconds);
+   LogDebug("OnInit: FX_Execution Started");
    return(INIT_SUCCEEDED);
 }
 
@@ -23,10 +35,228 @@ void OnDeinit(const int reason)
    EventKillTimer();
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(trans.type == TRADE_TRANSACTION_HISTORY_ADD)
+   {
+      ulong deal_ticket = trans.deal;
+      if(deal_ticket == 0) return;
+      
+      if(HistoryDealSelect(deal_ticket))
+      {
+         long deal_entry = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+         if(deal_entry == DEAL_ENTRY_OUT || deal_entry == DEAL_ENTRY_INOUT || deal_entry == DEAL_ENTRY_OUT_BY)
+         {
+            ulong pos_ticket = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
+            double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+            double fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
+            double swap = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+            double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+            
+            double total_pl = profit + fee + swap + commission;
+            
+            datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
+            
+            WriteExitFeedback(pos_ticket, total_pl, close_time);
+         }
+      }
+   }
+}
+
 void OnTimer()
 {
+   static datetime lastSnapshot = 0;
+   
    ProcessPendingSignal();
-   WriteAccountSnapshot();
+   ManageOpenPositions();
+   
+   if(TimeCurrent() - lastSnapshot >= 5) { // Update every 5s
+      WriteAccountSnapshot();
+      lastSnapshot = TimeCurrent();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Active Trade Management: Break-Even, Partial Close, Trailing SL  |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      
+      string sym      = PositionGetString(POSITION_SYMBOL);
+      long   posType  = PositionGetInteger(POSITION_TYPE);
+      double openPrice= PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL= PositionGetDouble(POSITION_SL);
+      double currentTP= PositionGetDouble(POSITION_TP);
+      double volume   = PositionGetDouble(POSITION_VOLUME);
+      
+      // Calculate initial stop distance (R-unit) from entry and current SL
+      double initialStopDist = MathAbs(openPrice - currentSL);
+      if(initialStopDist <= 0) continue; // Safety: skip if no SL set
+      
+      // Get current price
+      double currentPrice = 0.0;
+      if(posType == POSITION_TYPE_BUY)
+         currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
+      else
+         currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
+      
+      if(currentPrice <= 0) continue;
+      
+      // Calculate current profit in R-multiples
+      double profitDist = 0.0;
+      if(posType == POSITION_TYPE_BUY)
+         profitDist = currentPrice - openPrice;
+      else
+         profitDist = openPrice - currentPrice;
+      
+      double currentR = profitDist / initialStopDist;
+      
+      // --- 1. Break-Even Logic ---
+      if(BreakEvenTriggerR > 0 && currentR >= BreakEvenTriggerR)
+      {
+         double pipVal = PipValue(sym);
+         double newSL = 0.0;
+         
+         if(posType == POSITION_TYPE_BUY)
+            newSL = openPrice + BreakEvenBufferPips * pipVal;
+         else
+            newSL = openPrice - BreakEvenBufferPips * pipVal;
+         
+         // Only modify if the new SL is better than the current one
+         bool shouldModify = false;
+         if(posType == POSITION_TYPE_BUY && newSL > currentSL)
+            shouldModify = true;
+         else if(posType == POSITION_TYPE_SELL && (newSL < currentSL || currentSL == 0))
+            shouldModify = true;
+         
+         if(shouldModify)
+         {
+            // Respect minimum stop level
+            long stopLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+            double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+            double minDist = stopLevel * point;
+            
+            bool distOk = false;
+            if(posType == POSITION_TYPE_BUY)
+               distOk = (currentPrice - newSL) >= minDist;
+            else
+               distOk = (newSL - currentPrice) >= minDist;
+            
+            if(distOk)
+            {
+               int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+               newSL = NormalizeDouble(newSL, digits);
+               if(trade.PositionModify(ticket, newSL, currentTP))
+                  LogDebug("BE moved SL: ticket=" + (string)ticket + " newSL=" + DoubleToString(newSL, digits));
+               else
+                  LogDebug("BE modify fail: ticket=" + (string)ticket + " err=" + trade.ResultRetcodeDescription());
+            }
+         }
+      }
+      
+      // --- 2. Partial Close at PartialCloseR ---
+      if(PartialCloseR > 0 && currentR >= PartialCloseR)
+      {
+         double minLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+         double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+         double halfVol = MathFloor((volume * 0.5) / lotStep) * lotStep;
+         
+         if(halfVol >= minLot && volume > minLot)
+         {
+            halfVol = NormalizeDouble(halfVol, 2);
+            if(trade.PositionClosePartial(ticket, halfVol))
+               LogDebug("Partial close: ticket=" + (string)ticket + " closed=" + DoubleToString(halfVol, 2) + " at R=" + DoubleToString(currentR, 2));
+            else
+               LogDebug("Partial close fail: ticket=" + (string)ticket + " err=" + trade.ResultRetcodeDescription());
+         }
+      }
+      
+      // --- 3. ATR Trailing Stop ---
+      if(TrailingATRMultiplier > 0 && currentR >= BreakEvenTriggerR)
+      {
+         // Only trail after break-even has been activated
+         double atrVal = GetATR(sym, PERIOD_M15, TrailingATRPeriod);
+         if(atrVal > 0)
+         {
+            double trailDist = atrVal * TrailingATRMultiplier;
+            double trailSL = 0.0;
+            
+            if(posType == POSITION_TYPE_BUY)
+               trailSL = currentPrice - trailDist;
+            else
+               trailSL = currentPrice + trailDist;
+            
+            int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+            trailSL = NormalizeDouble(trailSL, digits);
+            
+            // Only move SL in the favorable direction
+            bool shouldTrail = false;
+            if(posType == POSITION_TYPE_BUY && trailSL > currentSL && trailSL < currentPrice)
+               shouldTrail = true;
+            else if(posType == POSITION_TYPE_SELL && trailSL < currentSL && trailSL > currentPrice)
+               shouldTrail = true;
+            
+            if(shouldTrail)
+            {
+               long stopLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+               double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+               double minDist = stopLevel * point;
+               
+               bool distOk = false;
+               if(posType == POSITION_TYPE_BUY)
+                  distOk = (currentPrice - trailSL) >= minDist;
+               else
+                  distOk = (trailSL - currentPrice) >= minDist;
+               
+               if(distOk)
+               {
+                  if(trade.PositionModify(ticket, trailSL, currentTP))
+                     LogDebug("Trail SL: ticket=" + (string)ticket + " newSL=" + DoubleToString(trailSL, digits) + " ATR=" + DoubleToString(atrVal, 6));
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get ATR value for trailing stop calculation                       |
+//+------------------------------------------------------------------+
+double GetATR(string sym, ENUM_TIMEFRAMES tf, int period)
+{
+   int atrHandle = iATR(sym, tf, period);
+   if(atrHandle == INVALID_HANDLE) return 0.0;
+   
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   
+   if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) <= 0)
+   {
+      IndicatorRelease(atrHandle);
+      return 0.0;
+   }
+   
+   double val = atrBuffer[0];
+   IndicatorRelease(atrHandle);
+   return val;
+}
+
+void LogDebug(string msg)
+{
+   string logPath = RootFolder + "\\ea_debug.log";
+   int handle = FileOpen(logPath, FILE_WRITE | FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ);
+   if(handle != INVALID_HANDLE)
+   {
+      FileSeek(handle, 0, SEEK_END);
+      FileWriteString(handle, TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + ": " + msg + "\r\n");
+      FileClose(handle);
+   }
+   Print("FX_AI: ", msg);
 }
 
 bool ExtractJsonString(const string json, const string key, string &out)
@@ -36,14 +266,14 @@ bool ExtractJsonString(const string json, const string key, string &out)
    if(start < 0) return false;
    start += StringLen(pattern);
 
-   while(start < StringLen(json) && (StringGetCharacter(json, start) == ' ' || StringGetCharacter(json, start) == '"'))
+   while(start < StringLen(json) && (StringGetCharacter(json, start) == ' ' || StringGetCharacter(json, start) == '"' || StringGetCharacter(json, start) == ':'))
       start++;
 
    int end = start;
    while(end < StringLen(json))
    {
       ushort c = StringGetCharacter(json, end);
-      if(c == '"' || c == ',' || c == '}')
+      if(c == '"' || c == ',' || c == '}' || c == ']')
          break;
       end++;
    }
@@ -63,11 +293,14 @@ bool ExtractJsonDouble(const string json, const string key, double &out)
 
 bool ReadTextFile(const string filePath, string &content)
 {
-   int handle = FileOpen(filePath, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   int handle = FileOpen(filePath, FILE_READ | FILE_TXT | FILE_ANSI | FILE_SHARE_READ);
    if(handle == INVALID_HANDLE)
+   {
+      LogDebug("FileOpen fail: " + filePath + " err=" + (string)GetLastError());
       return false;
+   }
 
-   content = FileReadString(handle);
+   content = "";
    while(!FileIsEnding(handle))
       content += FileReadString(handle);
 
@@ -77,7 +310,7 @@ bool ReadTextFile(const string filePath, string &content)
 
 bool WriteTextFile(const string filePath, const string content)
 {
-   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_WRITE);
    if(handle == INVALID_HANDLE)
       return false;
 
@@ -88,8 +321,8 @@ bool WriteTextFile(const string filePath, const string content)
 
 bool GetFirstPendingSignalFile(string &fileName)
 {
-   string searchMask = PendingFolder() + "/*.json";
-   long findHandle = FileFindFirst(searchMask, fileName, FILE_COMMON);
+   string searchMask = PendingFolder() + "\\*.json";
+   long findHandle = FileFindFirst(searchMask, fileName);
    if(findHandle == INVALID_HANDLE)
       return false;
 
@@ -97,37 +330,40 @@ bool GetFirstPendingSignalFile(string &fileName)
    return true;
 }
 
-double PipValue()
+double PipValue(string sym)
 {
-   if(StringFind(_Symbol, "JPY") >= 0)
+   if(StringFind(sym, "JPY") >= 0)
       return 0.01;
    return 0.0001;
 }
 
-double CalculateLot(const double riskPercent, const double stopPips)
+double CalculateLot(string sym, const double riskPercent, const double stopPips)
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskAmount = balance * riskPercent;
 
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double tickValue = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
 
    if(tickValue <= 0 || tickSize <= 0 || point <= 0 || stopPips <= 0)
       return 0.0;
 
    double valuePerPoint = tickValue / tickSize * point;
-   double stopPoints = stopPips * PipValue() / point;
-   double rawLot = riskAmount / (stopPoints * valuePerPoint);
+   double stopPoints = stopPips * PipValue(sym) / point;
+   double rawLimit = (stopPoints > 0) ? (riskAmount / (stopPoints * valuePerPoint)) : 0.0;
 
-   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
 
-   if(rawLot < minLot)
-      return 0.0;
+   if(rawLimit < minLot)
+   {
+       LogDebug("Lot too low: " + (string)riskAmount + " min=" + (string)minLot);
+       return 0.0;
+   }
 
-   double lot = MathFloor(rawLot / lotStep) * lotStep;
+   double lot = MathFloor(rawLimit / lotStep) * lotStep;
    if(lot > maxLot)
       lot = maxLot;
 
@@ -148,7 +384,7 @@ void WriteExecutionFeedback(
    payload += "\"trade_id\":\"" + tradeId + "\",";
    payload += "\"ticket\":" + StringFormat("%I64u", ticket) + ",";
    payload += "\"status\":\"" + status + "\",";
-   payload += "\"entry_price\":" + DoubleToString(entryPrice, _Digits) + ",";
+   payload += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
    payload += "\"slippage\":" + DoubleToString(slippage, 6) + ",";
    payload += "\"spread_at_entry\":" + DoubleToString(spreadAtEntry, 6) + ",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
@@ -156,7 +392,23 @@ void WriteExecutionFeedback(
    payload += "\"close_time\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\"";
    payload += "}";
 
-   string filePath = FeedbackFolder() + "/execution_" + tradeId + ".json";
+   string filePath = FeedbackFolder() + "\\execution_" + tradeId + ".json";
+   WriteTextFile(filePath, payload);
+}
+
+void WriteExitFeedback(
+   const ulong ticket,
+   const double profitLoss,
+   const datetime closeTime)
+{
+   string payload = "{";
+   payload += "\"ticket\":" + StringFormat("%I64u", ticket) + ",";
+   payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
+   payload += "\"status\":\"CLOSED\",";
+   payload += "\"close_time\":\"" + TimeToString(closeTime, TIME_DATE | TIME_SECONDS) + "\"";
+   payload += "}";
+
+   string filePath = ExitsFolder() + "\\exit_" + StringFormat("%I64u", ticket) + ".json";
    WriteTextFile(filePath, payload);
 }
 
@@ -183,7 +435,7 @@ void WriteAccountSnapshot()
    payload += "\"floating_pnl\":" + DoubleToString(floating, 2);
    payload += "}";
 
-   WriteTextFile(FeedbackFolder() + "/account_snapshot.json", payload);
+   WriteTextFile(FeedbackFolder() + "\\account_snapshot.json", payload);
 }
 
 void ProcessPendingSignal()
@@ -192,99 +444,123 @@ void ProcessPendingSignal()
    if(!GetFirstPendingSignalFile(fileName))
       return;
 
-   string filePath = PendingFolder() + "/" + fileName;
+   LogDebug("Found Signal File: " + fileName);
+   string filePath = PendingFolder() + "\\" + fileName;
 
    string content;
    if(!ReadTextFile(filePath, content))
+   {
+      LogDebug("Read fail: " + fileName);
       return;
+   }
 
    string tradeId, symbol, direction;
    double riskPercent = 0.0;
    double stopPips = 0.0;
    double takeProfitPips = 0.0;
    double requestedLot = -1.0;
+   string orderType = "MARKET";
+   double limitPrice = 0.0;
 
-   if(!ExtractJsonString(content, "trade_id", tradeId)) return;
-   if(!ExtractJsonString(content, "symbol", symbol)) return;
-   if(!ExtractJsonString(content, "direction", direction)) return;
-   if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) return;
-   if(!ExtractJsonDouble(content, "stop_pips", stopPips)) return;
-   if(!ExtractJsonDouble(content, "take_profit_pips", takeProfitPips)) return;
+   if(!ExtractJsonString(content, "trade_id", tradeId)) { LogDebug("JSON fail: tid"); return; }
+   if(!ExtractJsonString(content, "symbol", symbol)) { LogDebug("JSON fail: sym"); return; }
+   if(!ExtractJsonString(content, "direction", direction)) { LogDebug("JSON fail: dir"); return; }
+   if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) { LogDebug("JSON fail: risk"); return; }
+   if(!ExtractJsonDouble(content, "stop_pips", stopPips)) { LogDebug("JSON fail: stop"); return; }
+   if(!ExtractJsonDouble(content, "take_profit_pips", takeProfitPips)) { LogDebug("JSON fail: tp"); return; }
    ExtractJsonDouble(content, "lot", requestedLot);
+   ExtractJsonString(content, "order_type", orderType);
+   ExtractJsonDouble(content, "limit_price", limitPrice);
 
-   if(symbol != _Symbol)
+   LogDebug("Parsed symbol: " + symbol + " dir: " + direction + " order_type: " + orderType);
+
+   if(!SymbolSelect(symbol, true))
+   {
+      LogDebug("SymbolSelect fail: " + symbol);
+      FileDelete(filePath);
       return;
+   }
 
    MqlTick tick;
-   if(!SymbolInfoTick(_Symbol, tick))
+   if(!SymbolInfoTick(symbol, tick))
+   {
+      LogDebug("Tick fetch fail: " + symbol);
       return;
+   }
 
    double spread = tick.ask - tick.bid;
-   double spreadPips = spread / PipValue();
+   double spreadPips = spread / PipValue(symbol);
    if(spreadPips > MaxSpreadPips)
    {
+      LogDebug("Spread too wide: " + (string)spreadPips);
       WriteExecutionFeedback(tradeId, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0);
-      FileDelete(filePath, FILE_COMMON);
-      FileDelete(LockFolder() + "/" + tradeId + ".lock", FILE_COMMON);
+      FileDelete(filePath);
       return;
    }
 
-   double recalculatedLot = CalculateLot(riskPercent, stopPips);
-   if(recalculatedLot <= 0.0)
+   double recalculateLot = CalculateLot(symbol, riskPercent, stopPips);
+   if(recalculateLot <= 0.0)
    {
+      LogDebug("Lot calculation fail (too small)");
       WriteExecutionFeedback(tradeId, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0);
-      FileDelete(filePath, FILE_COMMON);
-      FileDelete(LockFolder() + "/" + tradeId + ".lock", FILE_COMMON);
+      FileDelete(filePath);
       return;
    }
 
-   double finalLot = recalculatedLot;
-   if(requestedLot > 0.0 && requestedLot < recalculatedLot)
+   double finalLot = recalculateLot;
+   if(requestedLot > 0.0 && requestedLot < recalculateLot)
       finalLot = requestedLot;
 
-   double entry = (direction == "BUY") ? tick.ask : tick.bid;
-   double sl = 0.0;
-   double tp = 0.0;
-
-   if(direction == "BUY")
-   {
-      sl = entry - stopPips * PipValue();
-      tp = entry + takeProfitPips * PipValue();
-   }
-   else if(direction == "SELL")
-   {
-      sl = entry + stopPips * PipValue();
-      tp = entry - takeProfitPips * PipValue();
-   }
-   else
-   {
-      WriteExecutionFeedback(tradeId, 0, "REJECTED_DIRECTION", 0.0, 0.0, spread, 0.0, 0.0);
-      FileDelete(filePath, FILE_COMMON);
-      FileDelete(LockFolder() + "/" + tradeId + ".lock", FILE_COMMON);
-      return;
-   }
-
+   // --- Determine execution method based on order_type ---
    bool placed = false;
-   if(direction == "BUY")
-      placed = trade.Buy(finalLot, _Symbol, entry, sl, tp, tradeId);
+   
+   if(orderType == "LIMIT" && limitPrice > 0)
+   {
+      // LIMIT ORDER: place pending order at the specified limit_price
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      limitPrice = NormalizeDouble(limitPrice, digits);
+      double sl = (direction == "BUY") ? (limitPrice - stopPips * PipValue(symbol)) : (limitPrice + stopPips * PipValue(symbol));
+      double tp = (direction == "BUY") ? (limitPrice + takeProfitPips * PipValue(symbol)) : (limitPrice - takeProfitPips * PipValue(symbol));
+      sl = NormalizeDouble(sl, digits);
+      tp = NormalizeDouble(tp, digits);
+      
+      LogDebug("Sending LIMIT Order: " + symbol + " " + direction + " lot: " + (string)finalLot + " price: " + DoubleToString(limitPrice, digits));
+      
+      if(direction == "BUY")
+         placed = trade.BuyLimit(finalLot, limitPrice, symbol, sl, tp, ORDER_TIME_GTC, 0, tradeId);
+      else if(direction == "SELL")
+         placed = trade.SellLimit(finalLot, limitPrice, symbol, sl, tp, ORDER_TIME_GTC, 0, tradeId);
+   }
    else
-      placed = trade.Sell(finalLot, _Symbol, entry, sl, tp, tradeId);
+   {
+      // MARKET ORDER: execute immediately at current price
+      double entry = (direction == "BUY") ? tick.ask : tick.bid;
+      double sl = (direction == "BUY") ? (entry - stopPips * PipValue(symbol)) : (entry + stopPips * PipValue(symbol));
+      double tp = (direction == "BUY") ? (entry + takeProfitPips * PipValue(symbol)) : (entry - takeProfitPips * PipValue(symbol));
+      
+      LogDebug("Sending MARKET Order: " + symbol + " " + direction + " lot: " + (string)finalLot);
+      
+      if(direction == "BUY")
+         placed = trade.Buy(finalLot, symbol, entry, sl, tp, tradeId);
+      else if(direction == "SELL")
+         placed = trade.Sell(finalLot, symbol, entry, sl, tp, tradeId);
+   }
 
    if(!placed)
    {
+      LogDebug("Order Execution FAIL: " + trade.ResultRetcodeDescription());
       WriteExecutionFeedback(tradeId, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, 0.0, 0.0);
-      FileDelete(filePath, FILE_COMMON);
-      FileDelete(LockFolder() + "/" + tradeId + ".lock", FILE_COMMON);
+      FileDelete(filePath);
       return;
    }
 
    double fillPrice = trade.ResultPrice();
    double slippage = MathAbs(fillPrice - entry);
    ulong ticket = trade.ResultDeal();
-   if(ticket == 0)
-      ticket = trade.ResultOrder();
+   if(ticket == 0) ticket = trade.ResultOrder();
+   
+   LogDebug("EXECUTION SUCCESS: Ticket " + (string)ticket);
    WriteExecutionFeedback(tradeId, ticket, "EXECUTED", fillPrice, slippage, spread, 0.0, 0.0);
 
-   FileDelete(filePath, FILE_COMMON);
-   FileDelete(LockFolder() + "/" + tradeId + ".lock", FILE_COMMON);
+   FileDelete(filePath);
 }

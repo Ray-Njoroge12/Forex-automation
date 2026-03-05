@@ -1,7 +1,10 @@
-"""RandomForest signal ranker — predicts trade profitability from logged features.
+"""Gradient-boosted signal ranker — predicts trade profitability from logged features.
 
 The ranker learns from historical trades stored in the SQLite database.
 It uses only features available *before* a trade is placed (no look-ahead).
+
+Preferred model: XGBClassifier (falls back to RandomForest if xgboost
+is not installed).
 
 Prerequisite:
     ≥500 closed trades with r_multiple data in the trades table.
@@ -19,13 +22,12 @@ Inference (from code):
 Features used:
     regime_confidence, rsi, atr_ratio, spread_pips, is_london_session,
     is_newyork_session, rate_differential, stop_pips, risk_reward,
-    direction_buy (0/1)
+    direction_buy, rsi_slope
 
 Label:
     1 if r_multiple > 0 (profitable), else 0.
 
-Model persistence uses joblib (scikit-learn recommended format; locally
-generated, never received from external sources).
+Model persistence uses joblib.
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ _FEATURE_NAMES = [
     "stop_pips",
     "risk_reward",
     "direction_buy",
+    "rsi_slope",
 ]
 
 
@@ -76,7 +79,7 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
             """
             SELECT regime_confidence, rsi_at_entry, atr_ratio, spread_entry,
                    is_london_session, is_newyork_session, rate_differential,
-                   stop_loss, risk_reward, direction, r_multiple
+                   stop_loss, risk_reward, direction, r_multiple, rsi_slope
               FROM trades
              WHERE status IN ('EXECUTED', 'CLOSED')
                AND r_multiple IS NOT NULL
@@ -107,6 +110,7 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
                     float(row["stop_loss"] or 10),
                     float(row["risk_reward"] or 2),
                     1.0 if str(row["direction"]).upper() == "BUY" else 0.0,
+                    float(row["rsi_slope"] or 0),
                 ]
                 label = 1 if float(row["r_multiple"]) > 0 else 0
                 X.append(x_row)
@@ -126,7 +130,9 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
 # ---------------------------------------------------------------------------
 
 class SignalRanker:
-    """RandomForest classifier for signal profitability prediction.
+    """XGBoost classifier for signal profitability prediction.
+
+    Falls back to RandomForest if xgboost is not installed.
 
     Usage::
 
@@ -184,17 +190,26 @@ class SignalRanker:
     # ------------------------------------------------------------------
 
     def train(self) -> bool:
-        """Train the RandomForest on historical trades and save model.
+        """Train XGBoost (preferred) or RandomForest on historical trades and save model.
 
         Returns True on success.
         """
+        # Try XGBoost first, fall back to RandomForest.
+        use_xgb = False
         try:
-            from sklearn.ensemble import RandomForestClassifier  # type: ignore[import]
+            from xgboost import XGBClassifier  # type: ignore[import]
+            use_xgb = True
+        except ImportError:
+            logger.info("xgboost not installed, falling back to RandomForest.")
+
+        try:
             from sklearn.model_selection import cross_val_score  # type: ignore[import]
             import joblib  # type: ignore[import]
+            if not use_xgb:
+                from sklearn.ensemble import RandomForestClassifier  # type: ignore[import]
         except ImportError:
             logger.error(
-                "Required packages missing. Run: pip install scikit-learn joblib"
+                "Required packages missing. Run: pip install scikit-learn joblib xgboost"
             )
             return False
 
@@ -205,13 +220,28 @@ class SignalRanker:
         X, y = data
         logger.info("Training SignalRanker on %d samples…", len(y))
 
-        clf = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=6,
-            min_samples_leaf=10,
-            class_weight="balanced",
-            random_state=42,
-        )
+        if use_xgb:
+            clf = XGBClassifier(
+                n_estimators=300,
+                max_depth=5,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                min_child_weight=5,
+                scale_pos_weight=1.0,
+                use_label_encoder=False,
+                eval_metric="logloss",
+                random_state=42,
+            )
+        else:
+            clf = RandomForestClassifier(
+                n_estimators=200,
+                max_depth=6,
+                min_samples_leaf=10,
+                class_weight="balanced",
+                random_state=42,
+            )
+
         clf.fit(X, y)
 
         # Cross-validated accuracy for diagnostics.
@@ -223,8 +253,13 @@ class SignalRanker:
         self._model = clf
 
         # Feature importance report.
+        if use_xgb:
+            importances_arr = clf.feature_importances_
+        else:
+            importances_arr = clf.feature_importances_
+
         importances = sorted(
-            zip(_FEATURE_NAMES, clf.feature_importances_),
+            zip(_FEATURE_NAMES, importances_arr),
             key=lambda t: t[1],
             reverse=True,
         )

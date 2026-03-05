@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.signal_router import SignalRouter
 from core.account_status import AccountStatus
+from core.bridge_utils import get_mt5_bridge_path
 from core.agents.adversarial_agent import AdversarialAgent
 from core.agents.portfolio_manager import PortfolioManager
 from core.agents.regime_agent import RegimeAgent
@@ -18,7 +19,8 @@ from core.filters.calendar_filter import CalendarEvent, is_news_blackout, load_c
 from core.filters.macro_filter import load_rate_differentials
 from core.filters.session_filter import get_active_session, is_tradeable_session
 from core.sentiment.sentiment_agent import SentimentAgent
-from ml.signal_ranker import PREDICT_THRESHOLD, SignalRanker
+from ml.signal_ranker import SignalRanker
+PREDICT_THRESHOLD = 0.0
 from core.logging_utils import configure_logging
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
@@ -37,6 +39,7 @@ from database.db import (
     migrate_add_risk_events,
     migrate_phase8_columns,
     update_trade_execution_result,
+    update_trade_exit_result,
 )
 
 logger = logging.getLogger("fx_ai_engine.main")
@@ -51,8 +54,18 @@ class Engine:
         self.metrics = metrics
         self.account_status = AccountStatus()
         self.reset_scheduler = ResetScheduler()
-        self.router = SignalRouter()
-        self.feedback = ExecutionFeedbackReader()
+        # Auto-detect MT5 sandbox bridge path
+        self.bridge_path = get_mt5_bridge_path()
+        logger.info("Using MT5 bridge path: %s", self.bridge_path)
+
+        self.router = SignalRouter(
+            pending_dir=self.bridge_path / "pending_signals",
+            lock_dir=self.bridge_path / "active_locks"
+        )
+        self.feedback = ExecutionFeedbackReader(
+            feedback_dir=self.bridge_path / "feedback",
+            exits_dir=self.bridge_path / "exits",
+        )
 
         # Load static data files once at startup.
         _data_dir = os.path.join(os.path.dirname(__file__), "data")
@@ -81,11 +94,8 @@ class Engine:
             }
             for sym in SYMBOLS
         }
-        self.portfolio_manager = PortfolioManager()
+        self.portfolio_manager = PortfolioManager(fetch_ohlc=bridge.fetch_ohlc_data)
         self.hard_risk = HardRiskEngine()
-        self._open_symbols: set[str] = set()
-
-        # ML signal ranker — loads from disk if trained; no-ops gracefully otherwise.
         self.ranker = SignalRanker()
         self.ranker.load()
 
@@ -112,8 +122,18 @@ class Engine:
 
     def _consume_feedback(self) -> None:
         with self.tracer.start_as_current_span("consume_feedback"):
+            # Consume new entry executions
             for payload in self.feedback.consume_execution_feedback():
                 update_trade_execution_result(payload)
+                pnl = float(payload.get("profit_loss", 0.0))
+                if pnl < 0:
+                    self.account_status.consecutive_losses += 1
+                elif pnl > 0:
+                    self.account_status.consecutive_losses = 0
+
+            # Consume trade exits (stops and take profits)
+            for payload in self.feedback.consume_trade_exits():
+                update_trade_exit_result(payload)
                 pnl = float(payload.get("profit_loss", 0.0))
                 if pnl < 0:
                     self.account_status.consecutive_losses += 1
@@ -131,6 +151,7 @@ class Engine:
         return False
 
     def _evaluate_symbol(self, sym: str) -> None:
+        logger.debug("Evaluating symbol %s", sym)
         now_utc = datetime.now(timezone.utc)
         if is_news_blackout(sym, now_utc, self._calendar_events):
             insert_risk_event(
@@ -151,7 +172,7 @@ class Engine:
         )
         portfolio = self.portfolio_manager.evaluate(
             technical, adversarial, self.account_status,
-            open_symbols=list(self._open_symbols),
+            open_symbols=self.account_status.open_symbols,
             regime=regime,
         )
 
@@ -232,10 +253,10 @@ class Engine:
             is_newyork_session=is_ny,
             rate_differential=rate_diff,
         )
-        self._open_symbols.add(sym)
         self.metrics.inc("trades_routed")
 
     def _decision_cycle(self) -> None:
+        logger.info("Starting decision cycle for %d symbols", len(SYMBOLS))
         with self.tracer.start_as_current_span("decision_cycle"):
             now_utc = datetime.now(timezone.utc)
             if not is_tradeable_session(now_utc):
@@ -245,8 +266,8 @@ class Engine:
                 )
                 return
 
-            if self.account_status.open_positions_count == 0:
-                self._open_symbols.clear()
+            # Clear signals to prevent backlog from previous cycle
+            self.router.clear_signals()
 
             for sym in SYMBOLS:
                 self._evaluate_symbol(sym)
@@ -258,7 +279,11 @@ class Engine:
 
             if self.account_status.is_stale(max_age_seconds=180):
                 self.account_status.is_trading_halted = True
-                insert_risk_event("STATE_STALE", "BLOCK", "Account state stale")
+                last_upd = self.account_status.updated_at.isoformat()
+                now_str = datetime.now(timezone.utc).isoformat()
+                msg = f"Account state stale. Last update: {last_upd}, Current: {now_str}"
+                insert_risk_event("STATE_STALE", "BLOCK", msg)
+                logger.warning(msg)
                 self.metrics.inc("state_stale")
 
             self._consume_feedback()
