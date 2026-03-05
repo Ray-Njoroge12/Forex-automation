@@ -25,10 +25,21 @@ class TechnicalAgent:
         self.atr_period = 14
         self.rsi_period = 14
         self.stop_atr_multiplier = 1.2
-        self.min_rr = 2.2
+        self.min_rr = 1.5
 
-    def evaluate(self, regime: RegimeOutput, timeframe_m15: int, timeframe_h1: int) -> TechnicalSignal | None:
+    def evaluate(self, regime: RegimeOutput, timeframe_m15: int, timeframe_h1: int, timeframe_h4: int = 16388) -> TechnicalSignal | None:
         if regime.regime not in {"TRENDING_BULL", "TRENDING_BEAR"}:
+            return None
+
+        # --- Triple Screen: H4 structural gate ---
+        h4 = self.fetch_ohlc(self.symbol, timeframe_h4, 350)
+        if h4.empty:
+            return None
+        h4 = h4.copy()
+        h4["ema_fast"] = calculate_ema(h4["close"], self.ema_fast)
+        h4["ema_slow"] = calculate_ema(h4["close"], self.ema_slow)
+        h4_last = h4.iloc[-1]
+        if pd.isna(h4_last["ema_fast"]) or pd.isna(h4_last["ema_slow"]):
             return None
 
         h1 = self.fetch_ohlc(self.symbol, timeframe_h1, 350)
@@ -51,23 +62,28 @@ class TechnicalAgent:
         if any(pd.isna(v) for v in [h1_last["ema_fast"], h1_last["ema_slow"], m15_last["atr"], m15_last["rsi"]]):
             return None
 
-        if h1_last["ema_fast"] > h1_last["ema_slow"]:
+        pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
+        buffer_val = 2.0 * pip_value
+
+        if h1_last["ema_fast"] > h1_last["ema_slow"] and h4_last["ema_fast"] > h4_last["ema_slow"]:
             direction = "BUY"
-            pulled_back = m15_last["low"] <= m15_last["ema_fast"]
+            # Conservative: Price must pull back near EMA, RSI not overbought
+            pulled_back = (m15_last["low"] <= m15_last["ema_fast"] + buffer_val)
             rsi_ok = 40 <= float(m15_last["rsi"]) <= 65
-            reason_code = "TECH_PULLBACK_BUY"
-        elif h1_last["ema_fast"] < h1_last["ema_slow"]:
+            reason_code = "TECH_CONFIRMED_BUY"
+        elif h1_last["ema_fast"] < h1_last["ema_slow"] and h4_last["ema_fast"] < h4_last["ema_slow"]:
             direction = "SELL"
-            pulled_back = m15_last["high"] >= m15_last["ema_fast"]
+            # Conservative: Price must pull back near EMA, RSI not oversold
+            pulled_back = (m15_last["high"] >= m15_last["ema_fast"] - buffer_val)
             rsi_ok = 35 <= float(m15_last["rsi"]) <= 60
-            reason_code = "TECH_PULLBACK_SELL"
+            reason_code = "TECH_CONFIRMED_SELL"
         else:
-            return None
+            return None  # H1 and H4 are not aligned — no signal
 
         if not pulled_back or not rsi_ok:
             return None
 
-        # Phase 2.3 — Option C candle pattern confirmation: EMA slope + body close.
+        # Require structural confirmation (EMA slope alignment and proper close)
         if not self._confirm_candle_pattern(m15, direction):
             return None
 
@@ -76,7 +92,7 @@ class TechnicalAgent:
 
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
         stop_pips = float((m15_last["atr"] * atr_multiplier) / pip_value)
-        take_profit_pips = float(stop_pips * self.min_rr)
+        take_profit_pips = float(stop_pips * 2.2)
         if stop_pips <= 0 or take_profit_pips <= 0:
             return None
 
@@ -90,6 +106,11 @@ class TechnicalAgent:
         if rr < self.min_rr:
             return None
 
+        # Compute RSI slope (change over last 3 bars) for ML feature.
+        rsi_slope = 0.0
+        if len(m15) >= 4 and not pd.isna(m15["rsi"].iloc[-1]) and not pd.isna(m15["rsi"].iloc[-3]):
+            rsi_slope = round(float(m15["rsi"].iloc[-1]) - float(m15["rsi"].iloc[-3]), 2)
+
         return TechnicalSignal(
             trade_id=f"AI_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}",
             symbol=self.symbol,
@@ -102,6 +123,7 @@ class TechnicalAgent:
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
             rsi_at_entry=round(float(m15_last["rsi"]), 2),
             spread_entry=round(spread_pips, 2),
+            rsi_slope=rsi_slope,
         )
 
     def _confirm_candle_pattern(self, m15: pd.DataFrame, direction: str) -> bool:

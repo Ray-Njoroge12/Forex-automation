@@ -17,6 +17,7 @@ class AccountStatus:
     is_trading_halted: bool = False
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     open_positions_count: int = 0
+    open_symbols: list[str] = field(default_factory=list)
     floating_pnl: float = 0.0
     margin_free: float = 0.0
     peak_equity: float = 0.0

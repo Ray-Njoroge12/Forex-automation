@@ -37,6 +37,14 @@ def validate_signal_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if float(payload["stop_pips"]) <= 0 or float(payload["take_profit_pips"]) <= 0:
         raise SchemaError("SignalPayload stop/take profit pips must be > 0")
 
+    # Default order_type to MARKET if not provided.
+    payload.setdefault("order_type", "MARKET")
+    if payload["order_type"] not in {"MARKET", "LIMIT"}:
+        raise SchemaError("SignalPayload order_type must be MARKET or LIMIT")
+
+    if payload["order_type"] == "LIMIT" and "limit_price" not in payload:
+        raise SchemaError("SignalPayload limit_price required for LIMIT orders")
+
     return payload
 
 
@@ -56,6 +64,17 @@ def validate_execution_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def validate_trade_exit(payload: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "ticket",
+        "profit_loss",
+        "status",
+        "close_time",
+    }
+    _required(payload, required, "TradeExit")
+    return payload
+
+
 def validate_account_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     required = {
         "timestamp",
@@ -70,7 +89,7 @@ def validate_account_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def technical_signal_to_payload(signal: TechnicalSignal, risk_percent: float) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "trade_id": signal.trade_id,
         "symbol": signal.symbol,
         "direction": signal.direction,
@@ -80,5 +99,10 @@ def technical_signal_to_payload(signal: TechnicalSignal, risk_percent: float) ->
         "timestamp_utc": signal.timestamp_utc or datetime.now(timezone.utc).isoformat(),
         "reason_code": signal.reason_code,
         "confidence": signal.confidence,
+        "order_type": getattr(signal, "order_type", "MARKET") or "MARKET",
     }
+    # Include limit_price if this is a LIMIT order.
+    limit_price = getattr(signal, "limit_price", None)
+    if limit_price is not None and limit_price > 0:
+        payload["limit_price"] = float(limit_price)
     return validate_signal_payload(payload)
