@@ -31,6 +31,12 @@ class TechnicalSignal:
     rsi_slope: float = 0.0     # RSI change over last 3 bars (for ML)
     order_type: str = "MARKET" # MARKET or LIMIT
     limit_price: float = 0.0   # target entry price for LIMIT orders
+    # Trade management parameters — passed through JSON signal to MQL5 EA
+    be_trigger_r: float = 1.0          # R-multiple to move SL to break-even
+    partial_close_r: float = 1.5       # R-multiple for 50% partial close (0 = off)
+    trailing_atr_mult: float = 2.0     # ATR multiplier for trailing SL (0 = off)
+    tp_mode: str = "FIXED"             # "FIXED" = hard TP; "TRAIL" = open-ended, trail only
+    structural_sl_pips: float | None = None  # Set when structural snap occurred; None = ATR used
 
 
 @dataclass(frozen=True)
