@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /mnt/c/Users/rayng/Desktop/Forex-automation/.claude/hooks/block_sensitive_files.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /mnt/c/Users/rayng/Desktop/Forex-automation/.claude/hooks/run_tests_on_critical_files.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -6,7 +6,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 python main.py --mode demo"
+        "cd '/mnt/c/Users/rayng/Desktop/Forex-automation/fx_ai_engine' && USE_MT5_MOCK=1 /mnt/c/Users/rayng/AppData/Local/Programs/Python/Python311/python.exe main.py --mode demo"
       ],
       "port": 8000
     },
@@ -15,7 +15,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 python main.py --mode smoke"
+        "cd '/mnt/c/Users/rayng/Desktop/Forex-automation/fx_ai_engine' && USE_MT5_MOCK=1 /mnt/c/Users/rayng/AppData/Local/Programs/Python/Python311/python.exe main.py --mode smoke"
       ],
       "port": 8000
     },
@@ -24,7 +24,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && USE_MT5_MOCK=1 PROM_ENABLED=1 PROM_PORT=8000 python main.py --mode demo"
+        "cd '/mnt/c/Users/rayng/Desktop/Forex-automation/fx_ai_engine' && USE_MT5_MOCK=1 PROM_ENABLED=1 PROM_PORT=8000 /mnt/c/Users/rayng/AppData/Local/Programs/Python/Python311/python.exe main.py --mode demo"
       ],
       "port": 8000
     },
@@ -33,7 +33,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd '/Users/raynj/Desktop/Forex automation/fx_ai_engine' && source .venv/bin/activate && python -m backtesting.bt_runner --csv tests/fixtures/ohlc_fixture.csv --symbol EURUSD"
+        "cd '/mnt/c/Users/rayng/Desktop/Forex-automation/fx_ai_engine' && /mnt/c/Users/rayng/AppData/Local/Programs/Python/Python311/python.exe -m backtesting.bt_runner --csv tests/fixtures/ohlc_fixture.csv --symbol EURUSD"
       ],
       "port": 8000
     }

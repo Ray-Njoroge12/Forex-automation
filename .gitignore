@@ -27,4 +27,6 @@ fx_ai_engine/database/trading_state.db
 
 # Temporary files & AI logs
 tmp/
-.claude/
+
+# Ignore user-specific Claude Code config only; hooks/agents/skills/settings.json are team-facing
+.claude/settings.local.json
