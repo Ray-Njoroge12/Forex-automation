@@ -15,6 +15,56 @@ input int    TrailingATRPeriod = 14;       // ATR period for trailing calculatio
 
 CTrade trade;
 
+// Per-position trade management parameters (indexed by slot 0..MAX_POS-1)
+#define MAX_POS 10
+ulong  g_tickets[MAX_POS];
+double g_be_trigger_r[MAX_POS];
+double g_partial_close_r[MAX_POS];
+double g_trailing_atr_mult[MAX_POS];
+bool   g_tp_mode_trail[MAX_POS];
+bool   g_partial_closed[MAX_POS];
+
+void InitPositionArrays()
+{
+   for(int i = 0; i < MAX_POS; i++)
+   {
+      g_tickets[i]           = 0;
+      g_be_trigger_r[i]      = 1.0;
+      g_partial_close_r[i]   = 1.5;
+      g_trailing_atr_mult[i] = 2.0;
+      g_tp_mode_trail[i]     = false;
+      g_partial_closed[i]    = false;
+   }
+}
+
+int FindSlot(ulong ticket)
+{
+   for(int i = 0; i < MAX_POS; i++)
+      if(g_tickets[i] == ticket) return i;
+   return -1;
+}
+
+int AllocSlot(ulong ticket)
+{
+   for(int i = 0; i < MAX_POS; i++)
+      if(g_tickets[i] == 0) { g_tickets[i] = ticket; return i; }
+   return -1;
+}
+
+void FreeSlot(ulong ticket)
+{
+   int s = FindSlot(ticket);
+   if(s >= 0)
+   {
+      g_tickets[s]           = 0;
+      g_be_trigger_r[s]      = 1.0;
+      g_partial_close_r[s]   = 1.5;
+      g_trailing_atr_mult[s] = 2.0;
+      g_tp_mode_trail[s]     = false;
+      g_partial_closed[s]    = false;
+   }
+}
+
 // Helper to sanitize paths
 string CleanPath(string p) { return p; }
 
@@ -27,6 +77,7 @@ int OnInit()
 {
    EventSetTimer(PollIntervalSeconds);
    LogDebug("OnInit: FX_Execution Started");
+   InitPositionArrays();
    return(INIT_SUCCEEDED);
 }
 
@@ -58,6 +109,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
             
             WriteExitFeedback(pos_ticket, total_pl, close_time);
+            FreeSlot(pos_ticket);
          }
       }
    }
@@ -93,7 +145,12 @@ void ManageOpenPositions()
       double currentSL= PositionGetDouble(POSITION_SL);
       double currentTP= PositionGetDouble(POSITION_TP);
       double volume   = PositionGetDouble(POSITION_VOLUME);
-      
+      int slot = FindSlot(ticket);
+      double slotBE      = (slot >= 0) ? g_be_trigger_r[slot]      : BreakEvenTriggerR;
+      double slotPartial = (slot >= 0) ? g_partial_close_r[slot]   : PartialCloseR;
+      double slotTrail   = (slot >= 0) ? g_trailing_atr_mult[slot] : TrailingATRMultiplier;
+      bool   slotClosed  = (slot >= 0) ? g_partial_closed[slot]    : false;
+
       // Calculate initial stop distance (R-unit) from entry and current SL
       double initialStopDist = MathAbs(openPrice - currentSL);
       if(initialStopDist <= 0) continue; // Safety: skip if no SL set
@@ -117,7 +174,7 @@ void ManageOpenPositions()
       double currentR = profitDist / initialStopDist;
       
       // --- 1. Break-Even Logic ---
-      if(BreakEvenTriggerR > 0 && currentR >= BreakEvenTriggerR)
+      if(slotBE > 0 && currentR >= slotBE)
       {
          double pipVal = PipValue(sym);
          double newSL = 0.0;
@@ -160,30 +217,33 @@ void ManageOpenPositions()
       }
       
       // --- 2. Partial Close at PartialCloseR ---
-      if(PartialCloseR > 0 && currentR >= PartialCloseR)
+      if(slotPartial > 0 && currentR >= slotPartial && !slotClosed)
       {
          double minLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
          double lotStep = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
          double halfVol = MathFloor((volume * 0.5) / lotStep) * lotStep;
-         
+
          if(halfVol >= minLot && volume > minLot)
          {
             halfVol = NormalizeDouble(halfVol, 2);
             if(trade.PositionClosePartial(ticket, halfVol))
+            {
                LogDebug("Partial close: ticket=" + (string)ticket + " closed=" + DoubleToString(halfVol, 2) + " at R=" + DoubleToString(currentR, 2));
+               if(slot >= 0) g_partial_closed[slot] = true;
+            }
             else
                LogDebug("Partial close fail: ticket=" + (string)ticket + " err=" + trade.ResultRetcodeDescription());
          }
       }
       
       // --- 3. ATR Trailing Stop ---
-      if(TrailingATRMultiplier > 0 && currentR >= BreakEvenTriggerR)
+      if(slotTrail > 0 && currentR >= slotBE)
       {
          // Only trail after break-even has been activated
          double atrVal = GetATR(sym, PERIOD_M15, TrailingATRPeriod);
          if(atrVal > 0)
          {
-            double trailDist = atrVal * TrailingATRMultiplier;
+            double trailDist = atrVal * slotTrail;
             double trailSL = 0.0;
             
             if(posType == POSITION_TYPE_BUY)
@@ -471,6 +531,15 @@ void ProcessPendingSignal()
    ExtractJsonDouble(content, "lot", requestedLot);
    ExtractJsonString(content, "order_type", orderType);
    ExtractJsonDouble(content, "limit_price", limitPrice);
+   double beR       = 1.0;
+   double partialR  = 1.5;
+   double trailMult = 2.0;
+   string tpModeStr = "FIXED";
+   ExtractJsonDouble(content, "be_trigger_r",      beR);
+   ExtractJsonDouble(content, "partial_close_r",   partialR);
+   ExtractJsonDouble(content, "trailing_atr_mult", trailMult);
+   ExtractJsonString(content, "tp_mode",           tpModeStr);
+   bool trailMode = (tpModeStr == "TRAIL");
 
    LogDebug("Parsed symbol: " + symbol + " dir: " + direction + " order_type: " + orderType);
 
@@ -520,7 +589,9 @@ void ProcessPendingSignal()
       int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
       limitPrice = NormalizeDouble(limitPrice, digits);
       double sl = (direction == "BUY") ? (limitPrice - stopPips * PipValue(symbol)) : (limitPrice + stopPips * PipValue(symbol));
-      double tp = (direction == "BUY") ? (limitPrice + takeProfitPips * PipValue(symbol)) : (limitPrice - takeProfitPips * PipValue(symbol));
+      double tp = 0.0;
+      if(!trailMode)
+         tp = (direction == "BUY") ? (limitPrice + takeProfitPips * PipValue(symbol)) : (limitPrice - takeProfitPips * PipValue(symbol));
       sl = NormalizeDouble(sl, digits);
       tp = NormalizeDouble(tp, digits);
       
@@ -536,7 +607,9 @@ void ProcessPendingSignal()
       // MARKET ORDER: execute immediately at current price
       double entry = (direction == "BUY") ? tick.ask : tick.bid;
       double sl = (direction == "BUY") ? (entry - stopPips * PipValue(symbol)) : (entry + stopPips * PipValue(symbol));
-      double tp = (direction == "BUY") ? (entry + takeProfitPips * PipValue(symbol)) : (entry - takeProfitPips * PipValue(symbol));
+      double tp = 0.0;
+      if(!trailMode)
+         tp = (direction == "BUY") ? (entry + takeProfitPips * PipValue(symbol)) : (entry - takeProfitPips * PipValue(symbol));
       
       LogDebug("Sending MARKET Order: " + symbol + " " + direction + " lot: " + (string)finalLot);
       
@@ -560,6 +633,17 @@ void ProcessPendingSignal()
    if(ticket == 0) ticket = trade.ResultOrder();
    
    LogDebug("EXECUTION SUCCESS: Ticket " + (string)ticket);
+   ulong posTicket = trade.ResultDeal();
+   if(posTicket == 0) posTicket = trade.ResultOrder();
+   int slot = AllocSlot(posTicket);
+   if(slot >= 0)
+   {
+      g_be_trigger_r[slot]     = beR;
+      g_partial_close_r[slot]  = partialR;
+      g_trailing_atr_mult[slot]= trailMult;
+      g_tp_mode_trail[slot]    = trailMode;
+      g_partial_closed[slot]   = false;
+   }
    WriteExecutionFeedback(tradeId, ticket, "EXECUTED", fillPrice, slippage, spread, 0.0, 0.0);
 
    FileDelete(filePath);
