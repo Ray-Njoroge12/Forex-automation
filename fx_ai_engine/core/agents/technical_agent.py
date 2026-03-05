@@ -25,7 +25,7 @@ class TechnicalAgent:
         self.atr_period = 14
         self.rsi_period = 14
         self.stop_atr_multiplier = 1.2
-        self.min_rr = 1.5
+        self.min_rr = 2.2
 
     def evaluate(self, regime: RegimeOutput, timeframe_m15: int, timeframe_h1: int, timeframe_h4: int = 16388) -> TechnicalSignal | None:
         if regime.regime not in {"TRENDING_BULL", "TRENDING_BEAR"}:

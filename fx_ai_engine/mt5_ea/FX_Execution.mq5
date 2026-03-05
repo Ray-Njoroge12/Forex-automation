@@ -150,6 +150,7 @@ void ManageOpenPositions()
       double slotPartial = (slot >= 0) ? g_partial_close_r[slot]   : PartialCloseR;
       double slotTrail   = (slot >= 0) ? g_trailing_atr_mult[slot] : TrailingATRMultiplier;
       bool   slotClosed  = (slot >= 0) ? g_partial_closed[slot]    : false;
+      bool   slotTrailMode = (slot >= 0) ? g_tp_mode_trail[slot]     : false;
 
       // Calculate initial stop distance (R-unit) from entry and current SL
       double initialStopDist = MathAbs(openPrice - currentSL);
@@ -237,7 +238,7 @@ void ManageOpenPositions()
       }
       
       // --- 3. ATR Trailing Stop ---
-      if(slotTrail > 0 && currentR >= slotBE)
+      if(slotTrailMode && slotTrail > 0 && currentR >= slotBE)
       {
          // Only trail after break-even has been activated
          double atrVal = GetATR(sym, PERIOD_M15, TrailingATRPeriod);
