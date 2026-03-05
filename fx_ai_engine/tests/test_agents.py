@@ -188,3 +188,48 @@ def test_structural_sl_keeps_atr_when_too_tight() -> None:
     final_stop, snapped = agent._detect_structural_sl(m15, "BUY", atr_stop_pips=12.0, current_price=current_price)
     assert final_stop == 12.0
     assert snapped is None
+
+
+def test_trade_params_trending_normal_vol() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    from core.types import RegimeOutput
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    regime = RegimeOutput(
+        regime="TRENDING_BULL", trend_state="UP", volatility_state="NORMAL",
+        confidence=0.8, reason_code="REGIME_TRENDING_BULL", timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+    params = agent._get_trade_management_params(regime)
+    assert params["be_trigger_r"] == 0.8
+    assert params["partial_close_r"] == 1.2
+    assert params["trailing_atr_mult"] == 1.5
+    assert params["tp_mode"] == "TRAIL"
+
+
+def test_trade_params_trending_high_vol() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    from core.types import RegimeOutput
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    regime = RegimeOutput(
+        regime="TRENDING_BEAR", trend_state="DOWN", volatility_state="HIGH",
+        confidence=0.8, reason_code="REGIME_TRENDING_BEAR", timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+    params = agent._get_trade_management_params(regime)
+    assert params["be_trigger_r"] == 1.2
+    assert params["partial_close_r"] == 1.5
+    assert params["trailing_atr_mult"] == 2.0
+    assert params["tp_mode"] == "TRAIL"
+
+
+def test_trade_params_ranging_disables_trail() -> None:
+    from core.agents.technical_agent import TechnicalAgent
+    from core.types import RegimeOutput
+    agent = TechnicalAgent("EURUSD", fetch_ohlc=lambda s, t, n: pd.DataFrame())
+    regime = RegimeOutput(
+        regime="RANGING", trend_state="FLAT", volatility_state="LOW",
+        confidence=0.6, reason_code="REGIME_RANGING", timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+    params = agent._get_trade_management_params(regime)
+    assert params["be_trigger_r"] == 1.0
+    assert params["partial_close_r"] == 0.0
+    assert params["trailing_atr_mult"] == 0.0
+    assert params["tp_mode"] == "FIXED"

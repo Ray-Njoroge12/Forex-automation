@@ -187,3 +187,35 @@ class TechnicalAgent:
             return round(structural_pips, 2), round(structural_pips, 2)
 
         return atr_stop_pips, None
+
+    def _get_trade_management_params(self, regime: "RegimeOutput") -> dict:
+        """Map regime + volatility state to per-trade management parameters.
+
+        Returns dict with keys: be_trigger_r, partial_close_r, trailing_atr_mult, tp_mode.
+        """
+        is_trending = regime.regime in {"TRENDING_BULL", "TRENDING_BEAR"}
+
+        if not is_trending:
+            # Ranging / No-Trade: fixed targets, no trailing
+            return {
+                "be_trigger_r": 1.0,
+                "partial_close_r": 0.0,
+                "trailing_atr_mult": 0.0,
+                "tp_mode": "FIXED",
+            }
+
+        # Trending regime — differentiate by volatility
+        if regime.volatility_state == "HIGH":
+            return {
+                "be_trigger_r": 1.2,
+                "partial_close_r": 1.5,
+                "trailing_atr_mult": 2.0,
+                "tp_mode": "TRAIL",
+            }
+        else:  # NORMAL or LOW
+            return {
+                "be_trigger_r": 0.8,
+                "partial_close_r": 1.2,
+                "trailing_atr_mult": 1.5,
+                "tp_mode": "TRAIL",
+            }
