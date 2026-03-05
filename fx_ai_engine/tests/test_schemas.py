@@ -54,3 +54,63 @@ def test_technical_signal_has_trade_management_defaults() -> None:
     assert sig.trailing_atr_mult == 2.0
     assert sig.tp_mode == "FIXED"
     assert sig.structural_sl_pips is None
+
+
+def test_signal_payload_serialises_trade_management_fields() -> None:
+    from core.schemas import technical_signal_to_payload
+    from core.types import TechnicalSignal
+    sig = TechnicalSignal(
+        trade_id="AI_test2",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc="2026-03-05T12:00:00+00:00",
+        be_trigger_r=0.8,
+        partial_close_r=1.2,
+        trailing_atr_mult=1.5,
+        tp_mode="TRAIL",
+        structural_sl_pips=11.5,
+    )
+    payload = technical_signal_to_payload(sig, risk_percent=0.032)
+    assert payload["be_trigger_r"] == 0.8
+    assert payload["partial_close_r"] == 1.2
+    assert payload["trailing_atr_mult"] == 1.5
+    assert payload["tp_mode"] == "TRAIL"
+    assert payload["structural_sl_pips"] == 11.5
+
+
+def test_signal_payload_omits_structural_sl_when_none() -> None:
+    from core.schemas import technical_signal_to_payload
+    from core.types import TechnicalSignal
+    sig = TechnicalSignal(
+        trade_id="AI_test3",
+        symbol="EURUSD",
+        direction="SELL",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_SELL",
+        timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+    payload = technical_signal_to_payload(sig, risk_percent=0.032)
+    assert "structural_sl_pips" not in payload
+
+
+def test_validate_signal_payload_rejects_invalid_tp_mode() -> None:
+    from core.schemas import SchemaError, validate_signal_payload
+    with pytest.raises(SchemaError, match="tp_mode"):
+        validate_signal_payload({
+            "trade_id": "x",
+            "symbol": "EURUSD",
+            "direction": "BUY",
+            "risk_percent": 0.032,
+            "stop_pips": 10.0,
+            "take_profit_pips": 22.0,
+            "timestamp_utc": "2026-03-05T12:00:00+00:00",
+            "tp_mode": "INVALID",
+        })

@@ -45,6 +45,10 @@ def validate_signal_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if payload["order_type"] == "LIMIT" and "limit_price" not in payload:
         raise SchemaError("SignalPayload limit_price required for LIMIT orders")
 
+    # Validate tp_mode if present
+    if "tp_mode" in payload and payload["tp_mode"] not in {"FIXED", "TRAIL"}:
+        raise SchemaError("SignalPayload tp_mode must be FIXED or TRAIL")
+
     return payload
 
 
@@ -105,4 +109,11 @@ def technical_signal_to_payload(signal: TechnicalSignal, risk_percent: float) ->
     limit_price = getattr(signal, "limit_price", None)
     if limit_price is not None and limit_price > 0:
         payload["limit_price"] = float(limit_price)
+    # Trade management parameters (Approach A + B)
+    payload["be_trigger_r"] = float(signal.be_trigger_r)
+    payload["partial_close_r"] = float(signal.partial_close_r)
+    payload["trailing_atr_mult"] = float(signal.trailing_atr_mult)
+    payload["tp_mode"] = signal.tp_mode
+    if signal.structural_sl_pips is not None:
+        payload["structural_sl_pips"] = float(signal.structural_sl_pips)
     return validate_signal_payload(payload)
