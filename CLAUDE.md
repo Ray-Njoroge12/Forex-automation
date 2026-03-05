@@ -33,6 +33,15 @@ python -m pytest tests/test_agents.py -q  # Single test file
 
 # Backtesting
 python -m backtesting.bt_runner --csv tests/fixtures/ohlc_fixture.csv --symbol EURUSD
+python -m backtesting.walk_forward --csv tests/fixtures/ohlc_fixture.csv --symbol EURUSD --train 6 --test 1
+
+# Diagnostics (run from fx_ai_engine/, require live MT5 unless noted)
+python check_paths.py        # Verify MT5 bridge directory paths
+python check_spreads.py      # Check live broker spreads per instrument
+python check_limits.py       # Query broker order/lot limits
+python diagnose_market.py    # Market regime + signal snapshot
+python review_trades.py      # SQLite trade history summary (no MT5 needed)
+python test_tech_logic.py    # Run technical signal logic against live bars
 
 # MT5 connection validation
 python test_bridge.py
@@ -40,6 +49,7 @@ python test_bridge.py
 
 **Key environment flags:**
 - `USE_MT5_MOCK=1` — Use mock MT5 (required for testing without broker connection)
+- `BRIDGE_BASE_PATH=<path>` — Override auto-detected MT5 MQL5/Files/bridge directory
 - `OTEL_ENABLED=1` — Enable OpenTelemetry tracing
 - `PROM_ENABLED=1` / `PROM_PORT=8000` — Enable Prometheus metrics
 
@@ -102,6 +112,7 @@ These values are not configurable — do not change without explicit instruction
 
 ## Testing Notes
 
+- `database/trading_state.db` — SQLite DB path (relative to `fx_ai_engine/`); `review_trades.py` currently hardcodes an absolute Windows path and needs updating for portability
 - Tests live in `fx_ai_engine/tests/` with fixtures in `tests/fixtures/`
 - All 14 test files use `USE_MT5_MOCK=1` implicitly via mock — no broker needed
 - The backtesting module uses `tests/fixtures/ohlc_fixture.csv` for unit tests

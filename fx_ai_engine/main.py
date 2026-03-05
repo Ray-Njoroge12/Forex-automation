@@ -236,6 +236,17 @@ class Engine:
             self.metrics.inc("trades_rejected")
             return
 
+        # AI Probability TP Scaling
+        # If the ranker outputs high confidence and we are in a strong trend, stretch the TP multiplier by 1.5x
+        if ranker_prob >= 0.70 and regime.trend_state in {"STRONG", "EXTREME"}:
+            import dataclasses
+            technical = dataclasses.replace(
+                technical,
+                take_profit_pips=round(technical.take_profit_pips * 1.5, 2)
+            )
+            logger.info("AI Probability Scaling applied: TP stretched 1.5x for trade %s (prob=%.3f, trend=%s)", 
+                        technical.trade_id, ranker_prob, regime.trend_state)
+
         # Apply loss-streak throttle from hard risk engine.
         final_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 4)
 
