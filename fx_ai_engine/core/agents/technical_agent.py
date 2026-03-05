@@ -91,10 +91,19 @@ class TechnicalAgent:
         atr_multiplier = self._get_atr_multiplier(regime.volatility_state)
 
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
-        stop_pips = float((m15_last["atr"] * atr_multiplier) / pip_value)
+        atr_stop_pips = float((m15_last["atr"] * atr_multiplier) / pip_value)
+
+        # Approach B: snap to structural level if within [0.8×, 1.5×] of ATR stop
+        current_price = float(m15_last["close"])
+        stop_pips, structural_sl_pips = self._detect_structural_sl(
+            m15, direction, atr_stop_pips, current_price
+        )
         take_profit_pips = float(stop_pips * 2.2)
         if stop_pips <= 0 or take_profit_pips <= 0:
             return None
+
+        # Approach A: resolve regime-driven trade management parameters
+        mgmt = self._get_trade_management_params(regime)
 
         # Spread-adjusted R:R — deduct half the spread from both sides so that
         # the effective stop is wider and the effective TP is narrower.
@@ -124,6 +133,11 @@ class TechnicalAgent:
             rsi_at_entry=round(float(m15_last["rsi"]), 2),
             spread_entry=round(spread_pips, 2),
             rsi_slope=rsi_slope,
+            be_trigger_r=mgmt["be_trigger_r"],
+            partial_close_r=mgmt["partial_close_r"],
+            trailing_atr_mult=mgmt["trailing_atr_mult"],
+            tp_mode=mgmt["tp_mode"],
+            structural_sl_pips=structural_sl_pips,
         )
 
     def _confirm_candle_pattern(self, m15: pd.DataFrame, direction: str) -> bool:

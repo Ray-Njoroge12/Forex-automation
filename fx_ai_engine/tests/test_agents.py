@@ -233,3 +233,32 @@ def test_trade_params_ranging_disables_trail() -> None:
     assert params["partial_close_r"] == 0.0
     assert params["trailing_atr_mult"] == 0.0
     assert params["tp_mode"] == "FIXED"
+
+
+def test_technical_agent_signal_carries_trade_management_params() -> None:
+    """When evaluate() produces a signal, it must include regime-driven management params."""
+    h4 = _build_ohlc_series(rows=350, drift=0.0002)
+    h1 = _build_ohlc_series(rows=350, drift=0.0002)
+    m15 = _build_ohlc_series(rows=350, drift=0.0002)
+
+    def fetch(_symbol: str, _timeframe: int, _candles: int) -> pd.DataFrame:
+        if _timeframe == 16388:   # H4
+            return h4
+        if _timeframe == 16385:   # H1
+            return h1
+        return m15
+
+    agent = TechnicalAgent("EURUSD", fetch)
+    regime = RegimeOutput(
+        regime="TRENDING_BULL",
+        trend_state="UP",
+        volatility_state="NORMAL",
+        confidence=0.8,
+        reason_code="REGIME_TRENDING_BULL",
+        timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+    signal = agent.evaluate(regime, timeframe_m15=1, timeframe_h1=16385)
+    if signal is not None:
+        # If a signal was produced, it must carry trade management params
+        assert signal.tp_mode in {"FIXED", "TRAIL"}
+        assert signal.be_trigger_r > 0
