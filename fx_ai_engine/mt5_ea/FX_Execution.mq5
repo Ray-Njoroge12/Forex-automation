@@ -582,7 +582,8 @@ void ProcessPendingSignal()
 
    // --- Determine execution method based on order_type ---
    bool placed = false;
-   
+   double entry = 0.0; // declared here so it is in scope for slippage calculation below
+
    if(orderType == "LIMIT" && limitPrice > 0)
    {
       // LIMIT ORDER: place pending order at the specified limit_price
@@ -605,7 +606,7 @@ void ProcessPendingSignal()
    else
    {
       // MARKET ORDER: execute immediately at current price
-      double entry = (direction == "BUY") ? tick.ask : tick.bid;
+      entry = (direction == "BUY") ? tick.ask : tick.bid;
       double sl = (direction == "BUY") ? (entry - stopPips * PipValue(symbol)) : (entry + stopPips * PipValue(symbol));
       double tp = 0.0;
       if(!trailMode)
