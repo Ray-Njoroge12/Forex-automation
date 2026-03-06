@@ -1,10 +1,10 @@
+from __future__ import annotations
+
 import json
 import os
 import time
 from pathlib import Path
 import pytest
-
-os.environ["USE_MT5_MOCK"] = "1"
 
 
 def test_bridge_health_detects_missing_snapshot(tmp_path):
