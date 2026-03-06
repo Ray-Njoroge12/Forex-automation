@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS trades (
     profit_loss REAL DEFAULT 0.0,
     r_multiple REAL DEFAULT 0.0,
     spread_entry REAL,
+    spread_signal_pips REAL,
+    spread_exec_price REAL,
     slippage REAL,
+    execution_time DATETIME,
     open_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     close_time DATETIME,
     regime_confidence REAL DEFAULT 0.0,
@@ -25,7 +28,8 @@ CREATE TABLE IF NOT EXISTS trades (
     is_london_session INTEGER DEFAULT 0,
     is_newyork_session INTEGER DEFAULT 0,
     rate_differential REAL DEFAULT 0.0,
-    risk_reward REAL DEFAULT 0.0
+    risk_reward REAL DEFAULT 0.0,
+    rsi_slope REAL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS account_metrics (
