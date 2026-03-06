@@ -168,6 +168,40 @@ def determine_verdict(metrics: dict) -> tuple[str, list[str]]:
     return "PASS", reasons
 
 
+def check_abort_criteria(
+    drawdown_pct: float,
+    win_rate: float,
+    avg_r: float,
+    total_trades: int,
+) -> dict:
+    """Programmatic abort check per SRS v1 §12.3.
+
+    Returns dict with keys:
+      abort (bool) — True if any abort threshold is breached
+      reason (str) — human-readable reason, empty string if no abort
+
+    Win rate and avg R are only evaluated once >= 25 trades have closed.
+    Drawdown is always evaluated regardless of trade count.
+    """
+    if drawdown_pct > ABORT_DRAWDOWN:
+        return {
+            "abort": True,
+            "reason": f"drawdown {drawdown_pct:.1%} exceeds {ABORT_DRAWDOWN:.0%} abort threshold",
+        }
+    if total_trades >= MIN_TRADES:
+        if win_rate < ABORT_WIN_RATE:
+            return {
+                "abort": True,
+                "reason": f"win rate {win_rate:.1%} below {ABORT_WIN_RATE:.0%} abort threshold",
+            }
+        if avg_r < ABORT_AVG_R:
+            return {
+                "abort": True,
+                "reason": f"avg R {avg_r:.2f} below {ABORT_AVG_R} abort threshold",
+            }
+    return {"abort": False, "reason": ""}
+
+
 def _print_report(
     metrics: dict,
     breakdown: dict,
