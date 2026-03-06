@@ -108,3 +108,51 @@ def test_empty_db_returns_pending(tmp_path, monkeypatch) -> None:
     verdict, metrics = vd.run_validation(days=30)
     assert verdict == "PENDING"
     assert metrics["total_trades"] == 0
+
+
+# --- check_abort_criteria tests ---
+
+def test_compounding_milestone_at_10():
+    """At $10, milestone should recommend $0.50 fixed risk."""
+    from config_microcapital import get_config_for_balance
+    config = get_config_for_balance(10.0)
+    assert config["FIXED_RISK_USD"] == 0.50
+    assert config["MAX_SIMULTANEOUS_TRADES"] == 1
+
+
+def test_compounding_milestone_at_25():
+    """At $25, milestone should step up to $0.75 fixed risk."""
+    from config_microcapital import get_config_for_balance
+    config = get_config_for_balance(25.0)
+    assert config["FIXED_RISK_USD"] == 0.75
+
+
+def test_compounding_milestone_at_100():
+    """At $100, milestone should step up to $3.00 fixed risk, 2 trades."""
+    from config_microcapital import get_config_for_balance
+    config = get_config_for_balance(100.0)
+    assert config["FIXED_RISK_USD"] == 3.00
+    assert config["MAX_SIMULTANEOUS_TRADES"] == 2
+
+
+def test_abort_criteria_triggers_on_high_drawdown():
+    """check_abort_criteria must flag abort when drawdown > 20%."""
+    from validation.validate_demo import check_abort_criteria
+    result = check_abort_criteria(drawdown_pct=0.21, win_rate=0.50, avg_r=2.0, total_trades=10)
+    assert result["abort"] is True
+    assert "drawdown" in result["reason"].lower()
+
+
+def test_abort_criteria_triggers_on_low_win_rate():
+    """check_abort_criteria must flag abort when win rate < 40% after 25 trades."""
+    from validation.validate_demo import check_abort_criteria
+    result = check_abort_criteria(drawdown_pct=0.10, win_rate=0.38, avg_r=2.0, total_trades=25)
+    assert result["abort"] is True
+    assert "win rate" in result["reason"].lower()
+
+
+def test_no_abort_when_criteria_met():
+    """check_abort_criteria must not abort when all criteria are good."""
+    from validation.validate_demo import check_abort_criteria
+    result = check_abort_criteria(drawdown_pct=0.10, win_rate=0.50, avg_r=2.2, total_trades=30)
+    assert result["abort"] is False
