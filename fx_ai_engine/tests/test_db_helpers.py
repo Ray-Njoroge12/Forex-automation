@@ -45,6 +45,7 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
         confidence=0.74,
         reason_code="TECH_PULLBACK_BUY",
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        rsi_slope=3.5,
     )
 
     db_mod.insert_trade_proposal(
@@ -63,6 +64,15 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
             "entry_price": 1.10123,
             "slippage": 0.00002,
             "spread_at_entry": 0.00011,
+            "profit_loss": 0.0,
+            "r_multiple": 0.0,
+            "close_time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    db_mod.update_trade_exit_result(
+        {
+            "ticket": 999001,
+            "status": "CLOSED_WIN",
             "profit_loss": 12.3,
             "r_multiple": 2.4,
             "close_time": datetime.now(timezone.utc).isoformat(),
@@ -84,15 +94,49 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
     db_mod.insert_risk_event("HARD_RISK", "BLOCK", "RISK_DAILY_STOP", signal.trade_id)
 
     with _temp_conn(temp_db) as conn:
-        trade = conn.execute("SELECT trade_ticket, status, r_multiple FROM trades WHERE trade_id=?", (signal.trade_id,)).fetchone()
+        trade = conn.execute(
+            "SELECT trade_ticket, status, r_multiple, rsi_slope FROM trades WHERE trade_id=?",
+            (signal.trade_id,),
+        ).fetchone()
         metrics = conn.execute("SELECT COUNT(*) AS n FROM account_metrics").fetchone()
         events = conn.execute("SELECT COUNT(*) AS n FROM risk_events").fetchone()
 
     assert trade["trade_ticket"] == 999001
-    assert trade["status"] == "EXECUTED"
+    assert trade["status"] == "CLOSED_WIN"
     assert float(trade["r_multiple"]) == 2.4
+    assert float(trade["rsi_slope"]) == 3.5
     assert metrics["n"] == 1
     assert events["n"] == 1
+
+
+def test_mark_trade_expired_updates_pending_only(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    sig = TechnicalSignal(
+        trade_id="AI_expire_1",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    db_mod.insert_trade_proposal(sig, "PENDING", "ROUTED_TO_MT5", 0.02, "TRENDING_BULL")
+    db_mod.mark_trade_expired(sig.trade_id, "ROUTER_PENDING_EXPIRED")
+
+    with _temp_conn(temp_db) as conn:
+        row = conn.execute("SELECT status, reason_code FROM trades WHERE trade_id=?", (sig.trade_id,)).fetchone()
+    assert row["status"] == "EXPIRED"
+    assert row["reason_code"] == "ROUTER_PENDING_EXPIRED"
 
 
 def test_phase8_column_migration_from_phase1_baseline(tmp_path, monkeypatch) -> None:

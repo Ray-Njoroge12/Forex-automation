@@ -3,10 +3,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5  # type: ignore
+except Exception:
+    mt5 = None
 
 
 def check_paths():
+    if mt5 is None:
+        print("MetaTrader5 package is unavailable in this environment.")
+        return
+
     if not mt5.initialize():
         print("initialize() failed, error code =", mt5.last_error())
         quit()

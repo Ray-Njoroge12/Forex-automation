@@ -3,7 +3,12 @@ from __future__ import annotations
 import os
 import logging
 from pathlib import Path
-import MetaTrader5 as mt5
+
+mt5 = None
+try:
+    import MetaTrader5 as mt5  # type: ignore
+except Exception:
+    mt5 = None
 
 logger = logging.getLogger("fx_ai_engine.bridge_utils")
 
@@ -19,7 +24,7 @@ def get_mt5_bridge_path() -> Path:
         return Path(env_path)
 
     # Attempt to auto-detect from active MT5
-    if mt5.initialize():
+    if mt5 is not None and mt5.initialize():
         terminal_info = mt5.terminal_info()
         if terminal_info:
             data_path = Path(terminal_info.data_path)

@@ -95,6 +95,15 @@ python review_trades.py
 
 # Market diagnostics
 python diagnose_market.py
+
+# Analyze demo results
+python analyze_demo_results.py
+
+# Apply micro-capital configuration
+python apply_microcapital_config.py
+
+# View risk config for balance
+python config_microcapital.py
 ```
 
 ## Environment Variables
@@ -103,6 +112,12 @@ python diagnose_market.py
 - `MT5_LOGIN` - MT5 account login
 - `MT5_PASSWORD` - MT5 account password
 - `MT5_SERVER` - MT5 broker server
+
+### Micro-Capital Mode ($10-$500 accounts)
+- `MICRO_CAPITAL_MODE=1` - Enable micro-capital risk parameters
+- `FIXED_RISK_USD=0.50` - Fixed USD risk per trade (overrides percentage)
+- `MAX_SPREAD_PIPS=3.5` - Relaxed spread filter for demo/micro accounts
+- `ML_PREDICT_THRESHOLD=-1.0` - ML ranker threshold (set to -1.0 to disable)
 
 ### Development & Testing
 - `USE_MT5_MOCK=1` - Use mock MT5 for tests/dev

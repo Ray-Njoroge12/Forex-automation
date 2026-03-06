@@ -51,7 +51,10 @@ def migrate_phase8_columns() -> None:
         _ensure_column(conn, "trades", "risk_percent", "REAL")
         _ensure_column(conn, "trades", "reason_code", "TEXT")
         _ensure_column(conn, "trades", "spread_entry", "REAL")
+        _ensure_column(conn, "trades", "spread_signal_pips", "REAL")
+        _ensure_column(conn, "trades", "spread_exec_price", "REAL")
         _ensure_column(conn, "trades", "slippage", "REAL")
+        _ensure_column(conn, "trades", "execution_time", "DATETIME")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_id ON trades(trade_id)"
         )
@@ -111,8 +114,9 @@ def insert_trade_proposal(
                 stop_loss, take_profit,
                 risk_percent, market_regime, status, reason_code, open_time,
                 regime_confidence, rsi_at_entry, atr_ratio,
-                is_london_session, is_newyork_session, rate_differential, risk_reward
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_london_session, is_newyork_session, rate_differential, risk_reward, rsi_slope,
+                spread_entry, spread_signal_pips
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.trade_id,
@@ -134,56 +138,117 @@ def insert_trade_proposal(
                 is_newyork_session,
                 rate_differential,
                 signal.risk_reward,
+                signal.rsi_slope,
+                signal.spread_entry,
+                signal.spread_entry,
             ),
         )
 
 
 def update_trade_execution_result(payload: dict[str, Any]) -> None:
+    raw_status = str(payload.get("status", "UNKNOWN")).upper()
+    ticket = int(payload.get("ticket") or 0)
+    executed_open = raw_status == "EXECUTED" and ticket > 0
+    status = "EXECUTED_OPEN" if executed_open else raw_status
+
     with get_conn() as conn:
+        if executed_open:
+            conn.execute(
+                """
+                UPDATE trades
+                   SET trade_ticket = ?,
+                       status = ?,
+                       entry_price = ?,
+                       slippage = ?,
+                       spread_exec_price = ?,
+                       execution_time = ?
+                 WHERE trade_id = ?
+                """,
+                (
+                    ticket,
+                    status,
+                    payload.get("entry_price", 0.0),
+                    payload.get("slippage", 0.0),
+                    payload.get("spread_at_entry", 0.0),
+                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                    payload.get("trade_id"),
+                ),
+            )
+            return
+
+        close_time = payload.get("close_time", datetime.now(timezone.utc).isoformat())
         conn.execute(
             """
             UPDATE trades
                SET trade_ticket = ?,
                    status = ?,
+                   reason_code = ?,
                    entry_price = ?,
                    slippage = ?,
-                   spread_entry = ?,
-                   profit_loss = ?,
-                   r_multiple = ?,
+                   spread_exec_price = ?,
                    close_time = ?
              WHERE trade_id = ?
             """,
             (
-                payload.get("ticket"),
-                payload.get("status", "UNKNOWN"),
+                ticket if ticket > 0 else None,
+                status,
+                status,
                 payload.get("entry_price", 0.0),
                 payload.get("slippage", 0.0),
                 payload.get("spread_at_entry", 0.0),
-                payload.get("profit_loss", 0.0),
-                payload.get("r_multiple", 0.0),
-                payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                close_time,
                 payload.get("trade_id"),
             ),
         )
 
 
 def update_trade_exit_result(payload: dict[str, Any]) -> None:
+    pnl = float(payload.get("profit_loss", 0.0))
+    raw_status = str(payload.get("status", "CLOSED")).upper()
+    if raw_status.startswith("CLOSED"):
+        status = raw_status
+    elif pnl > 0:
+        status = "CLOSED_WIN"
+    elif pnl < 0:
+        status = "CLOSED_LOSS"
+    else:
+        status = "CLOSED_BREAKEVEN"
+
     with get_conn() as conn:
-        conn.execute(
-            """
-            UPDATE trades
-               SET status = ?,
-                   profit_loss = ?,
-                   close_time = ?
-             WHERE trade_ticket = ?
-            """,
-            (
-                payload.get("status", "CLOSED"),
-                payload.get("profit_loss", 0.0),
-                payload.get("close_time", datetime.now(timezone.utc).isoformat()),
-                payload.get("ticket"),
-            ),
-        )
+        if payload.get("r_multiple") is not None:
+            conn.execute(
+                """
+                UPDATE trades
+                   SET status = ?,
+                       profit_loss = ?,
+                       r_multiple = ?,
+                       close_time = ?
+                 WHERE trade_ticket = ?
+                """,
+                (
+                    status,
+                    pnl,
+                    float(payload.get("r_multiple", 0.0)),
+                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                    payload.get("ticket"),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE trades
+                   SET status = ?,
+                       profit_loss = ?,
+                       close_time = ?
+                 WHERE trade_ticket = ?
+                """,
+                (
+                    status,
+                    pnl,
+                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                    payload.get("ticket"),
+                ),
+            )
 
 
 def insert_account_metrics(account_status: AccountStatus) -> None:
@@ -222,13 +287,28 @@ def insert_risk_event(rule_name: str, severity: str, reason: str, trade_id: str 
         )
 
 
+def mark_trade_expired(trade_id: str, reason_code: str = "ROUTER_PENDING_EXPIRED") -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trades
+               SET status = ?,
+                   reason_code = ?,
+                   close_time = ?
+             WHERE trade_id = ?
+               AND status = 'PENDING'
+            """,
+            ("EXPIRED", reason_code, datetime.now(timezone.utc).isoformat(), trade_id),
+        )
+
+
 def get_recent_r_multiples(limit: int = 100) -> list[float]:
     with get_conn() as conn:
         rows = conn.execute(
             """
             SELECT r_multiple
               FROM trades
-             WHERE status IN ('EXECUTED', 'CLOSED')
+             WHERE status LIKE 'CLOSED%'
           ORDER BY close_time DESC
              LIMIT ?
             """,

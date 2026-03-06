@@ -38,7 +38,7 @@ def test_ml_migration_adds_all_feature_columns(tmp_path, monkeypatch) -> None:
     with _temp_conn(db) as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
     expected = {"regime_confidence", "rsi_at_entry", "atr_ratio",
-                "is_london_session", "is_newyork_session", "rate_differential", "risk_reward"}
+                "is_london_session", "is_newyork_session", "rate_differential", "risk_reward", "rsi_slope"}
     assert expected <= cols
 
 
@@ -72,6 +72,7 @@ def test_insert_trade_proposal_populates_ml_features(tmp_path, monkeypatch) -> N
         confidence=0.74, reason_code="TECH_PULLBACK_BUY",
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
         rsi_at_entry=55.3,
+        rsi_slope=2.1,
     )
     db_mod.insert_trade_proposal(
         sig, status="PENDING", reason_code="ROUTED_TO_MT5",
@@ -82,7 +83,7 @@ def test_insert_trade_proposal_populates_ml_features(tmp_path, monkeypatch) -> N
     with _temp_conn(db) as conn:
         row = conn.execute(
             "SELECT rsi_at_entry, regime_confidence, atr_ratio, is_london_session, "
-            "is_newyork_session, rate_differential, risk_reward "
+            "is_newyork_session, rate_differential, risk_reward, rsi_slope "
             "FROM trades WHERE trade_id=?", ("AI_ml_001",),
         ).fetchone()
     assert row is not None
@@ -93,6 +94,7 @@ def test_insert_trade_proposal_populates_ml_features(tmp_path, monkeypatch) -> N
     assert int(row["is_newyork_session"]) == 0
     assert abs(float(row["rate_differential"]) - (-2.0)) < 0.01
     assert abs(float(row["risk_reward"]) - 2.2) < 0.01
+    assert abs(float(row["rsi_slope"]) - 2.1) < 0.01
 
 
 def test_insert_without_ml_kwargs_does_not_raise(tmp_path, monkeypatch) -> None:

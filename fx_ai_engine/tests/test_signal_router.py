@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
 import pytest
 
@@ -79,3 +81,22 @@ def test_router_releases_lock_when_write_fails(tmp_path, monkeypatch, valid_payl
         router.send(valid_payload)
 
     assert not (tmp_path / "locks" / f"{valid_payload['trade_id']}.lock").exists()
+
+
+def test_router_cleanup_expires_stale_pending_and_orphan_lock(tmp_path, valid_payload: dict) -> None:
+    router = SignalRouter(
+        pending_dir=tmp_path / "pending",
+        lock_dir=tmp_path / "locks",
+        registry_path=tmp_path / "trade_id_registry.json",
+    )
+    path = router.send(valid_payload)
+    stale_time = time.time() - 1200
+    os.utime(path, (stale_time, stale_time))
+    lock_path = tmp_path / "locks" / f"{valid_payload['trade_id']}.lock"
+    os.utime(lock_path, (stale_time, stale_time))
+
+    expired = router.cleanup_stale(max_age_seconds=600)
+
+    assert valid_payload["trade_id"] in expired
+    assert not path.exists()
+    assert not lock_path.exists()

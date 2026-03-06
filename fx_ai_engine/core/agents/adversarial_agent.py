@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -7,6 +8,7 @@ import pandas as pd
 
 from core.account_status import AccountStatus
 from core.filters.macro_filter import is_macro_aligned
+from core.filters.session_filter import get_active_session
 from core.indicators import calculate_atr, calculate_rsi
 from core.sentiment.sentiment_agent import SentimentAgent
 from core.types import AdversarialDecision, TechnicalSignal
@@ -35,7 +37,28 @@ class AdversarialAgent:
         self.fetch_spread = fetch_spread
         self._rate_differentials: dict[str, float] = rate_differentials or {}
         self._sentiment = sentiment_agent
-        self.max_spread_pips = 2.0
+        
+        # Allow spread filter to be configured via environment variable
+        # Useful for demo accounts or micro-capital trading with wider spreads
+        max_spread_env = os.getenv("MAX_SPREAD_PIPS")
+        self.max_spread_pips = float(max_spread_env) if max_spread_env else 2.0
+
+        # Symbol/session-aware spread limits; scaled by MAX_SPREAD_PIPS baseline.
+        scale = self.max_spread_pips / 2.0
+        self.symbol_spread_limits = {
+            "EURUSD": round(2.0 * scale, 2),
+            "GBPUSD": round(2.3 * scale, 2),
+            "USDJPY": round(2.2 * scale, 2),
+            "AUDUSD": round(2.3 * scale, 2),
+            "USDCAD": round(2.5 * scale, 2),
+            "USDCHF": round(2.8 * scale, 2),
+        }
+        self.session_spread_multiplier = {
+            "london": 1.00,
+            "newyork": 1.10,
+            None: 0.90,
+        }
+        
         self.max_volatility_multiplier = 1.8
 
     def evaluate(
@@ -58,12 +81,15 @@ class AdversarialAgent:
 
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
         spread_pips = spread / pip_value
-        if spread_pips > self.max_spread_pips:
+        session = get_active_session(datetime.now(timezone.utc))
+        base_limit = self.symbol_spread_limits.get(self.symbol, self.max_spread_pips)
+        spread_limit = base_limit * self.session_spread_multiplier.get(session, 1.0)
+        if spread_pips > spread_limit:
             return AdversarialDecision(
                 approved=False,
                 risk_modifier=0.0,
                 reason_code="ADV_SPREAD_TOO_WIDE",
-                details=f"spread_pips={spread_pips:.2f}",
+                details=f"spread_pips={spread_pips:.2f} limit={spread_limit:.2f} session={session}",
                 timestamp_utc=now,
             )
 

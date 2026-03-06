@@ -21,8 +21,9 @@ FX AI Engine is a deterministic, local-hosted Forex automation system for propri
 - Economic calendar and session filtering
 - Sentiment analysis integration (optional)
 
-## Risk Policy (Hard-Locked)
+## Risk Policy
 
+### Standard Capital Mode ($500+)
 - Risk per trade: 3.2% (base)
 - Max simultaneous trades: 2
 - Max combined exposure: 5%
@@ -31,6 +32,18 @@ FX AI Engine is a deterministic, local-hosted Forex automation system for propri
 - Hard equity drawdown: 20%
 - Consecutive loss halt: 3 losses
 
+### Micro-Capital Mode ($10-$500)
+- Risk per trade: Fixed USD (e.g., $0.50 for $10 account)
+- Max simultaneous trades: 1
+- Max combined exposure: 5%
+- Daily stop loss: 15%
+- Weekly stop loss: 25%
+- Hard equity drawdown: 30%
+- Consecutive loss halt: 2 losses
+- Relaxed spread filter: 3.5 pips (vs 2.0 pips standard)
+
+Enable via environment variable: `MICRO_CAPITAL_MODE=1`
+
 ## Validation Requirements
 
 30-day forward demo validation required before live deployment with minimum acceptance criteria:
@@ -38,3 +51,9 @@ FX AI Engine is a deterministic, local-hosted Forex automation system for propri
 - Win rate: >= 45%
 - Average R: >= 2.0
 - Max drawdown: <= 15%
+
+For micro-capital accounts, minimum 7-day validation acceptable with relaxed criteria:
+- Trades executed: >= 15
+- Win rate: >= 40%
+- Average R: >= 1.8
+- Max drawdown: <= 20%

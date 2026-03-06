@@ -81,7 +81,7 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
                    is_london_session, is_newyork_session, rate_differential,
                    stop_loss, risk_reward, direction, r_multiple, rsi_slope
               FROM trades
-             WHERE status IN ('EXECUTED', 'CLOSED')
+             WHERE status LIKE 'CLOSED%'
                AND r_multiple IS NOT NULL
                AND regime_confidence IS NOT NULL
             """

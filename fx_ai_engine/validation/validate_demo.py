@@ -51,7 +51,7 @@ def _load_trades(days: int) -> list[dict]:
         SELECT trade_id, symbol, direction, r_multiple, profit_loss,
                status, close_time, reason_code
           FROM trades
-         WHERE status IN ('EXECUTED', 'CLOSED')
+         WHERE status LIKE 'CLOSED%'
            AND close_time >= ?
          ORDER BY close_time ASC
         """,
@@ -93,7 +93,7 @@ def _compute_max_drawdown(equity_curve: list[float]) -> float:
 def _compute_metrics(trades: list[dict], equity_curve: list[float]) -> dict:
     total = len(trades)
     if total == 0:
-        return {"total_trades": 0, "win_rate": 0.0, "avg_r": 0.0,
+        return {"total_trades": 0, "win_rate": 0.0, "avg_r": 0.0, "avg_r_winners": 0.0,
                 "max_drawdown": _compute_max_drawdown(equity_curve),
                 "wins": 0, "losses": 0, "r_multiples": []}
     r_multiples = [float(t["r_multiple"]) for t in trades if t["r_multiple"] is not None]
@@ -101,15 +101,25 @@ def _compute_metrics(trades: list[dict], equity_curve: list[float]) -> dict:
     losses = total - wins
     win_rate = wins / total if total > 0 else 0.0
     winning_r = [r for r in r_multiples if r > 0]
-    avg_r = sum(winning_r) / len(winning_r) if winning_r else 0.0
+    avg_r = sum(r_multiples) / len(r_multiples) if r_multiples else 0.0
+    avg_r_winners = sum(winning_r) / len(winning_r) if winning_r else 0.0
+    warnings: list[str] = []
+    zero_r = sum(1 for r in r_multiples if abs(r) < 1e-9)
+    if r_multiples and zero_r == len(r_multiples):
+        warnings.append("All closed trades have zero r_multiple; execution/exit analytics may be incomplete.")
+    zero_pnl = sum(1 for t in trades if abs(float(t.get("profit_loss", 0.0))) < 1e-9)
+    if trades and zero_pnl == len(trades):
+        warnings.append("All closed trades have zero PnL; verify exit feedback ingestion.")
     return {
         "total_trades": total,
         "win_rate": round(win_rate, 4),
         "avg_r": round(avg_r, 4),
+        "avg_r_winners": round(avg_r_winners, 4),
         "max_drawdown": _compute_max_drawdown(equity_curve),
         "wins": wins,
         "losses": losses,
         "r_multiples": r_multiples,
+        "warnings": warnings,
     }
 
 
@@ -218,7 +228,8 @@ def _print_report(
     print(f"  {'-' * 52}")
     print(f"  Total Trades               {metrics['total_trades']:>9}       >=25")
     print(f"  Win Rate                   {metrics['win_rate']:>8.1%}       >=45%")
-    print(f"  Average R-Multiple         {metrics['avg_r']:>9.2f}       >=2.0")
+    print(f"  Average R-Multiple (All)   {metrics['avg_r']:>9.2f}       >=2.0")
+    print(f"  Average R-Multiple (Wins)  {metrics['avg_r_winners']:>9.2f}       diagnostic")
     print(f"  Max Drawdown               {metrics['max_drawdown']:>8.1%}       <=15%")
     if breakdown:
         print(f"\n  Per-Symbol    Trades   Wins      WR   Avg R")
@@ -229,6 +240,8 @@ def _print_report(
     print(f"  VERDICT: {verdict}")
     for r in reasons:
         print(f"    -> {r}")
+    for warning in metrics.get("warnings", []):
+        print(f"    -> DATA WARNING: {warning}")
     print(f"{bar}\n")
 
 

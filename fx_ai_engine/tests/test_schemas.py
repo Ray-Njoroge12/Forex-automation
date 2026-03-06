@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from core.schemas import SchemaError, validate_execution_feedback, validate_signal_payload
+from core.schemas import (
+    SchemaError,
+    validate_account_snapshot,
+    validate_execution_feedback,
+    validate_signal_payload,
+)
 
 
 def test_signal_schema_rejects_invalid_direction() -> None:
@@ -114,3 +119,18 @@ def test_validate_signal_payload_rejects_invalid_tp_mode() -> None:
             "timestamp_utc": "2026-03-05T12:00:00+00:00",
             "tp_mode": "INVALID",
         })
+
+
+def test_account_snapshot_optional_open_symbols_must_be_list() -> None:
+    with pytest.raises(SchemaError):
+        validate_account_snapshot(
+            {
+                "timestamp": "2026-03-05T12:00:00+00:00",
+                "balance": 1000.0,
+                "equity": 995.0,
+                "margin_free": 900.0,
+                "open_positions_count": 1,
+                "floating_pnl": -5.0,
+                "open_symbols": "EURUSD",
+            }
+        )

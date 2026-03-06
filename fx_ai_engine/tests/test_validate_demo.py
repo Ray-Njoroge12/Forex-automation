@@ -65,7 +65,7 @@ def test_verdict_pending_insufficient_trades(tmp_path, monkeypatch) -> None:
 
 
 def test_verdict_pass_all_criteria_met(tmp_path, monkeypatch) -> None:
-    db = _setup_db(tmp_path, _make_trades(30, win_rate=0.5, avg_r_win=2.5))
+    db = _setup_db(tmp_path, _make_trades(30, win_rate=0.9, avg_r_win=2.5))
     monkeypatch.setattr(vd, "DB_PATH", db)
     verdict, metrics = vd.run_validation(days=30)
     assert verdict == "PASS"
@@ -89,7 +89,7 @@ def test_verdict_abort_low_avg_r(tmp_path, monkeypatch) -> None:
 
 def test_verdict_warn_between_abort_and_pass(tmp_path, monkeypatch) -> None:
     # 42% WR: above ABORT (40%) but below PASS (45%) -> WARN
-    db = _setup_db(tmp_path, _make_trades(30, win_rate=0.42, avg_r_win=2.2))
+    db = _setup_db(tmp_path, _make_trades(30, win_rate=0.42, avg_r_win=7.5))
     monkeypatch.setattr(vd, "DB_PATH", db)
     verdict, _ = vd.run_validation(days=30)
     assert verdict == "WARN"

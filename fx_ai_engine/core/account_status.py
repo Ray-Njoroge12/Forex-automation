@@ -21,6 +21,10 @@ class AccountStatus:
     floating_pnl: float = 0.0
     margin_free: float = 0.0
     peak_equity: float = 0.0
+    daily_anchor_date: str = ""
+    daily_anchor_equity: float = 0.0
+    weekly_anchor_key: str = ""
+    weekly_anchor_equity: float = 0.0
 
     def is_stale(self, now_utc: datetime | None = None, max_age_seconds: int = 120) -> bool:
         if now_utc is None:
