@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import os
 import pytest
 
 
-def test_micro_capital_env_vars_are_valid():
-    """Env var values for micro-capital mode must parse correctly."""
-    test_env = {
-        "MICRO_CAPITAL_MODE": "1",
-        "FIXED_RISK_USD": "0.50",
-        "MAX_SPREAD_PIPS": "3.5",
-        "ML_PREDICT_THRESHOLD": "-1.0",
-    }
-    assert float(test_env["FIXED_RISK_USD"]) == 0.50
-    assert float(test_env["MAX_SPREAD_PIPS"]) == 3.5
-    assert float(test_env["ML_PREDICT_THRESHOLD"]) == -1.0
-    assert test_env["MICRO_CAPITAL_MODE"] == "1"
+def test_micro_capital_env_vars_are_valid(monkeypatch):
+    """Env var parsing must work correctly for all micro-capital vars."""
+    monkeypatch.setenv("FIXED_RISK_USD", "0.50")
+    from core.risk.hard_risk_engine import _read_fixed_risk_usd
+    assert _read_fixed_risk_usd() == 0.50
+
+    monkeypatch.setenv("FIXED_RISK_USD", "invalid")
+    assert _read_fixed_risk_usd() is None
+
+    monkeypatch.delenv("FIXED_RISK_USD", raising=False)
+    assert _read_fixed_risk_usd() is None
 
 
 def test_hard_risk_engine_reads_micro_capital_mode(monkeypatch):
