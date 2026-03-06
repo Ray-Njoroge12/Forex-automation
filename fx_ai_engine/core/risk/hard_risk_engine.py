@@ -34,12 +34,19 @@ class HardRiskEngine:
     The percentage thresholds remain unchanged — only the risk_percent
     supplied by the PortfolioManager is compared against them.
 
+    Micro-Capital Mode (MICRO_CAPITAL_MODE=1)
+    ------------------------------------------
+    Adjusts risk parameters for accounts $10-$500:
+    - Relaxed daily/weekly loss limits
+    - Reduced consecutive loss halt threshold
+    - Single trade limit for micro accounts
+
     Loss-Streak Throttle (both modes)
     ----------------------------------
     Streak 1 → 75% of base risk
     Streak 2 → 50%
     Streak 3 → 25%
-    Streak >= 4 → full halt
+    Streak >= 4 → full halt (or 3 in micro-capital mode)
     """
 
     # Graduated loss streak: reduce risk multiplier before halting entirely.
@@ -47,12 +54,25 @@ class HardRiskEngine:
     LOSS_HALT_THRESHOLD = 4
 
     def __init__(self):
-        # SRS v1 hard limits (percentage of equity) — never changed without SRS update.
-        self.max_daily_loss = 0.08       # 8%
-        self.max_weekly_loss = 0.15      # 15%
-        self.max_drawdown = 0.20         # 20%
-        self.max_simultaneous_trades = 2
-        self.max_combined_exposure = 0.05  # 5% — used in pct mode
+        # Check if micro-capital mode is enabled
+        self._micro_capital_mode = os.getenv("MICRO_CAPITAL_MODE") == "1"
+        
+        if self._micro_capital_mode:
+            # Micro-capital risk limits (for $10-$500 accounts)
+            self.max_daily_loss = 0.15       # 15% (relaxed from 8%)
+            self.max_weekly_loss = 0.25      # 25% (relaxed from 15%)
+            self.max_drawdown = 0.30         # 30% (relaxed from 20%)
+            self.max_simultaneous_trades = 1 # 1 trade only
+            self.max_combined_exposure = 0.05  # 5%
+            self.LOSS_HALT_THRESHOLD = 3     # Halt after 2 losses (3rd triggers halt)
+        else:
+            # SRS v1 hard limits (percentage of equity) — standard mode
+            self.max_daily_loss = 0.08       # 8%
+            self.max_weekly_loss = 0.15      # 15%
+            self.max_drawdown = 0.20         # 20%
+            self.max_simultaneous_trades = 2
+            self.max_combined_exposure = 0.05  # 5%
+            self.LOSS_HALT_THRESHOLD = 4
 
         # Fixed-USD mode: ceiling is 2x per-trade risk as a fraction (set dynamically).
         self._fixed_risk_usd = _read_fixed_risk_usd()

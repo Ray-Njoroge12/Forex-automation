@@ -75,7 +75,7 @@ def test_losing_trade_increments_consecutive_losses(tmp_path) -> None:
 
 
 def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
-    """update_trade_execution_result writes r_multiple and status to the DB."""
+    """Execution feedback opens trade; exit feedback closes it with final PnL/R."""
     db = _patch_db(tmp_path, monkeypatch)
     db_mod.initialize_schema()
     db_mod.migrate_phase8_columns()
@@ -93,9 +93,16 @@ def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
         risk_percent=0.032, market_regime="TRENDING_BEAR",
     )
     db_mod.update_trade_execution_result({
-        "trade_id": "AI_fb_db_001", "ticket": 99001, "status": "CLOSED",
+        "trade_id": "AI_fb_db_001", "ticket": 99001, "status": "EXECUTED",
         "entry_price": 1.2650, "slippage": 0.00002, "spread_at_entry": 0.00012,
-        "profit_loss": 18.5, "r_multiple": 2.3,
+        "profit_loss": 0.0, "r_multiple": 0.0,
+        "close_time": datetime.now(timezone.utc).isoformat(),
+    })
+    db_mod.update_trade_exit_result({
+        "ticket": 99001,
+        "status": "CLOSED_WIN",
+        "profit_loss": 18.5,
+        "r_multiple": 2.3,
         "close_time": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -104,6 +111,6 @@ def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
             "SELECT status, r_multiple, trade_ticket FROM trades WHERE trade_id=?",
             ("AI_fb_db_001",),
         ).fetchone()
-    assert row["status"] == "CLOSED"
+    assert row["status"] == "CLOSED_WIN"
     assert abs(float(row["r_multiple"]) - 2.3) < 0.01
     assert int(row["trade_ticket"]) == 99001

@@ -89,6 +89,8 @@ def validate_account_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "floating_pnl",
     }
     _required(payload, required, "AccountSnapshot")
+    if "open_symbols" in payload and not isinstance(payload["open_symbols"], list):
+        raise SchemaError("AccountSnapshot open_symbols must be a list when provided")
     return payload
 
 

@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.signal_router import SignalRouter
@@ -15,13 +16,15 @@ from core.agents.portfolio_manager import PortfolioManager
 from core.agents.regime_agent import RegimeAgent
 from core.agents.technical_agent import TechnicalAgent
 from core.credentials import CredentialsError, load_mt5_credentials_from_env
+from core.env_loader import load_runtime_env
 from core.filters.calendar_filter import CalendarEvent, is_news_blackout, load_calendar
 from core.filters.macro_filter import load_rate_differentials
 from core.filters.session_filter import get_active_session, is_tradeable_session
 from core.sentiment.sentiment_agent import SentimentAgent
 from ml.signal_ranker import SignalRanker
-PREDICT_THRESHOLD = 0.0
 from core.logging_utils import configure_logging
+
+load_runtime_env()
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
 from core.observability import init_tracing
@@ -32,6 +35,7 @@ from core.state_sync import update_account_status_from_snapshot
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
 from database.db import (
     initialize_schema,
+    mark_trade_expired,
     insert_account_metrics,
     insert_risk_event,
     insert_trade_proposal,
@@ -47,15 +51,33 @@ logger = logging.getLogger("fx_ai_engine.main")
 SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"]
 
 
+def _predict_threshold() -> float:
+    raw = os.getenv("ML_PREDICT_THRESHOLD", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid ML_PREDICT_THRESHOLD=%r, defaulting to 0.0", raw)
+        return 0.0
+
+
 class Engine:
-    def __init__(self, bridge: MT5Connection, tracer, metrics):
+    def __init__(self, bridge: MT5Connection, tracer, metrics, use_mock: bool):
         self.bridge = bridge
         self.tracer = tracer
         self.metrics = metrics
+        self.use_mock = use_mock
         self.account_status = AccountStatus()
         self.reset_scheduler = ResetScheduler()
+        self.predict_threshold = _predict_threshold()
+        self._stale_episode_active = False
+        self._processed_execution_feedback: set[tuple[str, int, str, str]] = set()
+        self._processed_exit_feedback: set[tuple[int, str, str]] = set()
+
         # Auto-detect MT5 sandbox bridge path
         self.bridge_path = get_mt5_bridge_path()
+        self._validate_bridge_path(self.bridge_path)
         logger.info("Using MT5 bridge path: %s", self.bridge_path)
 
         self.router = SignalRouter(
@@ -97,9 +119,32 @@ class Engine:
         self.portfolio_manager = PortfolioManager(fetch_ohlc=bridge.fetch_ohlc_data)
         self.hard_risk = HardRiskEngine()
         self.ranker = SignalRanker()
-        self.ranker.load()
+        self.ranker_loaded = self.ranker.load()
+        logger.info(
+            "Runtime config: mock=%s fixed_risk_usd=%s micro_capital=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
+            self.use_mock,
+            os.getenv("FIXED_RISK_USD", "<unset>"),
+            os.getenv("MICRO_CAPITAL_MODE", "0"),
+            os.getenv("MAX_SPREAD_PIPS", "2.0"),
+            self.predict_threshold,
+            os.getenv("USE_SENTIMENT", "0"),
+            self.ranker_loaded,
+        )
 
         self.last_m15_candle: datetime | None = None
+
+    def _validate_bridge_path(self, bridge_path: Path) -> None:
+        required = ["pending_signals", "feedback", "exits", "active_locks"]
+        missing = [name for name in required if not (bridge_path / name).exists()]
+        if not missing:
+            return
+        if self.use_mock:
+            logger.warning("Bridge path missing subfolders in mock mode. They will be created: %s", missing)
+            return
+        raise RuntimeError(
+            f"Bridge path missing required folders in live mode: {missing}. "
+            f"Set BRIDGE_BASE_PATH to your MT5 MQL5/Files/bridge directory."
+        )
 
     def _update_account_state(self) -> None:
         with self.tracer.start_as_current_span("update_account_state") as span:
@@ -124,15 +169,27 @@ class Engine:
         with self.tracer.start_as_current_span("consume_feedback"):
             # Consume new entry executions
             for payload in self.feedback.consume_execution_feedback():
+                key = (
+                    str(payload.get("trade_id", "")),
+                    int(payload.get("ticket", 0)),
+                    str(payload.get("status", "")),
+                    str(payload.get("close_time", "")),
+                )
+                if key in self._processed_execution_feedback:
+                    continue
+                self._processed_execution_feedback.add(key)
                 update_trade_execution_result(payload)
-                pnl = float(payload.get("profit_loss", 0.0))
-                if pnl < 0:
-                    self.account_status.consecutive_losses += 1
-                elif pnl > 0:
-                    self.account_status.consecutive_losses = 0
 
             # Consume trade exits (stops and take profits)
             for payload in self.feedback.consume_trade_exits():
+                key = (
+                    int(payload.get("ticket", 0)),
+                    str(payload.get("status", "")),
+                    str(payload.get("close_time", "")),
+                )
+                if key in self._processed_exit_feedback:
+                    continue
+                self._processed_exit_feedback.add(key)
                 update_trade_exit_result(payload)
                 pnl = float(payload.get("profit_loss", 0.0))
                 if pnl < 0:
@@ -218,9 +275,17 @@ class Engine:
             "stop_pips": technical.stop_pips,
             "risk_reward": technical.risk_reward,
             "direction_buy": 1.0 if technical.direction == "BUY" else 0.0,
+            "rsi_slope": technical.rsi_slope,
         }
         ranker_prob = self.ranker.predict_proba(ranker_features)
-        if ranker_prob < PREDICT_THRESHOLD:
+        if not self.ranker_loaded:
+            insert_risk_event(
+                "ML_RANKER",
+                "INFO",
+                "bypass_untrained_model",
+                technical.trade_id,
+            )
+        elif ranker_prob < self.predict_threshold:
             insert_trade_proposal(
                 technical,
                 status="REJECTED",
@@ -230,7 +295,7 @@ class Engine:
             )
             insert_risk_event(
                 "ML_RANKER", "INFO",
-                f"prob={ranker_prob:.3f} < threshold={PREDICT_THRESHOLD}",
+                f"prob={ranker_prob:.3f} < threshold={self.predict_threshold}",
                 technical.trade_id,
             )
             self.metrics.inc("trades_rejected")
@@ -238,7 +303,7 @@ class Engine:
 
         # AI Probability TP Scaling
         # If the ranker outputs high confidence and we are in a strong trend, stretch the TP multiplier by 1.5x
-        if ranker_prob >= 0.70 and regime.trend_state in {"STRONG", "EXTREME"}:
+        if ranker_prob >= 0.70 and regime.trend_state in {"BULLISH", "BEARISH"}:
             import dataclasses
             technical = dataclasses.replace(
                 technical,
@@ -277,8 +342,16 @@ class Engine:
                 )
                 return
 
-            # Clear signals to prevent backlog from previous cycle
-            self.router.clear_signals()
+            # Remove only stale/orphaned pending artifacts; keep valid pending signals.
+            expired = self.router.cleanup_stale(max_age_seconds=600)
+            for trade_id in expired:
+                mark_trade_expired(trade_id, "ROUTER_PENDING_EXPIRED")
+                insert_risk_event(
+                    "ROUTER_HOUSEKEEPING",
+                    "WARN",
+                    "stale pending signal expired by TTL",
+                    trade_id,
+                )
 
             for sym in SYMBOLS:
                 self._evaluate_symbol(sym)
@@ -290,12 +363,18 @@ class Engine:
 
             if self.account_status.is_stale(max_age_seconds=180):
                 self.account_status.is_trading_halted = True
-                last_upd = self.account_status.updated_at.isoformat()
-                now_str = datetime.now(timezone.utc).isoformat()
-                msg = f"Account state stale. Last update: {last_upd}, Current: {now_str}"
-                insert_risk_event("STATE_STALE", "BLOCK", msg)
-                logger.warning(msg)
-                self.metrics.inc("state_stale")
+                if not self._stale_episode_active:
+                    self._stale_episode_active = True
+                    last_upd = self.account_status.updated_at.isoformat()
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    msg = f"Account state stale. Last update: {last_upd}, Current: {now_str}"
+                    insert_risk_event("STATE_STALE", "BLOCK", msg)
+                    logger.warning(msg)
+                    self.metrics.inc("state_stale")
+            elif self._stale_episode_active:
+                self._stale_episode_active = False
+                insert_risk_event("STATE_RECOVERED", "INFO", "Account state refreshed; trading unhalted")
+                logger.info("Account state recovered after stale episode.")
 
             self._consume_feedback()
 
@@ -329,6 +408,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     configure_logging()
+    load_runtime_env()
 
     initialize_schema()
     migrate_phase8_columns()
@@ -360,7 +440,11 @@ def main() -> int:
     args = parse_args()
 
     try:
-        engine = Engine(bridge, tracer, metrics)
+        try:
+            engine = Engine(bridge, tracer, metrics, use_mock=use_mock)
+        except RuntimeError as exc:
+            logger.error("Engine initialization failed: %s", exc)
+            return 2
         engine.run(mode=args.mode, iterations=args.iterations)
     finally:
         bridge.shutdown()

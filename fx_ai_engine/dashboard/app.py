@@ -148,7 +148,7 @@ st.subheader("Recent Trades — P&L")
 if trades_df.empty:
     st.info("No trades recorded yet.")
 else:
-    closed = trades_df[trades_df["status"].isin(["EXECUTED", "CLOSED"])].copy()
+    closed = trades_df[trades_df["status"].astype(str).str.startswith("CLOSED")].copy()
     if closed.empty:
         st.info("No closed trades yet.")
     else:

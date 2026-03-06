@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 from core.schemas import validate_signal_payload
@@ -115,3 +116,31 @@ class SignalRouter:
         for p in self.lock_dir.glob("*.lock"):
             p.unlink(missing_ok=True)
         logger.info("Cleared all pending signals and active locks.")
+
+    def cleanup_stale(self, max_age_seconds: int = 600) -> list[str]:
+        """Remove stale pending/lock artifacts and return expired trade_ids."""
+        now = time.time()
+        expired_trade_ids: list[str] = []
+
+        for p in self.pending_dir.glob("*.json"):
+            age = now - p.stat().st_mtime
+            if age <= max_age_seconds:
+                continue
+            trade_id = p.stem
+            p.unlink(missing_ok=True)
+            self.release_lock(trade_id)
+            expired_trade_ids.append(trade_id)
+            logger.warning("Expired stale pending signal trade_id=%s age_seconds=%.1f", trade_id, age)
+
+        for p in self.lock_dir.glob("*.lock"):
+            age = now - p.stat().st_mtime
+            if age <= max_age_seconds:
+                continue
+            trade_id = p.stem
+            # Keep lock if a pending file for the same trade still exists.
+            if self._pending_path(trade_id).exists():
+                continue
+            p.unlink(missing_ok=True)
+            logger.info("Removed orphan lock trade_id=%s age_seconds=%.1f", trade_id, age)
+
+        return expired_trade_ids

@@ -481,11 +481,29 @@ void WriteAccountSnapshot()
 
    int positions = PositionsTotal();
    double floating = 0.0;
+   int usdExposureCount = 0;
+   string openSymbolsJson = "[";
+   string seen = "|";
+   int symbolCount = 0;
    for(int i = 0; i < positions; i++)
    {
-      if(PositionGetTicket(i) > 0)
-         floating += PositionGetDouble(POSITION_PROFIT);
+      if(PositionGetTicket(i) <= 0)
+         continue;
+      floating += PositionGetDouble(POSITION_PROFIT);
+      string sym = PositionGetString(POSITION_SYMBOL);
+      string token = "|" + sym + "|";
+      if(StringFind(seen, token) < 0)
+      {
+         if(symbolCount > 0)
+            openSymbolsJson += ",";
+         openSymbolsJson += "\"" + sym + "\"";
+         seen += sym + "|";
+         symbolCount++;
+         if(StringFind(sym, "USD") >= 0)
+            usdExposureCount++;
+      }
    }
+   openSymbolsJson += "]";
 
    string payload = "{";
    payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\",";
@@ -493,7 +511,9 @@ void WriteAccountSnapshot()
    payload += "\"equity\":" + DoubleToString(equity, 2) + ",";
    payload += "\"margin_free\":" + DoubleToString(marginFree, 2) + ",";
    payload += "\"open_positions_count\":" + IntegerToString(positions) + ",";
-   payload += "\"floating_pnl\":" + DoubleToString(floating, 2);
+   payload += "\"floating_pnl\":" + DoubleToString(floating, 2) + ",";
+   payload += "\"open_symbols\":" + openSymbolsJson + ",";
+   payload += "\"open_usd_exposure_count\":" + IntegerToString(usdExposureCount);
    payload += "}";
 
    WriteTextFile(FeedbackFolder() + "\\account_snapshot.json", payload);

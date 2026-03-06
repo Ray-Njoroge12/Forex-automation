@@ -98,8 +98,7 @@ class TechnicalAgent:
         stop_pips, structural_sl_pips = self._detect_structural_sl(
             m15, direction, atr_stop_pips, current_price
         )
-        take_profit_pips = float(stop_pips * 2.2)
-        if stop_pips <= 0 or take_profit_pips <= 0:
+        if stop_pips <= 0:
             return None
 
         # Approach A: resolve regime-driven trade management parameters
@@ -110,6 +109,9 @@ class TechnicalAgent:
         live_spread = self.fetch_spread(self.symbol) if self.fetch_spread else None
         spread_pips = (live_spread / pip_value) if live_spread is not None else 1.5
         effective_stop = stop_pips + spread_pips / 2
+        min_tp_for_rr = self.min_rr * effective_stop + spread_pips / 2
+        # Keep the legacy 2.2x baseline but ensure post-spread effective R:R still meets target.
+        take_profit_pips = max(float(stop_pips * 2.2), min_tp_for_rr)
         effective_tp = take_profit_pips - spread_pips / 2
         rr = effective_tp / effective_stop if effective_stop > 0 else 0.0
         if rr < self.min_rr:
