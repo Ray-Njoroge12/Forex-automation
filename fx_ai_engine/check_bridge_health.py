@@ -6,8 +6,10 @@ import os
 import time
 from pathlib import Path
 
+_SNAPSHOT_STALE_SECONDS = 180
 
-def check_snapshot_health(bridge_path: "Path | str | None" = None) -> dict:
+
+def check_snapshot_health(bridge_path: Path | str | None = None) -> dict:
     """Return health dict: status (FRESH/STALE/MISSING/CORRUPT), age_seconds, balance, path."""
     if bridge_path is None:
         from core.bridge_utils import get_mt5_bridge_path
@@ -25,7 +27,7 @@ def check_snapshot_health(bridge_path: "Path | str | None" = None) -> dict:
     except (json.JSONDecodeError, OSError):
         return {"status": "CORRUPT", "age_seconds": round(age, 1), "balance": None, "path": str(snap)}
 
-    status = "FRESH" if age < 180 else "STALE"
+    status = "FRESH" if age < _SNAPSHOT_STALE_SECONDS else "STALE"
     return {"status": status, "age_seconds": round(age, 1), "balance": balance, "path": str(snap)}
 
 
@@ -67,7 +69,7 @@ def main() -> None:
         print("  If STATE_STALE still occurs, verify BRIDGE_BASE_PATH env var points here.")
     elif result["status"] == "STALE":
         print("VERDICT: Bridge is STALE")
-        print("  Snapshot exists but is >3 minutes old.")
+        print(f"  Snapshot exists but is >{_SNAPSHOT_STALE_SECONDS}s old.")
         print("  FIX: Verify MT5 EA is attached to a chart with 'Allow Algo Trading' ON.")
         print(f"  FIX: Set BRIDGE_BASE_PATH={bridge_path}")
     elif result["status"] == "MISSING":
