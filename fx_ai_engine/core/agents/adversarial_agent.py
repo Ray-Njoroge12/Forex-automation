@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import pandas as pd
 
+from config_microcapital import get_policy_config, read_max_spread_pips
 from core.account_status import AccountStatus
 from core.filters.macro_filter import is_macro_aligned
 from core.filters.session_filter import get_active_session
@@ -31,17 +31,21 @@ class AdversarialAgent:
         fetch_spread: FetchSpread,
         rate_differentials: dict[str, float] | None = None,
         sentiment_agent: SentimentAgent | None = None,
+        policy: dict | None = None,
     ):
         self.symbol = symbol
         self.fetch_ohlc = fetch_ohlc
         self.fetch_spread = fetch_spread
         self._rate_differentials: dict[str, float] = rate_differentials or {}
         self._sentiment = sentiment_agent
+        self.policy = get_policy_config() if policy is None else dict(policy)
+        self.mode_id = self.policy["MODE_ID"]
         
         # Allow spread filter to be configured via environment variable
-        # Useful for demo accounts or micro-capital trading with wider spreads
-        max_spread_env = os.getenv("MAX_SPREAD_PIPS")
-        self.max_spread_pips = float(max_spread_env) if max_spread_env else 2.0
+        # Useful for explicit preserve-$10 mode or env-based overrides.
+        self.max_spread_pips = (
+            read_max_spread_pips() if policy is None else float(self.policy["MAX_SPREAD_PIPS"])
+        )
 
         # Symbol/session-aware spread limits; scaled by MAX_SPREAD_PIPS baseline.
         scale = self.max_spread_pips / 2.0

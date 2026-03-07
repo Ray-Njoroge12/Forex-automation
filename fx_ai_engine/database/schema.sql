@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS account_metrics (
     daily_loss_percent REAL DEFAULT 0.0,
     weekly_loss_percent REAL DEFAULT 0.0,
     drawdown_percent REAL DEFAULT 0.0,
+    peak_equity REAL DEFAULT 0.0,
+    daily_anchor_date TEXT DEFAULT '',
+    daily_anchor_equity REAL DEFAULT 0.0,
+    weekly_anchor_key TEXT DEFAULT '',
+    weekly_anchor_equity REAL DEFAULT 0.0,
     consecutive_losses INTEGER DEFAULT 0,
     is_trading_halted BOOLEAN DEFAULT 0
 );

@@ -114,3 +114,36 @@ def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
     assert row["status"] == "CLOSED_WIN"
     assert abs(float(row["r_multiple"]) - 2.3) < 0.01
     assert int(row["trade_ticket"]) == 99001
+
+
+def test_rejected_execution_feedback_normalizes_status_and_reason(tmp_path, monkeypatch) -> None:
+    db = _patch_db(tmp_path, monkeypatch)
+    db_mod.initialize_schema()
+    db_mod.migrate_phase8_columns()
+
+    sig = TechnicalSignal(
+        trade_id="AI_fb_reject_001",
+        symbol="EURUSD", direction="BUY",
+        stop_pips=10.0, take_profit_pips=22.0, risk_reward=2.2,
+        confidence=0.65, reason_code="TECH_PULLBACK_BUY",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    db_mod.insert_trade_proposal(
+        sig, status="PENDING", reason_code="ROUTED_TO_MT5",
+        risk_percent=0.032, market_regime="TRENDING_BULL",
+    )
+    db_mod.update_trade_execution_result({
+        "trade_id": "AI_fb_reject_001", "ticket": 0, "status": "REJECTED_LOT",
+        "entry_price": 0.0, "slippage": 0.0, "spread_at_entry": 0.00012,
+        "profit_loss": 0.0, "r_multiple": 0.0,
+        "close_time": datetime.now(timezone.utc).isoformat(),
+    })
+
+    with _temp_conn(db) as conn:
+        row = conn.execute(
+            "SELECT status, reason_code, trade_ticket FROM trades WHERE trade_id=?",
+            ("AI_fb_reject_001",),
+        ).fetchone()
+    assert row["status"] == "REJECTED"
+    assert row["reason_code"] == "REJECTED_LOT"
+    assert row["trade_ticket"] is None

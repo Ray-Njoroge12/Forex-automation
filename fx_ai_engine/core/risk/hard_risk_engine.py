@@ -1,22 +1,15 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 
+from config_microcapital import get_policy_config, read_fixed_risk_usd
 from core.account_status import AccountStatus
 from core.types import RiskDecision
 
 
 def _read_fixed_risk_usd() -> float | None:
-    """Return FIXED_RISK_USD from env, or None if not set / invalid."""
-    raw = os.getenv("FIXED_RISK_USD", "").strip()
-    if not raw:
-        return None
-    try:
-        val = float(raw)
-        return val if val > 0 else None
-    except ValueError:
-        return None
+    """Return runtime fixed-risk USD from env override or active policy."""
+    return read_fixed_risk_usd()
 
 
 class HardRiskEngine:
@@ -34,45 +27,40 @@ class HardRiskEngine:
     The percentage thresholds remain unchanged — only the risk_percent
     supplied by the PortfolioManager is compared against them.
 
-    Micro-Capital Mode (MICRO_CAPITAL_MODE=1)
-    ------------------------------------------
-    Adjusts risk parameters for accounts $10-$500:
-    - Relaxed daily/weekly loss limits
-    - Reduced consecutive loss halt threshold
-    - Single trade limit for micro accounts
+    Policy Modes
+    ------------
+    Core SRS is the locked baseline. Preserve-$10 is an explicit policy mode.
+    The historical MICRO_CAPITAL_MODE toggle remains a backward-compatible
+    alias for the legacy micro-capital path only.
 
-    Loss-Streak Throttle (both modes)
-    ----------------------------------
-    Streak 1 → 75% of base risk
-    Streak 2 → 50%
-    Streak 3 → 25%
-    Streak >= 4 → full halt (or 3 in micro-capital mode)
+    Loss-Streak Throttle
+    --------------------
+    Core SRS:
+      Streak 1 → 75% of base risk
+      Streak 2 → 50%
+      Streak >= 3 → full halt
+
+    Preserve-$10 / legacy micro-capital:
+      Streak 1 → 75% of base risk
+      Streak >= 2 → full halt
     """
 
     # Graduated loss streak: reduce risk multiplier before halting entirely.
-    LOSS_THROTTLE: dict[int, float] = {1: 0.75, 2: 0.50, 3: 0.25}
-    LOSS_HALT_THRESHOLD = 4
+    LOSS_THROTTLE: dict[int, float] = {1: 0.75, 2: 0.50}
+    LOSS_HALT_THRESHOLD = 3
 
     def __init__(self):
-        # Check if micro-capital mode is enabled
-        self._micro_capital_mode = os.getenv("MICRO_CAPITAL_MODE") == "1"
-        
-        if self._micro_capital_mode:
-            # Micro-capital risk limits (for $10-$500 accounts)
-            self.max_daily_loss = 0.15       # 15% (relaxed from 8%)
-            self.max_weekly_loss = 0.25      # 25% (relaxed from 15%)
-            self.max_drawdown = 0.30         # 30% (relaxed from 20%)
-            self.max_simultaneous_trades = 1 # 1 trade only
-            self.max_combined_exposure = 0.05  # 5%
-            self.LOSS_HALT_THRESHOLD = 3     # Halt after 2 losses (3rd triggers halt)
-        else:
-            # SRS v1 hard limits (percentage of equity) — standard mode
-            self.max_daily_loss = 0.08       # 8%
-            self.max_weekly_loss = 0.15      # 15%
-            self.max_drawdown = 0.20         # 20%
-            self.max_simultaneous_trades = 2
-            self.max_combined_exposure = 0.05  # 5%
-            self.LOSS_HALT_THRESHOLD = 4
+        self.policy = get_policy_config()
+        self.mode_id = self.policy["MODE_ID"]
+        self.mode_label = self.policy["MODE_LABEL"]
+        self.evidence_label = self.policy["EVIDENCE_LABEL"]
+        self.max_daily_loss = self.policy["DAILY_STOP_LOSS_PCT"]
+        self.max_weekly_loss = self.policy["WEEKLY_STOP_LOSS_PCT"]
+        self.max_drawdown = self.policy["HARD_DRAWDOWN_PCT"]
+        self.max_simultaneous_trades = self.policy["MAX_SIMULTANEOUS_TRADES"]
+        self.max_combined_exposure = self.policy["MAX_COMBINED_EXPOSURE"]
+        self.LOSS_HALT_THRESHOLD = self.policy["LOSS_HALT_THRESHOLD"]
+        self.loss_throttle = dict(self.policy.get("LOSS_THROTTLE_STEPS", self.LOSS_THROTTLE))
 
         # Fixed-USD mode: ceiling is 2x per-trade risk as a fraction (set dynamically).
         self._fixed_risk_usd = _read_fixed_risk_usd()
@@ -96,8 +84,20 @@ class HardRiskEngine:
 
         # --- Hard halt checks (order matters — most severe first) ---
 
+        if not account_status.state_reconciled:
+            return self._reject(
+                "RISK_STATE_DIVERGENCE",
+                (
+                    "Trading blocked because broker/local risk state is not reconciled; the engine is fail-closed until the mismatch is cleared. "
+                    f"Observed state issue: {account_status.state_reconciliation_reason or 'risk state not reconciled'}"
+                ),
+            )
+
         if account_status.is_trading_halted:
-            return self._reject("RISK_HALTED", "Trading is halted")
+            return self._reject(
+                "RISK_HALTED",
+                "Trading remains halted in runtime account state; no new trades will be routed until the halt condition is cleared",
+            )
 
         if account_status.daily_loss_percent >= self.max_daily_loss:
             return self._reject(
@@ -127,7 +127,7 @@ class HardRiskEngine:
                 "RISK_LOSS_STREAK",
                 f"consecutive_losses={losses} >= halt_threshold={self.LOSS_HALT_THRESHOLD}",
             )
-        throttle = self.LOSS_THROTTLE.get(losses, 1.0)
+        throttle = self.loss_throttle.get(losses, 1.0)
         effective_risk = proposed_risk_percent * throttle
 
         # --- Max simultaneous trades gate ---
@@ -159,7 +159,8 @@ class HardRiskEngine:
             reason_code="RISK_APPROVED",
             details=(
                 f"Hard risk constraints satisfied "
-                f"[throttle={throttle:.2f} effective_risk={effective_risk:.6f}]"
+                f"[mode={self.mode_id} evidence={self.evidence_label} throttle={throttle:.2f} "
+                f"effective_risk={effective_risk:.6f}]"
             ),
             timestamp_utc=now,
             risk_throttle_multiplier=throttle,
@@ -169,6 +170,6 @@ class HardRiskEngine:
         return RiskDecision(
             approved=False,
             reason_code=code,
-            details=details,
+            details=f"{details} [mode={self.mode_id} evidence={self.evidence_label}]",
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
         )

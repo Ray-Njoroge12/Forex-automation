@@ -15,6 +15,8 @@ class AccountStatus:
     open_usd_exposure_count: int = 0
     consecutive_losses: int = 0
     is_trading_halted: bool = False
+    state_reconciled: bool = True
+    state_reconciliation_reason: str = ""
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     open_positions_count: int = 0
     open_symbols: list[str] = field(default_factory=list)

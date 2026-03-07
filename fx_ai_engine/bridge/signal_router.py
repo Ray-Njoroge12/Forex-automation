@@ -3,11 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.schemas import validate_signal_payload
 
 logger = logging.getLogger("fx_ai_engine.signal_router")
+
+
+@dataclass(frozen=True)
+class SignalRouteError(RuntimeError):
+    trade_id: str
+    pending_written: bool
+    detail: str
+
+    def __str__(self) -> str:
+        return f"trade_id={self.trade_id} pending_written={self.pending_written} {self.detail}"
+
+
+@dataclass(frozen=True)
+class RouterCleanupResult:
+    stale_pending_trade_ids: tuple[str, ...] = ()
+    orphan_lock_trade_ids: tuple[str, ...] = ()
 
 
 class SignalRouter:
@@ -28,6 +45,7 @@ class SignalRouter:
             if registry_path is not None
             else self.lock_dir.parent / "trade_id_registry.json"
         )
+        self.quarantine_dir = self.lock_dir.parent / "quarantine"
         self._processed_trade_ids = self._load_registry()
 
     def _lock_path(self, trade_id: str) -> Path:
@@ -82,6 +100,13 @@ class SignalRouter:
         if lock_path.exists():
             lock_path.unlink()
 
+    def _move_to_quarantine(self, path: Path, bucket: str) -> Path:
+        target_dir = self.quarantine_dir / bucket
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / path.name
+        path.replace(target)
+        return target
+
     def send(self, payload: dict) -> Path:
         payload = validate_signal_payload(payload)
         trade_id = payload["trade_id"]
@@ -94,21 +119,34 @@ class SignalRouter:
 
         final_path = self._pending_path(trade_id)
         tmp_path = final_path.with_suffix(".json.tmp")
+        pending_written = False
 
         try:
             with tmp_path.open("w", encoding="utf-8") as f:
                 json.dump(payload, f, separators=(",", ":"), ensure_ascii=True)
                 f.flush()
             tmp_path.replace(final_path)
+            pending_written = True
             self._processed_trade_ids.add(trade_id)
             self._persist_registry()
             logger.info("Signal written atomically trade_id=%s path=%s", trade_id, final_path)
             return final_path
-        except Exception:
-            self.release_lock(trade_id)
+        except Exception as exc:
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
-            raise
+            if not pending_written:
+                self.release_lock(trade_id)
+                raise SignalRouteError(
+                    trade_id=trade_id,
+                    pending_written=False,
+                    detail="router failed before the pending signal became visible to MT5",
+                ) from exc
+            raise SignalRouteError(
+                trade_id=trade_id,
+                pending_written=True,
+                detail="router failed after publish; preserve-first reconciliation required",
+            ) from exc
+
     def clear_signals(self) -> None:
         """Purge all pending signals and locks."""
         for p in self.pending_dir.glob("*.json"):
@@ -117,20 +155,26 @@ class SignalRouter:
             p.unlink(missing_ok=True)
         logger.info("Cleared all pending signals and active locks.")
 
-    def cleanup_stale(self, max_age_seconds: int = 600) -> list[str]:
-        """Remove stale pending/lock artifacts and return expired trade_ids."""
+    def cleanup_stale(self, max_age_seconds: int = 600) -> RouterCleanupResult:
+        """Quarantine stale pending/lock artifacts and return the affected trade_ids."""
         now = time.time()
-        expired_trade_ids: list[str] = []
+        stale_pending_trade_ids: list[str] = []
+        orphan_lock_trade_ids: list[str] = []
 
         for p in self.pending_dir.glob("*.json"):
             age = now - p.stat().st_mtime
             if age <= max_age_seconds:
                 continue
             trade_id = p.stem
-            p.unlink(missing_ok=True)
+            quarantined = self._move_to_quarantine(p, "stale_pending")
             self.release_lock(trade_id)
-            expired_trade_ids.append(trade_id)
-            logger.warning("Expired stale pending signal trade_id=%s age_seconds=%.1f", trade_id, age)
+            stale_pending_trade_ids.append(trade_id)
+            logger.warning(
+                "Quarantined stale pending signal trade_id=%s age_seconds=%.1f path=%s",
+                trade_id,
+                age,
+                quarantined,
+            )
 
         for p in self.lock_dir.glob("*.lock"):
             age = now - p.stat().st_mtime
@@ -140,7 +184,16 @@ class SignalRouter:
             # Keep lock if a pending file for the same trade still exists.
             if self._pending_path(trade_id).exists():
                 continue
-            p.unlink(missing_ok=True)
-            logger.info("Removed orphan lock trade_id=%s age_seconds=%.1f", trade_id, age)
+            quarantined = self._move_to_quarantine(p, "orphan_locks")
+            orphan_lock_trade_ids.append(trade_id)
+            logger.info(
+                "Quarantined orphan lock trade_id=%s age_seconds=%.1f path=%s",
+                trade_id,
+                age,
+                quarantined,
+            )
 
-        return expired_trade_ids
+        return RouterCleanupResult(
+            stale_pending_trade_ids=tuple(stale_pending_trade_ids),
+            orphan_lock_trade_ids=tuple(orphan_lock_trade_ids),
+        )

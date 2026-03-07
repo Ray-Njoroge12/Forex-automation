@@ -31,6 +31,8 @@ def test_feedback_reader_skips_malformed_and_reads_valid(tmp_path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["trade_id"] == valid_payload["trade_id"]
+    assert not malformed.exists()
+    assert (feedback_dir / "quarantine" / "execution_bad.malformed.json").exists()
 
 
 def test_feedback_consume_removes_valid_execution_files(tmp_path) -> None:
@@ -56,6 +58,31 @@ def test_feedback_consume_removes_valid_execution_files(tmp_path) -> None:
 
     assert len(rows) == 1
     assert not path.exists()
+
+
+def test_feedback_consume_quarantines_schema_invalid_execution_file(tmp_path) -> None:
+    feedback_dir = tmp_path / "feedback"
+    feedback_dir.mkdir(parents=True, exist_ok=True)
+
+    invalid_payload = {
+        "trade_id": "AI_20260225_120000_invalid",
+        "status": "EXECUTED",
+        "entry_price": 1.2001,
+        "slippage": 0.00001,
+        "spread_at_entry": 0.00009,
+        "profit_loss": 0.0,
+        "r_multiple": 0.0,
+        "close_time": "2026-02-25T12:30:00+00:00",
+    }
+    path = feedback_dir / "execution_invalid.json"
+    path.write_text(json.dumps(invalid_payload), encoding="utf-8")
+
+    reader = ExecutionFeedbackReader(feedback_dir=feedback_dir)
+    rows = reader.consume_execution_feedback()
+
+    assert rows == []
+    assert not path.exists()
+    assert (feedback_dir / "quarantine" / "execution_invalid.schema_invalid.json").exists()
 
 
 def test_account_snapshot_validation(tmp_path) -> None:

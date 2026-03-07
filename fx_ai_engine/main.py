@@ -4,11 +4,19 @@ import argparse
 import logging
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
+from config_microcapital import (
+    get_policy_config,
+    read_fixed_risk_usd,
+    read_max_spread_pips,
+    read_predict_threshold,
+)
 from bridge.execution_feedback import ExecutionFeedbackReader
-from bridge.signal_router import SignalRouter
+from bridge.signal_router import SignalRouteError, SignalRouter
 from core.account_status import AccountStatus
 from core.bridge_utils import get_mt5_bridge_path
 from core.agents.adversarial_agent import AdversarialAgent
@@ -34,13 +42,17 @@ from core.schemas import technical_signal_to_payload
 from core.state_sync import update_account_status_from_snapshot
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
 from database.db import (
+    get_latest_account_metric,
+    get_open_trade_ledger,
     initialize_schema,
-    mark_trade_expired,
-    insert_account_metrics,
     insert_risk_event,
+    insert_account_metrics,
     insert_trade_proposal,
+    mark_trade_execution_uncertain,
+    mark_trade_expired,
     migrate_add_ml_feature_columns,
     migrate_add_risk_events,
+    migrate_add_restart_state_columns,
     migrate_phase8_columns,
     update_trade_execution_result,
     update_trade_exit_result,
@@ -49,17 +61,275 @@ from database.db import (
 logger = logging.getLogger("fx_ai_engine.main")
 
 SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"]
+PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
+PRESERVE_10_LOT_SIZE = 0.01
+PRESERVE_10_REFERENCE_BALANCE_USD = 10.0
 
 
 def _predict_threshold() -> float:
-    raw = os.getenv("ML_PREDICT_THRESHOLD", "").strip()
-    if not raw:
-        return 0.0
+    return read_predict_threshold()
+
+
+@dataclass(frozen=True)
+class Preserve10StartupApprovalDecision:
+    approved: bool
+    reason_code: str
+    details: str
+
+
+def _startup_approve(reason_code: str, details: str) -> Preserve10StartupApprovalDecision:
+    return Preserve10StartupApprovalDecision(True, reason_code, details)
+
+
+def _startup_reject(reason_code: str, details: str) -> Preserve10StartupApprovalDecision:
+    return Preserve10StartupApprovalDecision(False, reason_code, details)
+
+
+def _policy_evidence_suffix(policy: Mapping[str, object]) -> str:
+    return f"[mode={policy['MODE_ID']} evidence={policy['EVIDENCE_LABEL']}]"
+
+
+def _with_policy_evidence(policy: Mapping[str, object], details: str) -> str:
+    return f"{details} {_policy_evidence_suffix(policy)}"
+
+
+def _format_preserve_10_preroute_event(
+    policy: Mapping[str, object],
+    feasibility,
+) -> str:
+    outcome = "blocked before MT5 routing" if not feasibility.can_assess else "refused before MT5 routing"
+    return _with_policy_evidence(
+        policy,
+        f"Preserve-$10 pre-route feasibility {outcome}: {feasibility.details}",
+    )
+
+
+def _pip_size(symbol: str) -> float:
+    return 0.01 if symbol.endswith("JPY") else 0.0001
+
+
+def _read_preserve_10_commission_per_lot_usd(
+    env: Mapping[str, str] | None = None,
+) -> tuple[float | None, str | None]:
+    source = os.environ if env is None else env
+    raw = source.get(PRESERVE_10_COMMISSION_PER_LOT_ENV, "").strip()
+    if raw == "":
+        return None, None
+
     try:
-        return float(raw)
+        commission = float(raw)
     except ValueError:
-        logger.warning("Invalid ML_PREDICT_THRESHOLD=%r, defaulting to 0.0", raw)
-        return 0.0
+        return None, f"invalid {PRESERVE_10_COMMISSION_PER_LOT_ENV}={raw!r}"
+
+    if commission < 0:
+        return None, f"negative {PRESERVE_10_COMMISSION_PER_LOT_ENV}={raw!r}"
+    return commission, None
+
+
+def evaluate_preserve_10_startup_approval(
+    bridge: MT5Connection,
+    *,
+    policy: dict | None = None,
+    env: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+) -> Preserve10StartupApprovalDecision:
+    runtime_policy = get_policy_config() if policy is None else dict(policy)
+    if runtime_policy["MODE_ID"] != "preserve_10":
+        return _startup_approve(
+            "PRESERVE_10_STARTUP_GATE_BYPASS",
+            _with_policy_evidence(
+                runtime_policy,
+                "Active runtime mode does not require Preserve-$10 startup approval",
+            ),
+        )
+
+    facts = bridge.get_preserve_10_approval_facts(now=now)
+    if not facts.can_assess:
+        return _startup_reject(
+            facts.reason_code,
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    "Preserve-$10 startup approval blocked before engine start because required broker/account "
+                    f"approval facts could not be assessed (source_reason={facts.reason_code}; source_detail={facts.details}). "
+                    "Resolve the MT5/account data issue and retry."
+                ),
+            ),
+        )
+
+    account = facts.account
+    if account is None:
+        return _startup_reject(
+            "PRESERVE_10_ACCOUNT_FACTS_MISSING",
+            _with_policy_evidence(
+                runtime_policy,
+                "Preserve-$10 startup approval blocked before engine start because the approval snapshot did not include account facts.",
+            ),
+        )
+
+    if not account.trade_allowed:
+        return _startup_reject(
+            "PRESERVE_10_ACCOUNT_TRADE_DISABLED",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    "Preserve-$10 startup approval blocked before engine start because account trading is disabled "
+                    f"currency={account.currency} leverage={account.leverage}"
+                ),
+            ),
+        )
+
+    if account.normalized_balance_usd <= 0:
+        return _startup_reject(
+            "PRESERVE_10_BALANCE_INVALID",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    "Preserve-$10 startup approval blocked before engine start because the normalized balance is not positive "
+                    f"normalized_balance_usd={account.normalized_balance_usd:.8f}"
+                ),
+            ),
+        )
+
+    commission_per_lot_usd, commission_error = _read_preserve_10_commission_per_lot_usd(env)
+    if commission_error is not None:
+        return _startup_reject(
+            "PRESERVE_10_COST_EVIDENCE_INVALID",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    "Preserve-$10 startup approval blocked before engine start because supplemental commission evidence is invalid "
+                    f"({commission_error})"
+                ),
+            ),
+        )
+    if commission_per_lot_usd is None:
+        return _startup_reject(
+            "PRESERVE_10_COST_EVIDENCE_UNAVAILABLE",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    "Preserve-$10 startup approval blocked before engine start because commission/cost evidence is missing from broker facts; "
+                    f"set supplemental evidence via {PRESERVE_10_COMMISSION_PER_LOT_ENV} and retry"
+                ),
+            ),
+        )
+
+    target_balance_usd = min(account.normalized_balance_usd, PRESERVE_10_REFERENCE_BALANCE_USD)
+    fixed_risk_usd = runtime_policy.get("FIXED_RISK_USD")
+    risk_budget_usd = (
+        float(fixed_risk_usd)
+        if fixed_risk_usd is not None
+        else target_balance_usd * float(runtime_policy["BASE_RISK_PCT"])
+    )
+    lot_size = PRESERVE_10_LOT_SIZE
+    tolerance = 1e-9
+
+    for symbol, symbol_facts in facts.symbols.items():
+        if not symbol_facts.tradable:
+            return _startup_reject(
+                "PRESERVE_10_SYMBOL_NOT_TRADABLE",
+                _with_policy_evidence(
+                    runtime_policy,
+                    f"Preserve-$10 startup approval blocked before engine start because symbol={symbol} is not tradable",
+                ),
+            )
+
+        if symbol_facts.volume_min > lot_size + tolerance:
+            return _startup_reject(
+                "PRESERVE_10_LOT_SIZE_UNSUPPORTED",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because the current bridge/EA path requires 0.01-lot compatibility "
+                        f"symbol={symbol} volume_min={symbol_facts.volume_min:.6f}"
+                    ),
+                ),
+            )
+
+        if symbol_facts.volume_step > lot_size + tolerance:
+            return _startup_reject(
+                "PRESERVE_10_LOT_STEP_UNSUPPORTED",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because the current bridge/EA path requires 2-decimal lot steps "
+                        f"symbol={symbol} volume_step={symbol_facts.volume_step:.6f}"
+                    ),
+                ),
+            )
+
+        step_count = round(lot_size / symbol_facts.volume_step)
+        if abs((step_count * symbol_facts.volume_step) - lot_size) > tolerance:
+            return _startup_reject(
+                "PRESERVE_10_LOT_STEP_UNSUPPORTED",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because 0.01 lots are not aligned to broker lot steps "
+                        f"symbol={symbol} volume_step={symbol_facts.volume_step:.6f}"
+                    ),
+                ),
+            )
+
+        pip_cost_usd = (
+            account.unit_scale
+            * symbol_facts.tick_value
+            * lot_size
+            * (_pip_size(symbol) / symbol_facts.tick_size)
+        )
+        if pip_cost_usd > 0.01 + tolerance:
+            return _startup_reject(
+                "PRESERVE_10_ECONOMICS_TOO_COARSE",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because 0.01 lots remain too large in real-dollar terms "
+                        f"symbol={symbol} pip_cost_usd={pip_cost_usd:.6f}"
+                    ),
+                ),
+            )
+
+        estimated_margin_usd = (
+            account.unit_scale * symbol_facts.min_lot_margin * (lot_size / symbol_facts.volume_min)
+        )
+        if estimated_margin_usd > target_balance_usd + tolerance:
+            return _startup_reject(
+                "PRESERVE_10_MARGIN_TOO_HIGH",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because 0.01-lot margin exceeds the preserve-$10 balance floor "
+                        f"symbol={symbol} estimated_margin_usd={estimated_margin_usd:.6f} "
+                        f"target_balance_usd={target_balance_usd:.6f}"
+                    ),
+                ),
+            )
+
+        spread_cost_usd = pip_cost_usd * symbol_facts.spread_pips
+        total_cost_usd = spread_cost_usd + (commission_per_lot_usd * lot_size)
+        if total_cost_usd >= risk_budget_usd:
+            return _startup_reject(
+                "PRESERVE_10_COST_BURDEN_EXCESSIVE",
+                _with_policy_evidence(
+                    runtime_policy,
+                    (
+                        "Preserve-$10 startup approval blocked before engine start because startup cost burden is too large for the preserve-$10 risk budget "
+                        f"symbol={symbol} total_cost_usd={total_cost_usd:.6f} risk_budget_usd={risk_budget_usd:.6f}"
+                    ),
+                ),
+            )
+
+    return _startup_approve(
+        "PRESERVE_10_STARTUP_APPROVED",
+        _with_policy_evidence(
+            runtime_policy,
+            (
+                "Preserve-$10 startup approval passed: broker/account facts support 0.01-lot preserve-first operation "
+                f"and supplemental commission evidence is present via {PRESERVE_10_COMMISSION_PER_LOT_ENV}"
+            ),
+        ),
+    )
 
 
 class Engine:
@@ -70,8 +340,10 @@ class Engine:
         self.use_mock = use_mock
         self.account_status = AccountStatus()
         self.reset_scheduler = ResetScheduler()
+        self.policy = get_policy_config()
         self.predict_threshold = _predict_threshold()
         self._stale_episode_active = False
+        self._last_reconciliation_reason = ""
         self._processed_execution_feedback: set[tuple[str, int, str, str]] = set()
         self._processed_exit_feedback: set[tuple[int, str, str]] = set()
 
@@ -121,17 +393,40 @@ class Engine:
         self.ranker = SignalRanker()
         self.ranker_loaded = self.ranker.load()
         logger.info(
-            "Runtime config: mock=%s fixed_risk_usd=%s micro_capital=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
+            "Runtime config: mode=%s label=%s evidence=%s mock=%s fixed_risk_usd=%s legacy_micro_capital=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
+            self.policy["MODE_ID"],
+            self.policy["MODE_LABEL"],
+            self.policy["EVIDENCE_LABEL"],
             self.use_mock,
-            os.getenv("FIXED_RISK_USD", "<unset>"),
+            read_fixed_risk_usd(),
             os.getenv("MICRO_CAPITAL_MODE", "0"),
-            os.getenv("MAX_SPREAD_PIPS", "2.0"),
+            read_max_spread_pips(),
             self.predict_threshold,
             os.getenv("USE_SENTIMENT", "0"),
             self.ranker_loaded,
         )
 
         self.last_m15_candle: datetime | None = None
+
+    def _preserve_10_pre_route_feasibility(self, symbol: str, risk_percent: float, stop_pips: float):
+        if self.policy["MODE_ID"] != "preserve_10":
+            return None
+        return self.bridge.evaluate_trade_feasibility(
+            symbol,
+            risk_percent,
+            stop_pips,
+            account_balance=self.account_status.balance,
+        )
+
+    def _fail_closed_preserve_10_bridge(self, reason: str) -> None:
+        self.account_status.is_trading_halted = True
+        self.account_status.state_reconciled = False
+        if not self.account_status.state_reconciliation_reason:
+            self.account_status.state_reconciliation_reason = reason
+        elif reason not in self.account_status.state_reconciliation_reason:
+            self.account_status.state_reconciliation_reason = (
+                f"{self.account_status.state_reconciliation_reason}; {reason}"
+            )
 
     def _validate_bridge_path(self, bridge_path: Path) -> None:
         required = ["pending_signals", "feedback", "exits", "active_locks"]
@@ -152,7 +447,32 @@ class Engine:
             if snapshot is None:
                 snapshot = self.bridge.get_account_snapshot() or {}
 
-            update_account_status_from_snapshot(self.account_status, snapshot)
+            persisted_state = get_latest_account_metric()
+            trade_ledger = get_open_trade_ledger()
+
+            update_account_status_from_snapshot(
+                self.account_status,
+                snapshot,
+                persisted_state=persisted_state,
+                trade_ledger=trade_ledger,
+            )
+
+            if not self.account_status.state_reconciled:
+                if self.account_status.state_reconciliation_reason != self._last_reconciliation_reason:
+                    insert_risk_event(
+                        "STATE_RECONCILIATION_FAILED",
+                        "BLOCK",
+                        self.account_status.state_reconciliation_reason,
+                    )
+                    logger.warning(
+                        "Account state reconciliation failed: %s",
+                        self.account_status.state_reconciliation_reason,
+                    )
+                self._last_reconciliation_reason = self.account_status.state_reconciliation_reason
+            elif self._last_reconciliation_reason:
+                insert_risk_event("STATE_RECONCILED", "INFO", "Account state reconciled")
+                logger.info("Account state reconciled after previous mismatch.")
+                self._last_reconciliation_reason = ""
 
             if self.reset_scheduler.should_reset_daily():
                 self.account_status.daily_loss_percent = 0.0
@@ -179,6 +499,7 @@ class Engine:
                     continue
                 self._processed_execution_feedback.add(key)
                 update_trade_execution_result(payload)
+                self.router.release_lock(str(payload.get("trade_id", "")))
 
             # Consume trade exits (stops and take profits)
             for payload in self.feedback.consume_trade_exits():
@@ -315,8 +636,74 @@ class Engine:
         # Apply loss-streak throttle from hard risk engine.
         final_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 4)
 
+        feasibility = self._preserve_10_pre_route_feasibility(
+            technical.symbol,
+            final_risk,
+            technical.stop_pips,
+        )
+        if feasibility is not None and (not feasibility.can_assess or not feasibility.approved):
+            insert_trade_proposal(
+                technical,
+                status="REJECTED",
+                reason_code=feasibility.reason_code,
+                risk_percent=0.0,
+                market_regime=regime.regime,
+            )
+            insert_risk_event(
+                "PRE_ROUTE_FEASIBILITY",
+                "WARN",
+                _format_preserve_10_preroute_event(self.policy, feasibility),
+                technical.trade_id,
+            )
+            self.metrics.inc("trades_rejected")
+            return
+
         payload = technical_signal_to_payload(technical, final_risk)
-        self.router.send(payload)
+        try:
+            self.router.send(payload)
+        except SignalRouteError as exc:
+            if self.policy["MODE_ID"] != "preserve_10":
+                raise
+            if exc.pending_written:
+                insert_trade_proposal(
+                    technical,
+                    status="EXECUTION_UNCERTAIN",
+                    reason_code="ROUTER_SEND_UNCERTAIN",
+                    risk_percent=final_risk,
+                    market_regime=regime.regime,
+                    regime_confidence=regime.confidence,
+                    atr_ratio=regime.atr_ratio,
+                    is_london_session=is_london,
+                    is_newyork_session=is_ny,
+                    rate_differential=rate_diff,
+                )
+                self._fail_closed_preserve_10_bridge(
+                    f"bridge publish uncertainty for trade_id={technical.trade_id}"
+                )
+                insert_risk_event(
+                    "PRESERVE_10_BRIDGE_UNCERTAIN",
+                    "BLOCK",
+                    str(exc),
+                    technical.trade_id,
+                )
+                return
+
+            insert_trade_proposal(
+                technical,
+                status="REJECTED",
+                reason_code="ROUTER_SEND_FAILED",
+                risk_percent=0.0,
+                market_regime=regime.regime,
+            )
+            insert_risk_event(
+                "PRESERVE_10_BRIDGE_FAILURE",
+                "BLOCK",
+                str(exc),
+                technical.trade_id,
+            )
+            self.metrics.inc("trades_rejected")
+            return
+
         insert_trade_proposal(
             technical,
             status="PENDING",
@@ -343,15 +730,40 @@ class Engine:
                 return
 
             # Remove only stale/orphaned pending artifacts; keep valid pending signals.
-            expired = self.router.cleanup_stale(max_age_seconds=600)
-            for trade_id in expired:
-                mark_trade_expired(trade_id, "ROUTER_PENDING_EXPIRED")
-                insert_risk_event(
-                    "ROUTER_HOUSEKEEPING",
-                    "WARN",
-                    "stale pending signal expired by TTL",
-                    trade_id,
-                )
+            cleanup = self.router.cleanup_stale(max_age_seconds=600)
+            if self.policy["MODE_ID"] == "preserve_10":
+                stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
+                orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
+                for trade_id in stale_trade_ids:
+                    mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
+                    insert_risk_event(
+                        "PRESERVE_10_BRIDGE_UNCERTAIN",
+                        "BLOCK",
+                        "stale pending signal quarantined; execution truth is uncertain",
+                        trade_id,
+                    )
+                for trade_id in orphan_trade_ids:
+                    mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
+                    insert_risk_event(
+                        "PRESERVE_10_BRIDGE_UNCERTAIN",
+                        "BLOCK",
+                        "orphan router lock quarantined; execution truth is uncertain",
+                        trade_id,
+                    )
+                if stale_trade_ids or orphan_trade_ids:
+                    self._fail_closed_preserve_10_bridge(
+                        "preserve-first bridge uncertainty detected during router housekeeping"
+                    )
+                    return
+            else:
+                for trade_id in cleanup.stale_pending_trade_ids:
+                    mark_trade_expired(trade_id, "ROUTER_PENDING_EXPIRED")
+                    insert_risk_event(
+                        "ROUTER_HOUSEKEEPING",
+                        "WARN",
+                        "stale pending signal expired by TTL",
+                        trade_id,
+                    )
 
             for sym in SYMBOLS:
                 self._evaluate_symbol(sym)
@@ -414,6 +826,7 @@ def main() -> int:
     migrate_phase8_columns()
     migrate_add_risk_events()
     migrate_add_ml_feature_columns()
+    migrate_add_restart_state_columns()
 
     use_mock = os.getenv("USE_MT5_MOCK") == "1"
     if use_mock:
@@ -437,9 +850,36 @@ def main() -> int:
         logger.error("MT5 connection failed: %s", bridge.last_error)
         return 2
 
-    args = parse_args()
-
     try:
+        policy = get_policy_config()
+        startup_approval = evaluate_preserve_10_startup_approval(
+            bridge,
+            policy=policy,
+            env=os.environ,
+        )
+        if policy["MODE_ID"] == "preserve_10":
+            severity = "INFO" if startup_approval.approved else "BLOCK"
+            insert_risk_event(
+                "PRESERVE_10_STARTUP_APPROVAL",
+                severity,
+                f"{startup_approval.reason_code} {startup_approval.details}",
+            )
+            if startup_approval.approved:
+                logger.info(
+                    "Preserve-$10 startup approval passed: reason_code=%s details=%s",
+                    startup_approval.reason_code,
+                    startup_approval.details,
+                )
+            else:
+                logger.error(
+                    "Preserve-$10 startup approval refused: reason_code=%s details=%s",
+                    startup_approval.reason_code,
+                    startup_approval.details,
+                )
+                return 3
+
+        args = parse_args()
+
         try:
             engine = Engine(bridge, tracer, metrics, use_mock=use_mock)
         except RuntimeError as exc:
