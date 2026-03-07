@@ -64,6 +64,15 @@ def migrate_phase8_columns() -> None:
         _ensure_column(conn, "account_metrics", "drawdown_percent", "REAL DEFAULT 0.0")
 
 
+def migrate_add_restart_state_columns() -> None:
+    with get_conn() as conn:
+        _ensure_column(conn, "account_metrics", "peak_equity", "REAL DEFAULT 0.0")
+        _ensure_column(conn, "account_metrics", "daily_anchor_date", "TEXT DEFAULT ''")
+        _ensure_column(conn, "account_metrics", "daily_anchor_equity", "REAL DEFAULT 0.0")
+        _ensure_column(conn, "account_metrics", "weekly_anchor_key", "TEXT DEFAULT ''")
+        _ensure_column(conn, "account_metrics", "weekly_anchor_equity", "REAL DEFAULT 0.0")
+
+
 def migrate_add_risk_events() -> None:
     with get_conn() as conn:
         conn.execute(
@@ -149,7 +158,9 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
     raw_status = str(payload.get("status", "UNKNOWN")).upper()
     ticket = int(payload.get("ticket") or 0)
     executed_open = raw_status == "EXECUTED" and ticket > 0
-    status = "EXECUTED_OPEN" if executed_open else raw_status
+    rejected = raw_status.startswith("REJECTED")
+    status = "EXECUTED_OPEN" if executed_open else ("REJECTED" if rejected else raw_status)
+    reason_code = raw_status
 
     with get_conn() as conn:
         if executed_open:
@@ -192,13 +203,30 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
             (
                 ticket if ticket > 0 else None,
                 status,
-                status,
+                reason_code,
                 payload.get("entry_price", 0.0),
                 payload.get("slippage", 0.0),
                 payload.get("spread_at_entry", 0.0),
                 close_time,
                 payload.get("trade_id"),
             ),
+        )
+
+
+def mark_trade_execution_uncertain(
+    trade_id: str,
+    reason_code: str = "PRESERVE_10_EXECUTION_UNCERTAIN",
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE trades
+               SET status = ?,
+                   reason_code = ?
+             WHERE trade_id = ?
+               AND status IN ('PENDING', 'EXECUTION_UNCERTAIN')
+            """,
+            ("EXECUTION_UNCERTAIN", reason_code, trade_id),
         )
 
 
@@ -258,8 +286,9 @@ def insert_account_metrics(account_status: AccountStatus) -> None:
             INSERT INTO account_metrics (
                 timestamp, balance, equity, open_risk_percent,
                 open_usd_exposure_count, daily_loss_percent, weekly_loss_percent,
-                drawdown_percent, consecutive_losses, is_trading_halted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                drawdown_percent, peak_equity, daily_anchor_date, daily_anchor_equity,
+                weekly_anchor_key, weekly_anchor_equity, consecutive_losses, is_trading_halted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_status.updated_at.isoformat(),
@@ -270,10 +299,51 @@ def insert_account_metrics(account_status: AccountStatus) -> None:
                 account_status.daily_loss_percent,
                 account_status.weekly_loss_percent,
                 account_status.drawdown_percent,
+                account_status.peak_equity,
+                account_status.daily_anchor_date,
+                account_status.daily_anchor_equity,
+                account_status.weekly_anchor_key,
+                account_status.weekly_anchor_equity,
                 account_status.consecutive_losses,
                 int(account_status.is_trading_halted),
             ),
         )
+
+
+def get_latest_account_metric() -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT balance, equity, open_risk_percent, open_usd_exposure_count,
+                   daily_loss_percent, weekly_loss_percent, drawdown_percent,
+                   peak_equity, daily_anchor_date, daily_anchor_equity,
+                   weekly_anchor_key, weekly_anchor_equity,
+                   consecutive_losses, is_trading_halted, timestamp
+              FROM account_metrics
+          ORDER BY timestamp DESC, id DESC
+             LIMIT 1
+            """
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_open_trade_ledger() -> dict[str, Any]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT symbol, COALESCE(risk_percent, 0.0) AS risk_percent
+              FROM trades
+             WHERE status IN ('EXECUTED_OPEN', 'EXECUTION_UNCERTAIN')
+            """
+        ).fetchall()
+    return {
+        "open_trade_count": len(rows),
+        "open_risk_percent": round(
+            sum(float(row["risk_percent"] or 0.0) for row in rows),
+            8,
+        ),
+        "open_symbols": sorted({str(row["symbol"]) for row in rows if row["symbol"]}),
+    }
 
 
 def insert_risk_event(rule_name: str, severity: str, reason: str, trade_id: str | None = None) -> None:

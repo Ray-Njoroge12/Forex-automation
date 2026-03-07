@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import pandas as pd
 
+from config_microcapital import get_policy_config, read_fixed_risk_usd
 from core.account_status import AccountStatus
 from core.types import AdversarialDecision, PortfolioDecision, RegimeOutput, TechnicalSignal
 
@@ -21,15 +21,8 @@ FetchOHLC = Callable[[str, int, int], pd.DataFrame]
 
 
 def _read_fixed_risk_usd() -> float | None:
-    """Return the fixed dollar risk amount from env, or None if not set."""
-    raw = os.getenv(_FIXED_RISK_USD_ENV, "").strip()
-    if not raw:
-        return None
-    try:
-        val = float(raw)
-        return val if val > 0 else None
-    except ValueError:
-        return None
+    """Return runtime fixed-risk USD from env override or active policy."""
+    return read_fixed_risk_usd()
 
 
 class PortfolioManager:
@@ -62,20 +55,27 @@ class PortfolioManager:
         self,
         fixed_risk_usd: float | None = None,
         fetch_ohlc: FetchOHLC | None = None,
+        policy: dict | None = None,
     ):
-        self.max_simultaneous_trades = 2
+        self.policy = get_policy_config() if policy is None else dict(policy)
+        self.mode_id = self.policy["MODE_ID"]
+        self.mode_label = self.policy["MODE_LABEL"]
+        self.max_simultaneous_trades = self.policy["MAX_SIMULTANEOUS_TRADES"]
 
         # Fixed-USD mode: read from constructor arg first, then env, then None.
-        self.fixed_risk_usd: float | None = (
-            fixed_risk_usd if fixed_risk_usd is not None else _read_fixed_risk_usd()
-        )
+        if fixed_risk_usd is not None:
+            self.fixed_risk_usd = fixed_risk_usd
+        elif policy is not None:
+            self.fixed_risk_usd = self.policy.get("FIXED_RISK_USD")
+        else:
+            self.fixed_risk_usd = _read_fixed_risk_usd()
 
         if self.fixed_risk_usd is not None:
             self.base_risk = 0.0  # unused in fixed-USD mode
             self.max_total_risk = 0.0  # computed dynamically per evaluate()
         else:
-            self.base_risk = 0.032          # 3.2% per trade
-            self.max_total_risk = 0.05      # 5.0% portfolio ceiling
+            self.base_risk = self.policy["BASE_RISK_PCT"]
+            self.max_total_risk = self.policy["MAX_COMBINED_EXPOSURE"]
 
         # OHLC fetcher for dynamic correlation (optional; falls back to static).
         self._fetch_ohlc: FetchOHLC | None = fetch_ohlc
@@ -226,7 +226,7 @@ class PortfolioManager:
             base_percent = self._fixed_risk_percent(account_status.balance)
             proposed_risk = round(base_percent * adversarial.risk_modifier, 8)
             max_exposure = self._max_exposure_for_fixed(account_status.balance)
-            mode_label = f"fixed_usd=${self.fixed_risk_usd:.2f}"
+            mode_label = f"mode={self.mode_id} fixed_usd=${self.fixed_risk_usd:.2f}"
         else:
             if regime is not None:
                 dynamic_base = self._compute_dynamic_risk(
@@ -236,7 +236,7 @@ class PortfolioManager:
                 dynamic_base = self.base_risk
             proposed_risk = round(dynamic_base * adversarial.risk_modifier, 4)
             max_exposure = self.max_total_risk
-            mode_label = f"pct_base={self.base_risk:.4f}"
+            mode_label = f"mode={self.mode_id} pct_base={self.base_risk:.4f}"
 
         # Portfolio ceiling check.
         if account_status.open_risk_percent + proposed_risk > max_exposure:

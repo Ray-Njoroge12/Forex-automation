@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from bridge.signal_router import SignalRouter
+from bridge.signal_router import SignalRouteError, SignalRouter
 
 
 @pytest.fixture
@@ -77,13 +77,28 @@ def test_router_releases_lock_when_write_fails(tmp_path, monkeypatch, valid_payl
 
     monkeypatch.setattr("pathlib.Path.open", _broken_open)
 
-    with pytest.raises(OSError):
+    with pytest.raises(SignalRouteError, match="pending_written=False"):
         router.send(valid_payload)
 
     assert not (tmp_path / "locks" / f"{valid_payload['trade_id']}.lock").exists()
 
 
-def test_router_cleanup_expires_stale_pending_and_orphan_lock(tmp_path, valid_payload: dict) -> None:
+def test_router_preserves_published_signal_when_registry_persist_fails(tmp_path, monkeypatch, valid_payload: dict) -> None:
+    router = SignalRouter(
+        pending_dir=tmp_path / "pending",
+        lock_dir=tmp_path / "locks",
+        registry_path=tmp_path / "trade_id_registry.json",
+    )
+    monkeypatch.setattr(router, "_persist_registry", lambda: (_ for _ in ()).throw(OSError("registry fail")))
+
+    with pytest.raises(SignalRouteError, match="pending_written=True"):
+        router.send(valid_payload)
+
+    assert (tmp_path / "pending" / f"{valid_payload['trade_id']}.json").exists()
+    assert (tmp_path / "locks" / f"{valid_payload['trade_id']}.lock").exists()
+
+
+def test_router_cleanup_quarantines_stale_pending_and_orphan_lock(tmp_path, valid_payload: dict) -> None:
     router = SignalRouter(
         pending_dir=tmp_path / "pending",
         lock_dir=tmp_path / "locks",
@@ -95,8 +110,31 @@ def test_router_cleanup_expires_stale_pending_and_orphan_lock(tmp_path, valid_pa
     lock_path = tmp_path / "locks" / f"{valid_payload['trade_id']}.lock"
     os.utime(lock_path, (stale_time, stale_time))
 
-    expired = router.cleanup_stale(max_age_seconds=600)
+    cleanup = router.cleanup_stale(max_age_seconds=600)
 
-    assert valid_payload["trade_id"] in expired
+    assert valid_payload["trade_id"] in cleanup.stale_pending_trade_ids
+    assert cleanup.orphan_lock_trade_ids == ()
     assert not path.exists()
     assert not lock_path.exists()
+    assert (tmp_path / "quarantine" / "stale_pending" / f"{valid_payload['trade_id']}.json").exists()
+
+
+def test_router_cleanup_quarantines_orphan_lock_without_pending(tmp_path) -> None:
+    router = SignalRouter(
+        pending_dir=tmp_path / "pending",
+        lock_dir=tmp_path / "locks",
+        registry_path=tmp_path / "trade_id_registry.json",
+    )
+    trade_id = "AI_orphan_lock_001"
+    lock_path = tmp_path / "locks" / f"{trade_id}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("LOCKED\n", encoding="utf-8")
+    stale_time = time.time() - 1200
+    os.utime(lock_path, (stale_time, stale_time))
+
+    cleanup = router.cleanup_stale(max_age_seconds=600)
+
+    assert cleanup.stale_pending_trade_ids == ()
+    assert cleanup.orphan_lock_trade_ids == (trade_id,)
+    assert not lock_path.exists()
+    assert (tmp_path / "quarantine" / "orphan_locks" / f"{trade_id}.lock").exists()

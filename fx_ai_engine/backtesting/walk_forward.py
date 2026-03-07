@@ -17,13 +17,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import backtrader as bt
 import pandas as pd
 
-from backtesting.bt_strategy import AgentBacktestStrategy
+from backtesting.bt_runner import run_backtest_on_df
 from backtesting.data_loader import load_ohlc_csv
-
-STARTING_CASH = 10_000.0
+from backtesting.simulation_profile import build_simulation_profile
+from config_microcapital import MODE_CONFIGS
 
 # SRS pre-live validation thresholds (from SRS v1).
 SRS_MIN_WIN_RATE = 0.45
@@ -31,37 +30,25 @@ SRS_MIN_AVG_R = 2.0
 SRS_MAX_DRAWDOWN_PCT = 15.0
 
 
-def _run_on_df(df: pd.DataFrame, symbol: str) -> AgentBacktestStrategy:
+def _run_on_df(df: pd.DataFrame, symbol: str, *, mode_id: str | None = None):
     """Run a single backtest pass on a pre-sliced DataFrame."""
-    data = bt.feeds.PandasData(
-        dataname=df,
-        open="open",
-        high="high",
-        low="low",
-        close="close",
-        volume="volume",
-        datetime=None,
-    )
-    cerebro = bt.Cerebro()
-    cerebro.broker.setcash(STARTING_CASH)
-    cerebro.adddata(data, name=symbol)
-    cerebro.addstrategy(AgentBacktestStrategy, symbol=symbol)
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0, annualize=True)
-    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
-    results = cerebro.run()
-    return results[0]
+    return run_backtest_on_df(df, symbol, mode_id=mode_id)
 
 
 def _extract_metrics(strategy: AgentBacktestStrategy) -> dict:
     """Summarise closed-trade results and analyser data into a metrics dict."""
     closed = strategy.results
     total = len(closed)
+    profile = getattr(strategy, "simulation_profile", build_simulation_profile("core_srs"))
 
     sharpe_analysis = strategy.analyzers.sharpe.get_analysis()
     drawdown_analysis = strategy.analyzers.drawdown.get_analysis()
     sharpe_val = float(sharpe_analysis.get("sharperatio") or 0.0)
-    max_dd = float(drawdown_analysis.get("max", {}).get("drawdown") or 0.0)
+    max_dd = float(
+        getattr(strategy, "max_simulated_drawdown_pct", 0.0)
+        if profile.realistic_constraints
+        else drawdown_analysis.get("max", {}).get("drawdown") or 0.0
+    )
 
     if total == 0:
         return {
@@ -70,6 +57,8 @@ def _extract_metrics(strategy: AgentBacktestStrategy) -> dict:
             "avg_r": 0.0,
             "sharpe": sharpe_val,
             "max_dd": max_dd,
+            "rejections": len(getattr(strategy, "rejected_signals", [])),
+            "profile": profile,
         }
 
     wins = sum(1 for t in closed if t["pnl"] > 0)
@@ -79,6 +68,8 @@ def _extract_metrics(strategy: AgentBacktestStrategy) -> dict:
         "avg_r": sum(t["r_multiple"] for t in closed) / total,
         "sharpe": sharpe_val,
         "max_dd": max_dd,
+        "rejections": len(getattr(strategy, "rejected_signals", [])),
+        "profile": profile,
     }
 
 
@@ -96,6 +87,7 @@ def run_walk_forward(
     symbol: str,
     train_months: int = 6,
     test_months: int = 1,
+    mode_id: str | None = None,
 ) -> pd.DataFrame:
     """Run walk-forward optimisation on a historical CSV.
 
@@ -109,6 +101,7 @@ def run_walk_forward(
     if df.empty:
         return pd.DataFrame()
 
+    profile = build_simulation_profile(mode_id)
     windows: list[dict] = []
     window_start = df.index[0]
     dataset_end = df.index[-1]
@@ -129,14 +122,26 @@ def run_walk_forward(
             window_start += pd.DateOffset(months=test_months)
             continue
 
-        train_m = _extract_metrics(_run_on_df(train_df, symbol))
-        test_m = _extract_metrics(_run_on_df(test_df, symbol))
+        train_m = _extract_metrics(_run_on_df(train_df, symbol, mode_id=mode_id))
+        test_m = _extract_metrics(_run_on_df(test_df, symbol, mode_id=mode_id))
 
         windows.append(
             {
                 "window": str(window_start.date()),
+                "simulation_mode": profile.mode_id,
+                "evidence_label": profile.evidence_label,
+                "evidence_stream": profile.evidence_stream,
+                "realism_label": profile.realism_label,
+                "criteria_label": (
+                    "SRS benchmark only"
+                    if profile.realistic_constraints
+                    else "Core SRS smoke-test criteria"
+                ),
+                "starting_cash": profile.starting_cash,
                 "train_trades": train_m["total"],
                 "test_trades": test_m["total"],
+                "train_rejections": train_m["rejections"],
+                "test_rejections": test_m["rejections"],
                 "train_wr": round(train_m["win_rate"], 4),
                 "test_wr": round(test_m["win_rate"], 4),
                 "train_avg_r": round(train_m["avg_r"], 4),
@@ -171,16 +176,21 @@ def _print_walk_forward_report(results: pd.DataFrame) -> None:
         print("No walk-forward windows could be formed (insufficient data).")
         return
 
+    first = results.iloc[0]
     print("=" * 64)
     print("Walk-Forward Results")
     print("=" * 64)
+    print(f"Evidence: {first['evidence_label']} [{first['evidence_stream']}]")
+    print(f"Simulation: {first['realism_label']} | starting_cash=${first['starting_cash']:.2f}")
+    print(f"Criteria: {first['criteria_label']}")
     for _, row in results.iterrows():
         srs_flag = "PASS" if row["srs_criteria_met"] else "FAIL"
+        criteria_token = "SRS_BENCHMARK" if row["simulation_mode"] == "preserve_10" else "SRS"
         print(
             f"  {row['window']}  "
             f"train_wr={row['train_wr']:.2%}  test_wr={row['test_wr']:.2%}  "
             f"test_avg_r={row['test_avg_r']:.2f}  test_dd={row['test_max_dd']:.1f}%  "
-            f"SRS={srs_flag}"
+            f"rejects={int(row['test_rejections'])}  {criteria_token}={srs_flag}"
         )
     stability = results["param_stability_score"].iloc[0]
     print("-" * 64)
@@ -194,6 +204,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", default="EURUSD")
     parser.add_argument("--train", type=int, default=6, help="Training window in months")
     parser.add_argument("--test", type=int, default=1, help="Test window in months")
+    parser.add_argument("--policy-mode", choices=sorted(MODE_CONFIGS), default=None)
     return parser.parse_args()
 
 
@@ -202,7 +213,7 @@ def main() -> int:
     if not Path(args.csv).exists():
         raise SystemExit(f"CSV not found: {args.csv}")
 
-    results = run_walk_forward(args.csv, args.symbol, args.train, args.test)
+    results = run_walk_forward(args.csv, args.symbol, args.train, args.test, mode_id=args.policy_mode)
     _print_walk_forward_report(results)
     return 0
 

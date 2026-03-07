@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 
-def _setup_db(tmp_path: Path, trades: list[dict]) -> Path:
+def _setup_db(
+    tmp_path: Path,
+    trades: list[dict],
+    risk_events: list[dict] | None = None,
+    account_metrics: list[dict] | None = None,
+) -> Path:
     """Create a minimal temp DB with synthetic closed trades."""
     db = tmp_path / "test.db"
     conn = sqlite3.connect(db)
@@ -16,26 +21,60 @@ def _setup_db(tmp_path: Path, trades: list[dict]) -> Path:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             trade_id TEXT, symbol TEXT, direction TEXT,
             r_multiple REAL, profit_loss REAL,
-            status TEXT, close_time TEXT, reason_code TEXT
+            status TEXT, close_time TEXT, open_time TEXT, execution_time TEXT, reason_code TEXT
         )
     """)
     conn.execute("""
         CREATE TABLE account_metrics (
             id INTEGER PRIMARY KEY,
-            timestamp TEXT, balance REAL, equity REAL
+            timestamp TEXT, balance REAL, equity REAL, is_trading_halted INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE risk_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            rule_name TEXT,
+            severity TEXT,
+            reason TEXT,
+            trade_id TEXT
         )
     """)
     now = datetime.now(timezone.utc)
     for i, t in enumerate(trades):
         conn.execute(
             "INSERT INTO trades (trade_id, symbol, direction, r_multiple, "
-            "profit_loss, status, close_time, reason_code) VALUES (?,?,?,?,?,?,?,?)",
+            "profit_loss, status, close_time, open_time, execution_time, reason_code) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 f"AI_{i:04d}", t.get("symbol", "EURUSD"), t.get("direction", "BUY"),
                 t.get("r_multiple", 0.0), t.get("profit_loss", 0.0),
                 t.get("status", "CLOSED"),
                 (now - timedelta(days=i % 25)).isoformat(),
+                (now - timedelta(days=i % 25)).isoformat(),
+                (now - timedelta(days=i % 25)).isoformat(),
                 "TECH_PULLBACK_BUY",
+            ),
+        )
+    for event in risk_events or []:
+        conn.execute(
+            "INSERT INTO risk_events (timestamp, rule_name, severity, reason, trade_id) VALUES (?,?,?,?,?)",
+            (
+                event.get("timestamp", now.isoformat()),
+                event["rule_name"],
+                event.get("severity", "BLOCK"),
+                event.get("reason", event["rule_name"]),
+                event.get("trade_id"),
+            ),
+        )
+    for i, sample in enumerate(account_metrics or []):
+        conn.execute(
+            "INSERT INTO account_metrics (id, timestamp, balance, equity, is_trading_halted) VALUES (?,?,?,?,?)",
+            (
+                i + 1,
+                sample.get("timestamp", now.isoformat()),
+                sample.get("balance", 10.0),
+                sample.get("equity", 10.0),
+                int(sample.get("is_trading_halted", 0)),
             ),
         )
     conn.commit()
@@ -49,6 +88,19 @@ def _make_trades(n: int, win_rate: float, avg_r_win: float = 2.5) -> list[dict]:
         {"r_multiple": avg_r_win, "status": "CLOSED"} if i < wins
         else {"r_multiple": -1.0, "status": "CLOSED"}
         for i in range(n)
+    ]
+
+
+def _make_account_metrics(total: int, *, halted_count: int = 0, balance: float = 10.0, equity: float = 10.0) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    return [
+        {
+            "timestamp": (now - timedelta(minutes=i)).isoformat(),
+            "balance": balance,
+            "equity": equity,
+            "is_trading_halted": 1 if i < halted_count else 0,
+        }
+        for i in range(total)
     ]
 
 
@@ -156,3 +208,225 @@ def test_no_abort_when_criteria_met():
     from validation.validate_demo import check_abort_criteria
     result = check_abort_criteria(drawdown_pct=0.10, win_rate=0.50, avg_r=2.2, total_trades=30)
     assert result["abort"] is False
+
+
+def test_preserve_10_wave_a_passes_clean_safety_gate(tmp_path, monkeypatch) -> None:
+    db = _setup_db(tmp_path, _make_trades(2, win_rate=0.5, avg_r_win=2.5))
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_wave_a")
+
+    assert verdict == "PASS"
+    assert metrics["late_lot_rejections"] == 0
+    assert metrics["stale_state_failures"] == 0
+    assert metrics["reconciliation_failures"] == 0
+
+
+def test_preserve_10_wave_a_warns_on_late_lot_reject(tmp_path, monkeypatch) -> None:
+    db = _setup_db(
+        tmp_path,
+        [],
+        risk_events=[],
+    )
+    conn = sqlite3.connect(db)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO trades (trade_id, symbol, direction, r_multiple, profit_loss, status, close_time, open_time, execution_time, reason_code) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("AI_REJECTED_LOT", "EURUSD", "BUY", 0.0, 0.0, "REJECTED_LOT", now, now, now, "REJECTED_LOT"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_wave_a")
+
+    assert verdict == "WARN"
+    assert metrics["late_lot_rejections"] == 1
+
+
+def test_preserve_10_wave_a_warns_on_state_authority_failures(tmp_path, monkeypatch) -> None:
+    db = _setup_db(
+        tmp_path,
+        _make_trades(1, win_rate=1.0, avg_r_win=2.5),
+        risk_events=[
+            {"rule_name": "STATE_STALE"},
+            {"rule_name": "STATE_RECONCILIATION_FAILED"},
+        ],
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_wave_a")
+
+    assert verdict == "WARN"
+    assert metrics["stale_state_failures"] == 1
+    assert metrics["reconciliation_failures"] == 1
+
+
+def test_preserve_10_wave_a_pending_without_observed_evidence(tmp_path, monkeypatch) -> None:
+    db = _setup_db(tmp_path, [], risk_events=[])
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_wave_a")
+
+    assert verdict == "PENDING"
+    assert metrics["observed_gate_events"] == 0
+
+
+def test_preserve_10_operational_passes_with_clean_startup_feasibility_and_halt_evidence(tmp_path, monkeypatch) -> None:
+    db = _setup_db(
+        tmp_path,
+        _make_trades(2, win_rate=0.5, avg_r_win=2.5),
+        risk_events=[
+            {
+                "rule_name": "PRESERVE_10_STARTUP_APPROVAL",
+                "severity": "INFO",
+                "reason": "PRESERVE_10_STARTUP_APPROVED facts ready",
+            }
+        ],
+        account_metrics=_make_account_metrics(3),
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_operational")
+
+    assert verdict == "PASS"
+    assert metrics["startup_approval_failures"] == 0
+    assert metrics["preroute_rejections"] == 0
+    assert metrics["preroute_rejection_rate"] == 0.0
+    assert metrics["restart_risk_anomalies"] == 0
+    assert metrics["halted_account_samples"] == 0
+    assert metrics["account_metric_samples"] == 3
+
+
+def test_preserve_10_operational_warns_on_startup_failures_and_preroute_rejection_rate(tmp_path, monkeypatch, capsys) -> None:
+    db = _setup_db(
+        tmp_path,
+        [],
+        risk_events=[
+            {
+                "rule_name": "PRESERVE_10_STARTUP_APPROVAL",
+                "severity": "BLOCK",
+                "reason": "APPROVAL_ACCOUNT_INFO_MISSING startup approval unavailable",
+            },
+            {
+                "rule_name": "PRE_ROUTE_FEASIBILITY",
+                "severity": "WARN",
+                "reason": "mode=preserve_10 raw_limit=0.002500 min_lot=0.0100",
+            },
+        ],
+        account_metrics=_make_account_metrics(2),
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_operational")
+
+    assert verdict == "WARN"
+    assert metrics["startup_approval_failures"] == 1
+    assert metrics["startup_approval_observations"] == 1
+    assert metrics["preroute_rejections"] == 1
+    assert metrics["feasibility_observations"] == 1
+    assert metrics["preroute_rejection_rate"] == 1.0
+    out = capsys.readouterr().out
+    assert "Startup Approval Refusals" in out
+    assert "Pre-route Refusals" in out
+    assert "operators saw Preserve-$10 startup approval fail closed" in out
+    assert "Evidence scope: Preserve-$10 operational proof only" in out
+
+
+def test_preserve_10_operational_warns_on_restart_anomalies_and_halt_behavior(tmp_path, monkeypatch) -> None:
+    db = _setup_db(
+        tmp_path,
+        _make_trades(1, win_rate=1.0, avg_r_win=2.5),
+        risk_events=[
+            {
+                "rule_name": "PRESERVE_10_STARTUP_APPROVAL",
+                "severity": "INFO",
+                "reason": "PRESERVE_10_STARTUP_APPROVED facts ready",
+            },
+            {"rule_name": "STATE_STALE"},
+            {"rule_name": "STATE_RECONCILIATION_FAILED"},
+        ],
+        account_metrics=_make_account_metrics(4, halted_count=2),
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_operational")
+
+    assert verdict == "WARN"
+    assert metrics["restart_risk_anomalies"] == 2
+    assert metrics["halted_account_samples"] == 2
+    assert metrics["halted_sample_rate"] == 0.5
+
+
+def test_preserve_10_operational_aborts_on_drawdown_floor_breach(tmp_path, monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    db = _setup_db(
+        tmp_path,
+        _make_trades(2, win_rate=0.5, avg_r_win=2.5),
+        risk_events=[
+            {
+                "rule_name": "PRESERVE_10_STARTUP_APPROVAL",
+                "severity": "INFO",
+                "reason": "PRESERVE_10_STARTUP_APPROVED facts ready",
+            }
+        ],
+        account_metrics=[
+            {"timestamp": (now - timedelta(minutes=1)).isoformat(), "balance": 10.0, "equity": 10.0, "is_trading_halted": 0},
+            {"timestamp": now.isoformat(), "balance": 10.0, "equity": 7.0, "is_trading_halted": 0},
+        ],
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_operational")
+
+    assert verdict == "ABORT"
+    assert metrics["max_drawdown"] == 0.3
+
+
+def test_preserve_10_operational_pending_without_full_operational_evidence(tmp_path, monkeypatch) -> None:
+    db = _setup_db(
+        tmp_path,
+        _make_trades(1, win_rate=1.0, avg_r_win=2.5),
+        risk_events=[],
+        account_metrics=[],
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="preserve_10_operational")
+
+    assert verdict == "PENDING"
+    assert metrics["startup_approval_observations"] == 0
+    assert metrics["account_metric_samples"] == 0
+
+
+def test_core_srs_profile_remains_isolated_from_preserve_10_operational_evidence(tmp_path, monkeypatch, capsys) -> None:
+    db = _setup_db(
+        tmp_path,
+        _make_trades(30, win_rate=0.9, avg_r_win=2.5),
+        risk_events=[
+            {
+                "rule_name": "PRESERVE_10_STARTUP_APPROVAL",
+                "severity": "BLOCK",
+                "reason": "APPROVAL_ACCOUNT_INFO_MISSING startup approval unavailable",
+            },
+            {
+                "rule_name": "PRE_ROUTE_FEASIBILITY",
+                "severity": "WARN",
+                "reason": "mode=preserve_10 raw_limit=0.002500 min_lot=0.0100",
+            },
+            {"rule_name": "STATE_STALE"},
+        ],
+        account_metrics=_make_account_metrics(3, halted_count=3),
+    )
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="core_srs")
+
+    assert verdict == "PASS"
+    assert "startup_approval_failures" not in metrics
+    assert "preroute_rejections" not in metrics
+    assert "halted_account_samples" not in metrics
+    out = capsys.readouterr().out
+    assert "Evidence Label: Core SRS v1" in out
+    assert "Preserve-$10 Operator Checks" not in out
+    assert "Preserve-$10 doctrine and operational diagnostics are reported separately" in out
