@@ -43,6 +43,14 @@ class ValidationProfile:
     evidence_label: str
     purpose: str
 
+
+@dataclass(frozen=True)
+class ValidationScope:
+    policy_modes: tuple[str, ...]
+    execution_modes: tuple[str, ...]
+    evidence_stream: str | None = None
+    account_scope: str | None = None
+
 # SRS v1 §12.2 -- Acceptance
 MIN_TRADES = 25
 MIN_WIN_RATE = 0.45
@@ -85,42 +93,94 @@ VALIDATION_PROFILES = {
 }
 
 
-def _load_trades(days: int) -> list[dict]:
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _scope_sql(scope: ValidationScope, columns: set[str]) -> tuple[str, list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if scope.policy_modes and "policy_mode" in columns:
+        clauses.append("policy_mode IN (" + ", ".join("?" for _ in scope.policy_modes) + ")")
+        params.extend(scope.policy_modes)
+    if scope.execution_modes and "execution_mode" in columns:
+        clauses.append("execution_mode IN (" + ", ".join("?" for _ in scope.execution_modes) + ")")
+        params.extend(scope.execution_modes)
+    if scope.evidence_stream and "evidence_stream" in columns:
+        clauses.append("evidence_stream = ?")
+        params.append(scope.evidence_stream)
+    if scope.account_scope and "account_scope" in columns:
+        clauses.append("account_scope = ?")
+        params.append(scope.account_scope)
+    if not clauses:
+        return "", params
+    return " AND " + " AND ".join(clauses), params
+
+
+def _resolve_scope(
+    profile_id: str,
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> ValidationScope:
+    if evidence_stream:
+        return ValidationScope(
+            policy_modes=(),
+            execution_modes=(),
+            evidence_stream=evidence_stream,
+            account_scope=account_scope,
+        )
+    if profile_id == CORE_SRS_PROFILE.profile_id:
+        policy_modes = ("core_srs",)
+    else:
+        policy_modes = ("preserve_10", "legacy_micro_capital")
+    return ValidationScope(
+        policy_modes=policy_modes,
+        execution_modes=("mt5",),
+        evidence_stream=evidence_stream,
+        account_scope=account_scope,
+    )
+
+
+def _load_trades(days: int, scope: ValidationScope) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     if not DB_PATH.exists():
         return []
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "trades"))
     rows = conn.execute(
-        """
+        f"""
         SELECT trade_id, symbol, direction, r_multiple, profit_loss,
                status, close_time, reason_code
           FROM trades
          WHERE status LIKE 'CLOSED%'
            AND close_time >= ?
+           {scope_sql}
          ORDER BY close_time ASC
         """,
-        (since,),
+        (since, *scope_params),
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
-def _load_equity_curve(days: int) -> list[float]:
+def _load_equity_curve(days: int, scope: ValidationScope) -> list[float]:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     if not DB_PATH.exists():
         return []
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "account_metrics"))
     rows = conn.execute(
-        "SELECT equity FROM account_metrics WHERE timestamp >= ? ORDER BY timestamp ASC",
-        (since,),
+        f"SELECT equity FROM account_metrics WHERE timestamp >= ?{scope_sql} ORDER BY timestamp ASC",
+        (since, *scope_params),
     ).fetchall()
     conn.close()
     return [float(row["equity"]) for row in rows if row["equity"] is not None]
 
 
-def _count_trade_reasons(days: int, reason_codes: tuple[str, ...]) -> dict[str, int]:
+def _count_trade_reasons(days: int, reason_codes: tuple[str, ...], scope: ValidationScope) -> dict[str, int]:
     counts = {code: 0 for code in reason_codes}
     if not DB_PATH.exists() or not reason_codes:
         return counts
@@ -128,15 +188,17 @@ def _count_trade_reasons(days: int, reason_codes: tuple[str, ...]) -> dict[str, 
     placeholders = ", ".join("?" for _ in reason_codes)
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "trades"))
     rows = conn.execute(
         f"""
         SELECT reason_code, COUNT(*) AS total
           FROM trades
          WHERE reason_code IN ({placeholders})
            AND COALESCE(close_time, open_time, execution_time) >= ?
+           {scope_sql}
          GROUP BY reason_code
         """,
-        (*reason_codes, since),
+        (*reason_codes, since, *scope_params),
     ).fetchall()
     conn.close()
     for row in rows:
@@ -144,7 +206,7 @@ def _count_trade_reasons(days: int, reason_codes: tuple[str, ...]) -> dict[str, 
     return counts
 
 
-def _count_risk_rules(days: int, rule_names: tuple[str, ...]) -> dict[str, int]:
+def _count_risk_rules(days: int, rule_names: tuple[str, ...], scope: ValidationScope) -> dict[str, int]:
     counts = {rule: 0 for rule in rule_names}
     if not DB_PATH.exists() or not rule_names:
         return counts
@@ -152,6 +214,7 @@ def _count_risk_rules(days: int, rule_names: tuple[str, ...]) -> dict[str, int]:
     placeholders = ", ".join("?" for _ in rule_names)
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "risk_events"))
     rows = conn.execute(
         f"""
         SELECT rule_name, COUNT(*) AS total
@@ -159,9 +222,10 @@ def _count_risk_rules(days: int, rule_names: tuple[str, ...]) -> dict[str, int]:
          WHERE rule_name IN ({placeholders})
            AND severity = 'BLOCK'
            AND timestamp >= ?
+           {scope_sql}
          GROUP BY rule_name
         """,
-        (*rule_names, since),
+        (*rule_names, since, *scope_params),
     ).fetchall()
     conn.close()
     for row in rows:
@@ -200,20 +264,62 @@ def _count_risk_events(days: int, *, rule_name: str, severity: str | None = None
     return int((row or {"total": 0})["total"] or 0)
 
 
-def _load_account_metric_summary(days: int) -> dict[str, int]:
+def _count_risk_events_scoped(
+    days: int,
+    *,
+    rule_name: str,
+    scope: ValidationScope,
+    severity: str | None = None,
+) -> int:
+    if not DB_PATH.exists():
+        return 0
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "risk_events"))
+    if severity is None:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+              FROM risk_events
+             WHERE rule_name = ?
+               AND timestamp >= ?
+               {scope_sql}
+            """,
+            (rule_name, since, *scope_params),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+              FROM risk_events
+             WHERE rule_name = ?
+               AND severity = ?
+               AND timestamp >= ?
+               {scope_sql}
+            """,
+            (rule_name, severity, since, *scope_params),
+        ).fetchone()
+    conn.close()
+    return int((row or {"total": 0})["total"] or 0)
+
+
+def _load_account_metric_summary(days: int, scope: ValidationScope) -> dict[str, int]:
     if not DB_PATH.exists():
         return {"account_metric_samples": 0, "halted_account_samples": 0}
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    scope_sql, scope_params = _scope_sql(scope, _table_columns(conn, "account_metrics"))
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS total,
                COALESCE(SUM(CASE WHEN is_trading_halted = 1 THEN 1 ELSE 0 END), 0) AS halted
           FROM account_metrics
          WHERE timestamp >= ?
+           {scope_sql}
         """,
-        (since,),
+        (since, *scope_params),
     ).fetchone()
     conn.close()
     return {
@@ -288,9 +394,9 @@ def _per_symbol_breakdown(trades: list[dict]) -> dict[str, dict]:
     return result
 
 
-def _augment_preserve_10_metrics(days: int, metrics: dict) -> dict:
-    trade_counts = _count_trade_reasons(days, PRESERVE_10_CRITICAL_TRADE_REASONS)
-    risk_counts = _count_risk_rules(days, PRESERVE_10_CRITICAL_RISK_RULES)
+def _augment_preserve_10_metrics(days: int, metrics: dict, scope: ValidationScope) -> dict:
+    trade_counts = _count_trade_reasons(days, PRESERVE_10_CRITICAL_TRADE_REASONS, scope)
+    risk_counts = _count_risk_rules(days, PRESERVE_10_CRITICAL_RISK_RULES, scope)
     late_lot_rejections = trade_counts.get("REJECTED_LOT", 0)
     stale_state_failures = risk_counts.get("STATE_STALE", 0)
     reconciliation_failures = risk_counts.get("STATE_RECONCILIATION_FAILED", 0)
@@ -313,23 +419,26 @@ def _augment_preserve_10_metrics(days: int, metrics: dict) -> dict:
     return metrics
 
 
-def _augment_preserve_10_operational_metrics(days: int, metrics: dict) -> dict:
-    startup_approval_passes = _count_risk_events(
+def _augment_preserve_10_operational_metrics(days: int, metrics: dict, scope: ValidationScope) -> dict:
+    startup_approval_passes = _count_risk_events_scoped(
         days,
         rule_name="PRESERVE_10_STARTUP_APPROVAL",
+        scope=scope,
         severity="INFO",
     )
-    startup_approval_failures = _count_risk_events(
+    startup_approval_failures = _count_risk_events_scoped(
         days,
         rule_name="PRESERVE_10_STARTUP_APPROVAL",
+        scope=scope,
         severity="BLOCK",
     )
-    preroute_rejections = _count_risk_events(
+    preroute_rejections = _count_risk_events_scoped(
         days,
         rule_name="PRE_ROUTE_FEASIBILITY",
+        scope=scope,
         severity="WARN",
     )
-    halt_summary = _load_account_metric_summary(days)
+    halt_summary = _load_account_metric_summary(days, scope)
     startup_approval_observations = startup_approval_passes + startup_approval_failures
     feasibility_observations = (
         metrics["total_trades"] + preroute_rejections + metrics["late_lot_rejections"]
@@ -605,6 +714,7 @@ def _print_report(
     verdict: str,
     reasons: list[str],
     days: int,
+    scope: ValidationScope,
 ) -> None:
     bar = "=" * 62
     print(f"\n{bar}")
@@ -613,6 +723,11 @@ def _print_report(
     print(f"  Profile: {profile.label}")
     print(f"  Evidence Label: {profile.evidence_label}")
     print(f"  Purpose: {profile.purpose}")
+    print(f"  Filter: execution={','.join(scope.execution_modes)} policy={','.join(scope.policy_modes)}")
+    if scope.evidence_stream:
+        print(f"  Evidence Stream Override: {scope.evidence_stream}")
+    if scope.account_scope:
+        print(f"  Account Scope Override: {scope.account_scope}")
     print(f"{bar}")
     if profile.profile_id == CORE_SRS_PROFILE.profile_id:
         print(f"\n  Core Metrics                   Value       Requirement")
@@ -662,22 +777,33 @@ def _print_report(
     print(f"{bar}\n")
 
 
-def run_validation(days: int = 30, profile: str = "core_srs") -> tuple[str, dict]:
+def run_validation(
+    days: int = 30,
+    profile: str = "core_srs",
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> tuple[str, dict]:
     """Run full validation. Returns (verdict, metrics) for programmatic use."""
     selected_profile = _resolve_profile(profile)
-    trades = _load_trades(days)
-    equity_curve = _load_equity_curve(days)
+    scope = _resolve_scope(
+        selected_profile.profile_id,
+        evidence_stream=evidence_stream,
+        account_scope=account_scope,
+    )
+    trades = _load_trades(days, scope)
+    equity_curve = _load_equity_curve(days, scope)
     metrics = _compute_metrics(trades, equity_curve)
     if selected_profile.profile_id in {
         PRESERVE_10_WAVE_A_PROFILE.profile_id,
         PRESERVE_10_OPERATIONAL_PROFILE.profile_id,
     }:
-        metrics = _augment_preserve_10_metrics(days, metrics)
+        metrics = _augment_preserve_10_metrics(days, metrics, scope)
     if selected_profile.profile_id == PRESERVE_10_OPERATIONAL_PROFILE.profile_id:
-        metrics = _augment_preserve_10_operational_metrics(days, metrics)
+        metrics = _augment_preserve_10_operational_metrics(days, metrics, scope)
     breakdown = _per_symbol_breakdown(trades)
     verdict, reasons = determine_verdict(metrics, profile_id=selected_profile.profile_id)
-    _print_report(selected_profile, metrics, breakdown, verdict, reasons, days)
+    _print_report(selected_profile, metrics, breakdown, verdict, reasons, days, scope)
     return verdict, metrics
 
 
@@ -690,12 +816,19 @@ def _parse_args() -> argparse.Namespace:
         default=CORE_SRS_PROFILE.profile_id,
         help="Validation profile to apply (default: core_srs)",
     )
+    p.add_argument("--evidence-stream", default=None, help="Optional evidence_stream override")
+    p.add_argument("--account-scope", default=None, help="Optional account_scope override")
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
-    verdict, _ = run_validation(args.days, profile=args.profile)
+    verdict, _ = run_validation(
+        args.days,
+        profile=args.profile,
+        evidence_stream=args.evidence_stream,
+        account_scope=args.account_scope,
+    )
     return 0 if verdict == "PASS" else 1
 
 

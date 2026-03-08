@@ -18,6 +18,7 @@ CTrade trade;
 // Per-position trade management parameters (indexed by slot 0..MAX_POS-1)
 #define MAX_POS 10
 ulong  g_tickets[MAX_POS];
+string g_trade_ids[MAX_POS];
 double g_be_trigger_r[MAX_POS];
 double g_partial_close_r[MAX_POS];
 double g_trailing_atr_mult[MAX_POS];
@@ -29,6 +30,7 @@ void InitPositionArrays()
    for(int i = 0; i < MAX_POS; i++)
    {
       g_tickets[i]           = 0;
+      g_trade_ids[i]         = "";
       g_be_trigger_r[i]      = 1.0;
       g_partial_close_r[i]   = 1.5;
       g_trailing_atr_mult[i] = 2.0;
@@ -57,6 +59,7 @@ void FreeSlot(ulong ticket)
    if(s >= 0)
    {
       g_tickets[s]           = 0;
+      g_trade_ids[s]         = "";
       g_be_trigger_r[s]      = 1.0;
       g_partial_close_r[s]   = 1.5;
       g_trailing_atr_mult[s] = 2.0;
@@ -99,6 +102,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          if(deal_entry == DEAL_ENTRY_OUT || deal_entry == DEAL_ENTRY_INOUT || deal_entry == DEAL_ENTRY_OUT_BY)
          {
             ulong pos_ticket = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
+            if(pos_ticket == 0) return;
+
+            if(PositionSelectByTicket(pos_ticket))
+            {
+               LogDebug("Ignoring non-final exit event for position=" + (string)pos_ticket);
+               return;
+            }
+
             double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
             double fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
             double swap = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
@@ -107,8 +118,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             double total_pl = profit + fee + swap + commission;
             
             datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
+            string trade_id = GetTradeIdForPosition(pos_ticket);
+            if(trade_id == "")
+               trade_id = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
             
-            WriteExitFeedback(pos_ticket, total_pl, close_time);
+            WriteExitFeedback(pos_ticket, trade_id, total_pl, close_time);
             FreeSlot(pos_ticket);
          }
       }
@@ -434,6 +448,7 @@ double CalculateLot(string sym, const double riskPercent, const double stopPips)
 void WriteExecutionFeedback(
    const string tradeId,
    const ulong ticket,
+   const ulong positionTicket,
    const string status,
    const double entryPrice,
    const double slippage,
@@ -444,6 +459,7 @@ void WriteExecutionFeedback(
    string payload = "{";
    payload += "\"trade_id\":\"" + tradeId + "\",";
    payload += "\"ticket\":" + StringFormat("%I64u", ticket) + ",";
+   payload += "\"position_ticket\":" + StringFormat("%I64u", positionTicket) + ",";
    payload += "\"status\":\"" + status + "\",";
    payload += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
    payload += "\"slippage\":" + DoubleToString(slippage, 6) + ",";
@@ -459,13 +475,17 @@ void WriteExecutionFeedback(
 
 void WriteExitFeedback(
    const ulong ticket,
+   const string tradeId,
    const double profitLoss,
    const datetime closeTime)
 {
    string payload = "{";
    payload += "\"ticket\":" + StringFormat("%I64u", ticket) + ",";
+   payload += "\"position_ticket\":" + StringFormat("%I64u", ticket) + ",";
+   payload += "\"trade_id\":\"" + tradeId + "\",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
    payload += "\"status\":\"CLOSED\",";
+   payload += "\"is_final_exit\":true,";
    payload += "\"close_time\":\"" + TimeToString(closeTime, TIME_DATE | TIME_SECONDS) + "\"";
    payload += "}";
 
@@ -517,6 +537,30 @@ void WriteAccountSnapshot()
    payload += "}";
 
    WriteTextFile(FeedbackFolder() + "\\account_snapshot.json", payload);
+}
+
+string GetTradeIdForPosition(ulong ticket)
+{
+   int s = FindSlot(ticket);
+   if(s >= 0)
+      return g_trade_ids[s];
+   return "";
+}
+
+ulong FindPositionTicketByTradeId(const string symbol, const string tradeId)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong positionTicket = PositionGetTicket(i);
+      if(positionTicket == 0)
+         continue;
+
+      string positionSymbol = PositionGetString(POSITION_SYMBOL);
+      string positionComment = PositionGetString(POSITION_COMMENT);
+      if(positionSymbol == symbol && positionComment == tradeId)
+         return positionTicket;
+   }
+   return 0;
 }
 
 void ProcessPendingSignal()
@@ -583,7 +627,7 @@ void ProcessPendingSignal()
    if(spreadPips > MaxSpreadPips)
    {
       LogDebug("Spread too wide: " + (string)spreadPips);
-      WriteExecutionFeedback(tradeId, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -592,7 +636,7 @@ void ProcessPendingSignal()
    if(recalculateLot <= 0.0)
    {
       LogDebug("Lot calculation fail (too small)");
-      WriteExecutionFeedback(tradeId, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -644,7 +688,7 @@ void ProcessPendingSignal()
    if(!placed)
    {
       LogDebug("Order Execution FAIL: " + trade.ResultRetcodeDescription());
-      WriteExecutionFeedback(tradeId, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -655,18 +699,21 @@ void ProcessPendingSignal()
    if(ticket == 0) ticket = trade.ResultOrder();
    
    LogDebug("EXECUTION SUCCESS: Ticket " + (string)ticket);
-   ulong posTicket = trade.ResultDeal();
+   ulong posTicket = FindPositionTicketByTradeId(symbol, tradeId);
+   if(posTicket == 0 && PositionSelectByTicket(trade.ResultOrder())) posTicket = trade.ResultOrder();
+   if(posTicket == 0 && PositionSelectByTicket(trade.ResultDeal())) posTicket = trade.ResultDeal();
    if(posTicket == 0) posTicket = trade.ResultOrder();
    int slot = AllocSlot(posTicket);
    if(slot >= 0)
    {
+      g_trade_ids[slot]        = tradeId;
       g_be_trigger_r[slot]     = beR;
       g_partial_close_r[slot]  = partialR;
       g_trailing_atr_mult[slot]= trailMult;
       g_tp_mode_trail[slot]    = trailMode;
       g_partial_closed[slot]   = false;
    }
-   WriteExecutionFeedback(tradeId, ticket, "EXECUTED", fillPrice, slippage, spread, 0.0, 0.0);
+   WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", fillPrice, slippage, spread, 0.0, 0.0);
 
    FileDelete(filePath);
 }

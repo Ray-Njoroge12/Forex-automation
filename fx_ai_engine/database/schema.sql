@@ -2,6 +2,11 @@ CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id TEXT UNIQUE,
     trade_ticket INTEGER UNIQUE,
+    position_ticket INTEGER,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
     symbol TEXT NOT NULL,
     direction TEXT,
     order_type TEXT,
@@ -35,6 +40,10 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE TABLE IF NOT EXISTS account_metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
     balance REAL NOT NULL,
     equity REAL NOT NULL,
     open_risk_percent REAL DEFAULT 0.0,
@@ -54,8 +63,28 @@ CREATE TABLE IF NOT EXISTS account_metrics (
 CREATE TABLE IF NOT EXISTS risk_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
     rule_name TEXT NOT NULL,
     severity TEXT NOT NULL,
     reason TEXT NOT NULL,
+    trade_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS decision_funnel_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
+    decision_time DATETIME NOT NULL,
+    symbol TEXT,
+    stage TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    details TEXT DEFAULT '',
     trade_id TEXT
 );

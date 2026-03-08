@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 import os
 
 import pandas as pd
+from core.bridge_utils import get_mock_runtime_state_path
 
 mt5 = None
 try:
@@ -188,6 +191,47 @@ class MT5Connection:
         
         return True
 
+    def _mock_runtime_state(self) -> dict[str, Any] | None:
+        module_name = getattr(mt5, "__name__", "")
+        if os.getenv("USE_MT5_MOCK") != "1" or module_name not in {"core.mt5_mock", "MMetaTrader5"}:
+            return None
+        state_path = get_mock_runtime_state_path()
+        if not state_path.exists():
+            return None
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Failed reading mock runtime state from %s", state_path)
+            return None
+        try:
+            return {
+                "balance": round(max(float(payload.get("balance", 0.0)), 0.01), 2),
+                "equity": round(max(float(payload.get("equity", payload.get("balance", 0.0))), 0.01), 2),
+            }
+        except (TypeError, ValueError):
+            logger.warning("Invalid mock runtime state payload in %s", state_path)
+            return None
+
+    def _account_info(self) -> Any:
+        account_info = mt5.account_info() if mt5 is not None else None
+        if account_info is None:
+            return None
+        mock_state = self._mock_runtime_state()
+        if not mock_state:
+            return account_info
+        raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
+        currency_key = "".join(ch for ch in raw_currency.upper() if ch.isalnum())
+        _, unit_scale = _ACCOUNT_DENOMINATION_MAP.get(currency_key, ("usd", 1.0))
+        payload = {
+            "balance": round(mock_state["balance"] / unit_scale, 8),
+            "equity": round(mock_state["equity"] / unit_scale, 8),
+            "margin_free": round(mock_state["equity"] / unit_scale, 8),
+            "currency": raw_currency,
+            "leverage": int(getattr(account_info, "leverage", 0) or 0),
+            "trade_allowed": bool(getattr(account_info, "trade_allowed", True)),
+        }
+        return SimpleNamespace(**payload)
+
     def get_account_snapshot(self) -> dict[str, Any] | None:
         """Returns live account state or explicit error object."""
         if not self._ensure_connected():
@@ -198,7 +242,7 @@ class MT5Connection:
                 ).__dict__
             }
 
-        account_info = mt5.account_info() if mt5 is not None else None
+        account_info = self._account_info()
         if account_info is None:
             return {
                 "error": self._make_error(
@@ -211,15 +255,18 @@ class MT5Connection:
         open_positions = list(positions) if positions else []
 
         floating_pnl = float(sum(getattr(pos, "profit", 0.0) for pos in open_positions))
+        raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
+        currency_key = "".join(ch for ch in raw_currency.upper() if ch.isalnum())
+        _, unit_scale = _ACCOUNT_DENOMINATION_MAP.get(currency_key, ("usd", 1.0))
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "balance": float(account_info.balance),
-            "equity": float(account_info.equity),
-            "margin_free": float(account_info.margin_free),
+            "balance": round(float(account_info.balance) * unit_scale, 8),
+            "equity": round(float(account_info.equity) * unit_scale, 8),
+            "margin_free": round(float(account_info.margin_free) * unit_scale, 8),
             "open_positions_count": int(len(open_positions)),
             "open_symbols": list(set(pos.symbol for pos in open_positions)),
-            "floating_pnl": floating_pnl,
+            "floating_pnl": round(floating_pnl * unit_scale, 8),
         }
         logger.info(
             "Account snapshot fetched balance=%.2f equity=%.2f open_positions=%d",
@@ -582,7 +629,7 @@ class MT5Connection:
                 fetched_at_utc=fetched_at_utc,
             )
 
-        account_info = mt5.account_info() if mt5 is not None else None
+        account_info = self._account_info()
         if account_info is None:
             return self._approval_failure(
                 "APPROVAL_ACCOUNT_INFO_MISSING",
@@ -647,8 +694,11 @@ class MT5Connection:
             )
 
         if account_balance is None:
-            account_info = mt5.account_info() if mt5 is not None else None
-            account_balance = float(getattr(account_info, "balance", 0.0) or 0.0)
+            account_info = self._account_info()
+            raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
+            currency_key = "".join(ch for ch in raw_currency.upper() if ch.isalnum())
+            _, unit_scale = _ACCOUNT_DENOMINATION_MAP.get(currency_key, ("usd", 1.0))
+            account_balance = float(getattr(account_info, "balance", 0.0) or 0.0) * unit_scale
 
         if account_balance <= 0:
             return TradeFeasibilityDecision(

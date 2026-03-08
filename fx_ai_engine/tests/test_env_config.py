@@ -196,3 +196,79 @@ def test_portfolio_manager_reads_preserve_10_fixed_risk(monkeypatch):
     manager = PortfolioManager()
     assert manager.mode_id == "preserve_10"
     assert manager.fixed_risk_usd == 0.50
+
+
+def test_mock_mode_uses_isolated_bridge_path_by_default(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.delenv("BRIDGE_BASE_PATH", raising=False)
+
+    from core.bridge_utils import get_mt5_bridge_path
+
+    bridge_path = get_mt5_bridge_path()
+
+    assert bridge_path.name == "mock_mt5_bridge"
+    assert bridge_path.as_posix().endswith("/fx_ai_engine/mock_mt5_bridge")
+
+
+def test_mock_mode_ignores_bridge_base_path_and_uses_dedicated_override(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.setenv("BRIDGE_BASE_PATH", "/tmp/live_bridge_should_be_ignored")
+    monkeypatch.setenv("MT5_MOCK_BRIDGE_PATH", "/tmp/mock_bridge_override")
+
+    from core.bridge_utils import get_mt5_bridge_path
+
+    bridge_path = get_mt5_bridge_path()
+
+    assert bridge_path.as_posix() == "/tmp/mock_bridge_override"
+
+
+def test_bridge_base_path_windows_env_is_coerced_under_wsl(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.delenv("USE_MT5_MOCK", raising=False)
+    monkeypatch.setenv("BRIDGE_BASE_PATH", r"C:\Users\rayng\AppData\Roaming\MetaQuotes\Terminal\ABC\MQL5\Files\bridge")
+
+    from core.bridge_utils import get_mt5_bridge_path
+
+    bridge_path = get_mt5_bridge_path()
+
+    assert bridge_path.as_posix() == "/mnt/c/Users/rayng/AppData/Roaming/MetaQuotes/Terminal/ABC/MQL5/Files/bridge"
+
+
+def test_mock_bridge_override_windows_env_is_coerced_under_wsl(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.setenv("MT5_MOCK_BRIDGE_PATH", r"D:\temp\mock_bridge")
+
+    from core.bridge_utils import get_mt5_bridge_path
+
+    bridge_path = get_mt5_bridge_path()
+
+    assert bridge_path.as_posix() == "/mnt/d/temp/mock_bridge"
+
+
+def test_bridge_base_path_windows_env_not_coerced_on_windows(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.delenv("USE_MT5_MOCK", raising=False)
+    monkeypatch.setenv("BRIDGE_BASE_PATH", r"C:\Users\rayng\AppData\Roaming\MetaQuotes\Terminal\ABC\MQL5\Files\bridge")
+
+    import core.bridge_utils as bridge_utils
+
+    monkeypatch.setattr(bridge_utils.os, "name", "nt")
+
+    bridge_path = bridge_utils.get_mt5_bridge_path()
+
+    assert str(bridge_path) == r"C:\Users\rayng\AppData\Roaming\MetaQuotes\Terminal\ABC\MQL5\Files\bridge"
+
+
+def test_mock_runtime_state_path_is_namespaced_by_policy(monkeypatch, tmp_path):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
+
+    from core.bridge_utils import get_mock_runtime_state_path
+
+    state_path = get_mock_runtime_state_path(tmp_path)
+
+    assert state_path == tmp_path / "mock_runtime_state.preserve_10.json"

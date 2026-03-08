@@ -80,6 +80,25 @@ def _print_stats(strategy: AgentBacktestStrategy) -> None:
         )
     print(f"Total trades:   {total}")
     print(f"Rejected setups:{rejected:>4}")
+    funnel_counts = getattr(strategy, "funnel_counts", {})
+    if funnel_counts:
+        print("Funnel summary:")
+        for key in (
+            "REGIME:PASS",
+            "REGIME:REJECT",
+            "TECHNICAL:PASS",
+            "TECHNICAL:REJECT",
+            "ADVERSARIAL:PASS",
+            "ADVERSARIAL:REJECT",
+            "PORTFOLIO:PASS",
+            "PORTFOLIO:REJECT",
+            "FEASIBILITY:PASS",
+            "FEASIBILITY:REJECT",
+            "FEASIBILITY:BYPASS",
+            "ROUTER:ROUTED",
+        ):
+            if key in funnel_counts:
+                print(f"  {key:<20} {funnel_counts[key]}")
 
     if total == 0:
         print("Win rate:       N/A (no closed trades)")
