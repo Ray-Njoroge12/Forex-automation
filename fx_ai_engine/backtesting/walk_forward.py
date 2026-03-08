@@ -185,7 +185,14 @@ def _print_walk_forward_report(results: pd.DataFrame) -> None:
     print(f"Criteria: {first['criteria_label']}")
     for _, row in results.iterrows():
         srs_flag = "PASS" if row["srs_criteria_met"] else "FAIL"
-        criteria_token = "SRS_BENCHMARK" if row["simulation_mode"] == "preserve_10" else "SRS"
+        simulation_mode = row.get("simulation_mode")
+        if pd.isna(simulation_mode):
+            simulation_mode = (
+                "preserve_10"
+                if row.get("evidence_stream") == "preserve_10_realistic"
+                else "core_srs"
+            )
+        criteria_token = "SRS_BENCHMARK" if simulation_mode == "preserve_10" else "SRS"
         print(
             f"  {row['window']}  "
             f"train_wr={row['train_wr']:.2%}  test_wr={row['test_wr']:.2%}  "

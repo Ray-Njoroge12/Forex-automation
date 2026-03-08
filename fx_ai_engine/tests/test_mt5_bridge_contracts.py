@@ -125,6 +125,27 @@ class _ApprovalFactsMT5(_FeasibleLotMT5):
         return self.margin_by_symbol.get(symbol, 0.0)
 
 
+class _CentSnapshotMT5(_ApprovalFactsMT5):
+    def __init__(self):
+        super().__init__()
+        self.positions = [types.SimpleNamespace(symbol="EURUSD", profit=250.0)]
+
+    def positions_get(self):
+        return self.positions
+
+
+class _CentInfeasibleMT5(_ApprovalFactsMT5):
+    def symbol_info(self, symbol: str):
+        return types.SimpleNamespace(
+            volume_min=0.01,
+            volume_step=0.01,
+            volume_max=100.0,
+            trade_tick_value=10.0,
+            trade_tick_size=0.00001,
+            point=0.00001,
+        )
+
+
 def test_connect_failure_sets_explicit_error(monkeypatch) -> None:
     import core.mt5_bridge as bridge_mod
 
@@ -287,3 +308,34 @@ def test_preserve_10_approval_facts_fail_closed_when_symbol_facts_are_inconsiste
     assert facts.can_assess is False
     assert facts.reason_code == "APPROVAL_SYMBOL_FACTS_INCONSISTENT"
     assert "AUDUSD" in facts.details
+
+
+def test_get_account_snapshot_normalizes_cent_balances_and_floating_pnl(monkeypatch) -> None:
+    import core.mt5_bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "mt5", _CentSnapshotMT5())
+
+    bridge = MT5Connection(login=123, password="x", server="demo")
+    assert bridge.connect() is True
+
+    snapshot = bridge.get_account_snapshot()
+
+    assert snapshot["balance"] == 10.0
+    assert snapshot["equity"] == 10.05
+    assert snapshot["margin_free"] == 9.0
+    assert snapshot["floating_pnl"] == 2.5
+
+
+def test_trade_feasibility_normalizes_cent_balance_when_omitted(monkeypatch) -> None:
+    import core.mt5_bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "mt5", _CentInfeasibleMT5())
+
+    bridge = MT5Connection(login=123, password="x", server="demo")
+    assert bridge.connect() is True
+
+    decision = bridge.evaluate_trade_feasibility("EURUSD", risk_percent=0.05, stop_pips=20.0)
+
+    assert decision.can_assess is True
+    assert decision.approved is False
+    assert decision.reason_code == "REJECTED_LOT_PREROUTE"

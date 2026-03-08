@@ -106,6 +106,27 @@ def test_signal_payload_omits_structural_sl_when_none() -> None:
     assert "structural_sl_pips" not in payload
 
 
+def test_signal_payload_accepts_micro_capital_risk_precision() -> None:
+    from core.schemas import technical_signal_to_payload
+    from core.types import TechnicalSignal
+
+    sig = TechnicalSignal(
+        trade_id="AI_test4",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc="2026-03-05T12:00:00+00:00",
+    )
+
+    payload = technical_signal_to_payload(sig, risk_percent=0.00005)
+
+    assert payload["risk_percent"] == 0.00005
+
+
 def test_validate_signal_payload_rejects_invalid_tp_mode() -> None:
     from core.schemas import SchemaError, validate_signal_payload
     with pytest.raises(SchemaError, match="tp_mode"):

@@ -93,13 +93,15 @@ def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
         risk_percent=0.032, market_regime="TRENDING_BEAR",
     )
     db_mod.update_trade_execution_result({
-        "trade_id": "AI_fb_db_001", "ticket": 99001, "status": "EXECUTED",
+        "trade_id": "AI_fb_db_001", "ticket": 99001, "position_ticket": 88001, "status": "EXECUTED",
         "entry_price": 1.2650, "slippage": 0.00002, "spread_at_entry": 0.00012,
         "profit_loss": 0.0, "r_multiple": 0.0,
         "close_time": datetime.now(timezone.utc).isoformat(),
     })
     db_mod.update_trade_exit_result({
-        "ticket": 99001,
+        "ticket": 88001,
+        "position_ticket": 88001,
+        "trade_id": "AI_fb_db_001",
         "status": "CLOSED_WIN",
         "profit_loss": 18.5,
         "r_multiple": 2.3,
@@ -108,12 +110,13 @@ def test_feedback_updates_trade_status_in_db(tmp_path, monkeypatch) -> None:
 
     with _temp_conn(db) as conn:
         row = conn.execute(
-            "SELECT status, r_multiple, trade_ticket FROM trades WHERE trade_id=?",
+            "SELECT status, r_multiple, trade_ticket, position_ticket FROM trades WHERE trade_id=?",
             ("AI_fb_db_001",),
         ).fetchone()
     assert row["status"] == "CLOSED_WIN"
     assert abs(float(row["r_multiple"]) - 2.3) < 0.01
     assert int(row["trade_ticket"]) == 99001
+    assert int(row["position_ticket"]) == 88001
 
 
 def test_rejected_execution_feedback_normalizes_status_and_reason(tmp_path, monkeypatch) -> None:

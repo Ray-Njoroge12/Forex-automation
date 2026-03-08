@@ -14,5 +14,7 @@ def test_backtest_harness_runs():
     strategy = run_backtest(str(csv_path), "EURUSD")
     assert hasattr(strategy, "signals")
     assert hasattr(strategy, "results")
+    assert hasattr(strategy, "funnel_counts")
     # Fixture is 20-row synthetic data — EMA(200) warmup prevents signal generation.
     assert isinstance(strategy.results, list)
+    assert strategy.funnel_counts.get("TECHNICAL:REJECT", 0) >= 1

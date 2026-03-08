@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -8,6 +9,10 @@ import main as main_mod
 from bridge.signal_router import RouterCleanupResult, SignalRouteError
 from core.mt5_bridge import TradeFeasibilityDecision
 from core.types import AdversarialDecision, RegimeOutput, TechnicalSignal
+
+
+def _run_symbol(engine, symbol: str = "EURUSD") -> None:
+    engine._evaluate_symbol(symbol, datetime.now(timezone.utc), "newyork")
 
 
 class _FakeTracer:
@@ -133,7 +138,7 @@ def test_preserve_10_rejects_infeasible_trade_before_router(monkeypatch, tmp_pat
     )
     engine.router.send = lambda payload: sent_payloads.append(payload)
 
-    engine._evaluate_symbol("EURUSD")
+    _run_symbol(engine)
 
     assert sent_payloads == []
     assert proposals[-1]["status"] == "REJECTED"
@@ -165,7 +170,7 @@ def test_preserve_10_rejects_unassessable_trade_before_router(monkeypatch, tmp_p
     )
     engine.router.send = lambda payload: sent_payloads.append(payload)
 
-    engine._evaluate_symbol("EURUSD")
+    _run_symbol(engine)
 
     assert sent_payloads == []
     assert proposals[-1]["status"] == "REJECTED"
@@ -197,7 +202,7 @@ def test_preserve_10_routes_feasible_trade_without_preroute_warning(monkeypatch,
     )
     engine.router.send = lambda payload: sent_payloads.append(payload)
 
-    engine._evaluate_symbol("EURUSD")
+    _run_symbol(engine)
 
     assert len(sent_payloads) == 1
     assert proposals[-1]["status"] == "PENDING"
@@ -226,7 +231,7 @@ def test_core_srs_bypasses_preserve_10_preroute_gate(monkeypatch, tmp_path) -> N
     )
     engine.router.send = lambda payload: sent_payloads.append(payload)
 
-    engine._evaluate_symbol("EURUSD")
+    _run_symbol(engine)
 
     assert len(sent_payloads) == 1
     assert proposals[-1]["status"] == "PENDING"
@@ -260,7 +265,7 @@ def test_preserve_10_halts_on_router_publish_uncertainty(monkeypatch, tmp_path) 
         )
     )
 
-    engine._evaluate_symbol("EURUSD")
+    _run_symbol(engine)
 
     assert proposals[-1]["status"] == "EXECUTION_UNCERTAIN"
     assert proposals[-1]["reason_code"] == "ROUTER_SEND_UNCERTAIN"
@@ -293,7 +298,7 @@ def test_preserve_10_halts_when_router_housekeeping_finds_uncertain_artifacts(mo
         stale_pending_trade_ids=("AI_stale_001",),
         orphan_lock_trade_ids=("AI_orphan_001",),
     )
-    engine._evaluate_symbol = lambda sym: evaluated.append(sym)
+    engine._evaluate_symbol = lambda sym, decision_time, session_name: evaluated.append(sym)
 
     engine._decision_cycle()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -66,9 +67,23 @@ class AgentBacktestStrategy(bt.Strategy):
         # results populated when a trade closes
         self.results: list[dict] = []
         self.rejected_signals: list[dict] = []
+        self.funnel_events: list[dict] = []
+        self.funnel_counts: Counter[str] = Counter()
 
         self._current_risk_amount: float = 0.0
         self._current_entry_info: dict = {}
+
+    def _record_funnel(self, stage: str, outcome: str, reason_code: str) -> None:
+        self.funnel_events.append(
+            {
+                "timestamp": self.data.datetime.datetime(0).isoformat(),
+                "symbol": self.p.symbol,
+                "stage": stage,
+                "outcome": outcome,
+                "reason_code": reason_code,
+            }
+        )
+        self.funnel_counts[f"{stage}:{outcome}"] += 1
 
     def _get_spread(self, symbol: str) -> Optional[float]:
         pip_value = 0.0001 if "JPY" not in symbol else 0.01
@@ -125,16 +140,28 @@ class AgentBacktestStrategy(bt.Strategy):
             return  # already in a trade — wait for bracket to resolve
 
         regime = self.regime_agent.evaluate(TIMEFRAME_H1)
+        if regime.regime in {"TRENDING_BULL", "TRENDING_BEAR"}:
+            self._record_funnel("REGIME", "PASS", regime.regime)
+        else:
+            self._record_funnel("REGIME", "REJECT", regime.regime)
         technical = self.technical_agent.evaluate(regime, TIMEFRAME_M15, TIMEFRAME_H1)
 
         if technical is None:
+            self._record_funnel("TECHNICAL", "REJECT", self.technical_agent.last_reason_code)
             return
+        self._record_funnel("TECHNICAL", "PASS", technical.reason_code)
 
         adversarial = self.adversarial_agent.evaluate(technical, self.account_status, TIMEFRAME_M15)
+        if adversarial.approved:
+            self._record_funnel("ADVERSARIAL", "PASS", adversarial.reason_code)
+        else:
+            self._record_funnel("ADVERSARIAL", "REJECT", adversarial.reason_code)
         portfolio = self.portfolio_manager.evaluate(technical, adversarial, self.account_status)
 
         if not portfolio.approved:
+            self._record_funnel("PORTFOLIO", "REJECT", portfolio.reason_code)
             return
+        self._record_funnel("PORTFOLIO", "PASS", portfolio.reason_code)
 
         pip_value = 0.0001 if "JPY" not in self.p.symbol else 0.01
         stop_distance = technical.stop_pips * pip_value
@@ -154,6 +181,7 @@ class AgentBacktestStrategy(bt.Strategy):
                 profile=self.simulation_profile,
             )
             if not feasibility.approved:
+                self._record_funnel("FEASIBILITY", "REJECT", feasibility.reason_code)
                 self.rejected_signals.append(
                     {
                         "timestamp": self.data.datetime.datetime(0).isoformat(),
@@ -163,11 +191,13 @@ class AgentBacktestStrategy(bt.Strategy):
                     }
                 )
                 return
+            self._record_funnel("FEASIBILITY", "PASS", feasibility.reason_code)
             size = feasibility.estimated_units
             effective_risk_amount = feasibility.effective_risk_amount_usd
             round_trip_cost_usd = feasibility.round_trip_cost_usd
             estimated_lot = feasibility.estimated_lot
         else:
+            self._record_funnel("FEASIBILITY", "BYPASS", "SIMPLIFIED_BROKER_MODEL")
             size = risk_amount / stop_distance
             effective_risk_amount = risk_amount
             round_trip_cost_usd = 0.0
@@ -204,6 +234,7 @@ class AgentBacktestStrategy(bt.Strategy):
                 "mode": self.simulation_profile.mode_id,
             }
         )
+        self._record_funnel("ROUTER", "ROUTED", "BACKTEST_ORDER_SUBMITTED")
 
     def notify_order(self, order: bt.Order) -> None:
         if order.status in [order.Cancelled, order.Margin, order.Rejected]:

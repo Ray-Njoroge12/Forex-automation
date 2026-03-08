@@ -26,25 +26,39 @@ class TechnicalAgent:
         self.rsi_period = 14
         self.stop_atr_multiplier = 1.2
         self.min_rr = 2.2
+        self.last_reason_code = "TECHNICAL_NOT_EVALUATED"
+        self.last_details = ""
+
+    def _reject(self, reason_code: str, details: str = "") -> None:
+        self.last_reason_code = reason_code
+        self.last_details = details
+
+    def _accept(self, reason_code: str, details: str = "") -> None:
+        self.last_reason_code = reason_code
+        self.last_details = details
 
     def evaluate(self, regime: RegimeOutput, timeframe_m15: int, timeframe_h1: int, timeframe_h4: int = 16388) -> TechnicalSignal | None:
         if regime.regime not in {"TRENDING_BULL", "TRENDING_BEAR"}:
+            self._reject("TECH_REGIME_NOT_TRENDING", f"regime={regime.regime}")
             return None
 
         # --- Triple Screen: H4 structural gate ---
         h4 = self.fetch_ohlc(self.symbol, timeframe_h4, 350)
         if h4.empty:
+            self._reject("TECH_H4_DATA_UNAVAILABLE")
             return None
         h4 = h4.copy()
         h4["ema_fast"] = calculate_ema(h4["close"], self.ema_fast)
         h4["ema_slow"] = calculate_ema(h4["close"], self.ema_slow)
         h4_last = h4.iloc[-1]
         if pd.isna(h4_last["ema_fast"]) or pd.isna(h4_last["ema_slow"]):
+            self._reject("TECH_H4_EMA_UNAVAILABLE")
             return None
 
         h1 = self.fetch_ohlc(self.symbol, timeframe_h1, 350)
         m15 = self.fetch_ohlc(self.symbol, timeframe_m15, 350)
         if h1.empty or m15.empty:
+            self._reject("TECH_MARKET_DATA_UNAVAILABLE")
             return None
 
         h1 = h1.copy()
@@ -60,6 +74,7 @@ class TechnicalAgent:
         m15_last = m15.iloc[-1]
 
         if any(pd.isna(v) for v in [h1_last["ema_fast"], h1_last["ema_slow"], m15_last["atr"], m15_last["rsi"]]):
+            self._reject("TECH_INDICATORS_UNAVAILABLE")
             return None
 
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
@@ -78,13 +93,17 @@ class TechnicalAgent:
             rsi_ok = 35 <= float(m15_last["rsi"]) <= 60
             reason_code = "TECH_CONFIRMED_SELL"
         else:
+            self._reject("TECH_HIGHER_TIMEFRAME_MISALIGNED")
             return None  # H1 and H4 are not aligned — no signal
 
         if not pulled_back or not rsi_ok:
+            detail = f"pulled_back={pulled_back} rsi_ok={rsi_ok}"
+            self._reject("TECH_PULLBACK_OR_RSI_INVALID", detail)
             return None
 
         # Require structural confirmation (EMA slope alignment and proper close)
         if not self._confirm_candle_pattern(m15, direction):
+            self._reject("TECH_CANDLE_CONFIRMATION_FAILED", f"direction={direction}")
             return None
 
         # Phase 2.4 — dynamic ATR multiplier scaled by regime volatility state.
@@ -99,6 +118,7 @@ class TechnicalAgent:
             m15, direction, atr_stop_pips, current_price
         )
         if stop_pips <= 0:
+            self._reject("TECH_STOP_INVALID")
             return None
 
         # Approach A: resolve regime-driven trade management parameters
@@ -115,6 +135,7 @@ class TechnicalAgent:
         effective_tp = take_profit_pips - spread_pips / 2
         rr = effective_tp / effective_stop if effective_stop > 0 else 0.0
         if rr < self.min_rr:
+            self._reject("TECH_RR_BELOW_MIN", f"rr={rr:.2f} min_rr={self.min_rr:.2f}")
             return None
 
         # Compute RSI slope (change over last 3 bars) for ML feature.
@@ -122,6 +143,7 @@ class TechnicalAgent:
         if len(m15) >= 4 and not pd.isna(m15["rsi"].iloc[-1]) and not pd.isna(m15["rsi"].iloc[-3]):
             rsi_slope = round(float(m15["rsi"].iloc[-1]) - float(m15["rsi"].iloc[-3]), 2)
 
+        self._accept(reason_code, f"direction={direction} rr={rr:.2f}")
         return TechnicalSignal(
             trade_id=f"AI_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}",
             symbol=self.symbol,
