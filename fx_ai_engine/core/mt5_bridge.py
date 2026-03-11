@@ -5,7 +5,7 @@ import logging
 import math
 from types import SimpleNamespace
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import os
@@ -38,6 +38,114 @@ PRESERVE_10_REQUIRED_SYMBOLS = (
     "USDCAD",
     "USDCHF",
 )
+
+
+def _deal_sort_key(deal: Any) -> tuple[int, int, int]:
+    return (
+        int(getattr(deal, "time_msc", 0) or 0),
+        int(getattr(deal, "time", 0) or 0),
+        int(getattr(deal, "ticket", 0) or 0),
+    )
+
+
+def _deal_time_iso(deal: Any) -> str | None:
+    time_msc = int(getattr(deal, "time_msc", 0) or 0)
+    if time_msc > 0:
+        return datetime.fromtimestamp(time_msc / 1000.0, tz=timezone.utc).isoformat()
+    seconds = int(getattr(deal, "time", 0) or 0)
+    if seconds > 0:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    return None
+
+
+def _deal_net_profit_loss(deal: Any) -> float:
+    return float(getattr(deal, "profit", 0.0) or 0.0) + float(getattr(deal, "fee", 0.0) or 0.0) + float(
+        getattr(deal, "swap", 0.0) or 0.0
+    ) + float(getattr(deal, "commission", 0.0) or 0.0)
+
+
+def _closed_history_summary_from_deals(
+    matched: list[Any],
+    *,
+    trade_id_hint: str | None = None,
+    position_ticket_hint: int | None = None,
+) -> dict[str, Any] | None:
+    if not matched or mt5 is None:
+        return None
+
+    matched.sort(key=_deal_sort_key)
+    entry_in = int(getattr(mt5, "DEAL_ENTRY_IN", 0))
+    entry_out = int(getattr(mt5, "DEAL_ENTRY_OUT", 1))
+    entry_inout = int(getattr(mt5, "DEAL_ENTRY_INOUT", -1))
+    entry_out_by = int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3))
+    order_type_buy = int(getattr(mt5, "ORDER_TYPE_BUY", 0))
+    order_type_sell = int(getattr(mt5, "ORDER_TYPE_SELL", 1))
+
+    open_deals = [deal for deal in matched if int(getattr(deal, "entry", -1)) == entry_in]
+    close_entries = {entry_out, entry_out_by}
+    if entry_inout >= 0:
+        close_entries.add(entry_inout)
+    close_deals = [deal for deal in matched if int(getattr(deal, "entry", -1)) in close_entries]
+    if not close_deals:
+        return None
+
+    open_deal = open_deals[0] if open_deals else matched[0]
+    close_deal = close_deals[-1]
+    raw_type = int(getattr(open_deal, "type", -1) or -1)
+    direction = None
+    if raw_type == order_type_buy:
+        direction = "BUY"
+    elif raw_type == order_type_sell:
+        direction = "SELL"
+
+    trade_id = str(trade_id_hint or "").strip()
+    if not trade_id:
+        for candidate in (
+            str(getattr(open_deal, "comment", "") or "").strip(),
+            str(getattr(close_deal, "comment", "") or "").strip(),
+        ):
+            if candidate:
+                trade_id = candidate
+                break
+
+    close_legs = [
+        {
+            "price": float(getattr(deal, "price", 0.0) or 0.0),
+            "volume": float(getattr(deal, "volume", 0.0) or 0.0),
+            "profit_loss": _deal_net_profit_loss(deal),
+            "close_time": _deal_time_iso(deal),
+        }
+        for deal in close_deals
+    ]
+    profit_loss = float(sum(leg["profit_loss"] for leg in close_legs))
+    if profit_loss > 0:
+        status = "CLOSED_WIN"
+    elif profit_loss < 0:
+        status = "CLOSED_LOSS"
+    else:
+        status = "CLOSED_BREAKEVEN"
+
+    return {
+        "trade_id": trade_id or None,
+        "trade_ticket": int(getattr(open_deal, "order", 0) or 0),
+        "position_ticket": int(
+            position_ticket_hint
+            or getattr(open_deal, "position_id", getattr(close_deal, "position_id", 0))
+            or 0
+        ),
+        "symbol": str(getattr(open_deal, "symbol", getattr(close_deal, "symbol", "")) or ""),
+        "direction": direction,
+        "entry_price": float(getattr(open_deal, "price", 0.0) or 0.0),
+        "lot_size": float(getattr(open_deal, "volume", 0.0) or 0.0),
+        "execution_time": _deal_time_iso(open_deal),
+        "close_price": float(getattr(close_deal, "price", 0.0) or 0.0),
+        "close_time": _deal_time_iso(close_deal),
+        "profit_loss": profit_loss,
+        "status": status,
+        "close_legs": close_legs,
+        "close_deals_count": len(close_legs),
+        "close_volume": float(sum(leg["volume"] for leg in close_legs)),
+    }
 
 _ACCOUNT_DENOMINATION_MAP: dict[str, tuple[str, float]] = {
     "USD": ("usd", 1.0),
@@ -73,6 +181,15 @@ class TradeFeasibilityDecision:
     reason_code: str
     details: str
     estimated_lot: float = 0.0
+
+
+@dataclass(frozen=True)
+class FixedRiskEligibilityDecision:
+    can_assess: bool
+    approved: bool
+    reason_code: str
+    details: str
+    minimum_risk_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -229,8 +346,24 @@ class MT5Connection:
             "currency": raw_currency,
             "leverage": int(getattr(account_info, "leverage", 0) or 0),
             "trade_allowed": bool(getattr(account_info, "trade_allowed", True)),
+            "trade_mode": int(getattr(account_info, "trade_mode", getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)) or 0),
         }
         return SimpleNamespace(**payload)
+
+    def is_demo_account(self) -> bool | None:
+        """Return True for demo, False for non-demo, or None if account mode cannot be assessed."""
+        if os.getenv("USE_MT5_MOCK") == "1":
+            return True
+        if not self._ensure_connected():
+            return None
+        account_info = self._account_info()
+        if account_info is None:
+            return None
+        trade_mode = getattr(account_info, "trade_mode", None)
+        if trade_mode is None:
+            return None
+        demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0) if mt5 is not None else 0
+        return int(trade_mode) == int(demo_mode)
 
     def get_account_snapshot(self) -> dict[str, Any] | None:
         """Returns live account state or explicit error object."""
@@ -275,6 +408,107 @@ class MT5Connection:
             snapshot["open_positions_count"],
         )
         return snapshot
+
+    def get_open_position_tickets(self) -> list[int]:
+        """Returns current broker position tickets for reconciliation checks."""
+        if not self._ensure_connected():
+            self._make_error(
+                "MT5_NOT_CONNECTED",
+                "Cannot fetch open position tickets because MT5 is not connected.",
+            )
+            return []
+
+        positions = mt5.positions_get() if mt5 is not None else None
+        if not positions:
+            return []
+
+        tickets: set[int] = set()
+        for pos in positions:
+            ticket = int(getattr(pos, "ticket", getattr(pos, "position_id", 0)) or 0)
+            if ticket > 0:
+                tickets.add(ticket)
+        return sorted(tickets)
+
+    def get_position_history_summary(
+        self,
+        position_ticket: int,
+        *,
+        lookback_days: int = 30,
+    ) -> dict[str, Any] | None:
+        """Return open/close deal geometry for a broker position that has already closed."""
+        if position_ticket <= 0:
+            return None
+        if not self._ensure_connected():
+            self._make_error(
+                "MT5_NOT_CONNECTED",
+                f"Cannot fetch position history for position_ticket={position_ticket} because MT5 is not connected.",
+            )
+            return None
+        if mt5 is None or not hasattr(mt5, "history_deals_get"):
+            self._make_error(
+                "MT5_HISTORY_UNAVAILABLE",
+                f"history_deals_get unavailable while reconciling position_ticket={position_ticket}",
+            )
+            return None
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=max(int(lookback_days), 1))
+        deals = mt5.history_deals_get(start, end) or []
+
+        matched = [
+            deal
+            for deal in deals
+            if int(getattr(deal, "position_id", 0) or 0) == int(position_ticket)
+        ]
+        if not matched:
+            return None
+
+        return _closed_history_summary_from_deals(matched, position_ticket_hint=int(position_ticket))
+
+    def get_trade_history_summary(
+        self,
+        trade_id: str,
+        *,
+        lookback_days: int = 30,
+    ) -> dict[str, Any] | None:
+        """Return open/close deal geometry for a closed broker trade identified by comment/trade_id."""
+        trade_id = str(trade_id or "").strip()
+        if not trade_id:
+            return None
+        if not self._ensure_connected():
+            self._make_error(
+                "MT5_NOT_CONNECTED",
+                f"Cannot fetch trade history for trade_id={trade_id} because MT5 is not connected.",
+            )
+            return None
+        if mt5 is None or not hasattr(mt5, "history_deals_get"):
+            self._make_error(
+                "MT5_HISTORY_UNAVAILABLE",
+                f"history_deals_get unavailable while reconciling trade_id={trade_id}",
+            )
+            return None
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=max(int(lookback_days), 1))
+        deals = mt5.history_deals_get(start, end) or []
+        seed_deals = [deal for deal in deals if str(getattr(deal, "comment", "") or "").strip() == trade_id]
+        if not seed_deals:
+            return None
+        position_ids = {
+            int(getattr(deal, "position_id", 0) or 0)
+            for deal in seed_deals
+            if int(getattr(deal, "position_id", 0) or 0) > 0
+        }
+        if position_ids:
+            matched = [
+                deal
+                for deal in deals
+                if int(getattr(deal, "position_id", 0) or 0) in position_ids
+            ]
+        else:
+            matched = seed_deals
+
+        return _closed_history_summary_from_deals(matched, trade_id_hint=trade_id)
 
     def fetch_ohlc_data(
         self, symbol: str, timeframe: int, num_candles: int = 300
@@ -767,6 +1001,111 @@ class MT5Connection:
                 f"raw_limit={raw_limit:.6f} estimated_lot={estimated_lot:.6f} min_lot={contract.min_lot:.4f}"
             ),
             estimated_lot=estimated_lot,
+        )
+
+    def evaluate_fixed_risk_eligibility(
+        self,
+        symbol: str,
+        fixed_risk_usd: float,
+        stop_pips: float,
+        *,
+        account_balance: float | None = None,
+    ) -> FixedRiskEligibilityDecision:
+        """Determine whether a fixed-risk budget can fund the broker minimum lot."""
+        contract = self.get_symbol_execution_contract(symbol)
+        if contract is None:
+            return FixedRiskEligibilityDecision(
+                can_assess=False,
+                approved=True,
+                reason_code="BROKER_CONTRACT_UNAVAILABLE",
+                details=(
+                    "cannot run strategic fixed-risk eligibility because broker execution contract data "
+                    f"is unavailable for symbol={symbol}"
+                ),
+            )
+
+        if account_balance is None:
+            account_info = self._account_info()
+            raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
+            currency_key = "".join(ch for ch in raw_currency.upper() if ch.isalnum())
+            _, unit_scale = _ACCOUNT_DENOMINATION_MAP.get(currency_key, ("usd", 1.0))
+            account_balance = float(getattr(account_info, "balance", 0.0) or 0.0) * unit_scale
+
+        if account_balance <= 0 or fixed_risk_usd <= 0:
+            return FixedRiskEligibilityDecision(
+                can_assess=False,
+                approved=True,
+                reason_code="FIXED_RISK_INPUT_UNAVAILABLE",
+                details=(
+                    "cannot run strategic fixed-risk eligibility because account balance or fixed risk "
+                    f"is unavailable for symbol={symbol} balance={account_balance or 0.0:.2f} "
+                    f"fixed_risk_usd={fixed_risk_usd:.4f}"
+                ),
+            )
+
+        if (
+            stop_pips <= 0
+            or contract.tick_value <= 0
+            or contract.tick_size <= 0
+            or contract.point <= 0
+            or contract.min_lot <= 0
+        ):
+            return FixedRiskEligibilityDecision(
+                can_assess=False,
+                approved=True,
+                reason_code="BROKER_CONTRACT_INVALID",
+                details=(
+                    "cannot run strategic fixed-risk eligibility because feasibility inputs are invalid "
+                    f"for symbol={symbol} fixed_risk_usd={fixed_risk_usd:.4f} stop_pips={stop_pips:.2f} "
+                    f"min_lot={contract.min_lot:.4f} tick_value={contract.tick_value:.8f} "
+                    f"tick_size={contract.tick_size:.8f} point={contract.point:.8f}"
+                ),
+            )
+
+        pip_value = 0.01 if "JPY" in symbol else 0.0001
+        value_per_point = contract.tick_value / contract.tick_size * contract.point
+        stop_points = stop_pips * pip_value / contract.point
+        if stop_points <= 0 or value_per_point <= 0:
+            return FixedRiskEligibilityDecision(
+                can_assess=False,
+                approved=True,
+                reason_code="BROKER_CONTRACT_INVALID",
+                details=(
+                    "cannot run strategic fixed-risk eligibility because derived feasibility inputs are invalid "
+                    f"for symbol={symbol} stop_pips={stop_pips:.2f} stop_points={stop_points:.4f} "
+                    f"value_per_point={value_per_point:.8f}"
+                ),
+            )
+
+        minimum_risk_usd = stop_points * value_per_point * contract.min_lot
+        raw_limit = fixed_risk_usd / (stop_points * value_per_point)
+        max_stop_pips = stop_pips * (raw_limit / contract.min_lot)
+        if raw_limit < contract.min_lot:
+            return FixedRiskEligibilityDecision(
+                can_assess=True,
+                approved=False,
+                reason_code="STRATEGIC_RISK_INELIGIBLE",
+                details=(
+                    "configured fixed risk cannot fund the broker minimum lot "
+                    f"for symbol={symbol} balance={account_balance:.2f} fixed_risk_usd={fixed_risk_usd:.4f} "
+                    f"minimum_risk_usd={minimum_risk_usd:.4f} stop_pips={stop_pips:.2f} "
+                    f"max_stop_pips_at_fixed_risk={max_stop_pips:.2f} raw_limit={raw_limit:.6f} "
+                    f"min_lot={contract.min_lot:.4f}"
+                ),
+                minimum_risk_usd=round(minimum_risk_usd, 8),
+            )
+
+        return FixedRiskEligibilityDecision(
+            can_assess=True,
+            approved=True,
+            reason_code="STRATEGIC_RISK_ELIGIBLE",
+            details=(
+                "configured fixed risk can fund the broker minimum lot "
+                f"for symbol={symbol} balance={account_balance:.2f} fixed_risk_usd={fixed_risk_usd:.4f} "
+                f"minimum_risk_usd={minimum_risk_usd:.4f} stop_pips={stop_pips:.2f} "
+                f"raw_limit={raw_limit:.6f} min_lot={contract.min_lot:.4f}"
+            ),
+            minimum_risk_usd=round(minimum_risk_usd, 8),
         )
 
     def shutdown(self) -> None:

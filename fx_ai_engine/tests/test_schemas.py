@@ -77,15 +77,32 @@ def test_signal_payload_serialises_trade_management_fields() -> None:
         be_trigger_r=0.8,
         partial_close_r=1.2,
         trailing_atr_mult=1.5,
-        tp_mode="TRAIL",
+        tp_mode="HYBRID",
         structural_sl_pips=11.5,
     )
     payload = technical_signal_to_payload(sig, risk_percent=0.032)
     assert payload["be_trigger_r"] == 0.8
     assert payload["partial_close_r"] == 1.2
     assert payload["trailing_atr_mult"] == 1.5
-    assert payload["tp_mode"] == "TRAIL"
+    assert payload["tp_mode"] == "HYBRID"
     assert payload["structural_sl_pips"] == 11.5
+
+
+def test_validate_signal_payload_accepts_hybrid_tp_mode() -> None:
+    from core.schemas import validate_signal_payload
+
+    payload = validate_signal_payload({
+        "trade_id": "x",
+        "symbol": "EURUSD",
+        "direction": "BUY",
+        "risk_percent": 0.032,
+        "stop_pips": 10.0,
+        "take_profit_pips": 22.0,
+        "timestamp_utc": "2026-03-05T12:00:00+00:00",
+        "tp_mode": "HYBRID",
+    })
+
+    assert payload["tp_mode"] == "HYBRID"
 
 
 def test_signal_payload_omits_structural_sl_when_none() -> None:
@@ -153,5 +170,40 @@ def test_account_snapshot_optional_open_symbols_must_be_list() -> None:
                 "open_positions_count": 1,
                 "floating_pnl": -5.0,
                 "open_symbols": "EURUSD",
+            }
+        )
+
+
+def test_account_snapshot_accepts_management_restore_fields() -> None:
+    payload = validate_account_snapshot(
+        {
+            "timestamp": "2026-03-05T12:00:00+00:00",
+            "balance": 1000.0,
+            "equity": 995.0,
+            "margin_free": 900.0,
+            "open_positions_count": 1,
+            "floating_pnl": -5.0,
+            "management_state_restored": True,
+            "managed_positions_count": 1,
+            "managed_position_tickets": [1880903],
+            "unmanaged_position_tickets": [],
+            "management_state_error": "",
+        }
+    )
+
+    assert payload["management_state_restored"] is True
+
+
+def test_account_snapshot_management_restore_fields_validate_types() -> None:
+    with pytest.raises(SchemaError, match="management_state_restored"):
+        validate_account_snapshot(
+            {
+                "timestamp": "2026-03-05T12:00:00+00:00",
+                "balance": 1000.0,
+                "equity": 995.0,
+                "margin_free": 900.0,
+                "open_positions_count": 1,
+                "floating_pnl": -5.0,
+                "management_state_restored": "yes",
             }
         )

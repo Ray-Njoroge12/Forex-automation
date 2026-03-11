@@ -4,13 +4,19 @@ import argparse
 import logging
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
 from config_microcapital import (
+    ALLOW_NON_SRS_POLICY_ENV,
+    MODE_CONFIGS,
+    apply_runtime_experiment_config,
     get_policy_config,
+    is_non_srs_policy_mode,
+    non_srs_policy_allowed,
     read_fixed_risk_usd,
     read_max_spread_pips,
     read_predict_threshold,
@@ -51,8 +57,8 @@ from database.db import (
     insert_risk_event,
     insert_account_metrics,
     insert_trade_proposal,
+    list_open_trades,
     mark_trade_execution_uncertain,
-    mark_trade_expired,
     migrate_add_decision_funnel_events,
     migrate_add_evidence_partition_columns,
     migrate_add_ml_feature_columns,
@@ -75,8 +81,30 @@ def _predict_threshold() -> float:
     return read_predict_threshold()
 
 
+def _parse_timestamp_utc(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class Preserve10StartupApprovalDecision:
+    approved: bool
+    reason_code: str
+    details: str
+
+
+@dataclass(frozen=True)
+class RuntimePolicyApprovalDecision:
     approved: bool
     reason_code: str
     details: str
@@ -90,6 +118,14 @@ def _startup_reject(reason_code: str, details: str) -> Preserve10StartupApproval
     return Preserve10StartupApprovalDecision(False, reason_code, details)
 
 
+def _policy_runtime_approve(reason_code: str, details: str) -> RuntimePolicyApprovalDecision:
+    return RuntimePolicyApprovalDecision(True, reason_code, details)
+
+
+def _policy_runtime_reject(reason_code: str, details: str) -> RuntimePolicyApprovalDecision:
+    return RuntimePolicyApprovalDecision(False, reason_code, details)
+
+
 def _policy_evidence_suffix(policy: Mapping[str, object]) -> str:
     return f"[mode={policy['MODE_ID']} evidence={policy['EVIDENCE_LABEL']}]"
 
@@ -98,7 +134,7 @@ def _with_policy_evidence(policy: Mapping[str, object], details: str) -> str:
     return f"{details} {_policy_evidence_suffix(policy)}"
 
 
-def _normalize_preserve_10_feasibility_details(feasibility) -> str:
+def _normalize_pre_route_feasibility_details(feasibility) -> str:
     details = str(feasibility.details)
     if not feasibility.can_assess:
         return details.replace(
@@ -106,6 +142,76 @@ def _normalize_preserve_10_feasibility_details(feasibility) -> str:
             "contract data is unavailable",
         )
     return f"{details}; trade blocked before MT5 routing"
+
+
+def evaluate_runtime_policy_approval(
+    bridge: MT5Connection,
+    *,
+    policy: dict | None = None,
+    use_mock: bool,
+    env: Mapping[str, str] | None = None,
+) -> RuntimePolicyApprovalDecision:
+    runtime_policy = get_policy_config() if policy is None else dict(policy)
+    mode_id = str(runtime_policy.get("MODE_ID") or "").strip().lower()
+    if not is_non_srs_policy_mode(mode_id):
+        return _policy_runtime_approve(
+            "CORE_SRS_RUNTIME_APPROVED",
+            _with_policy_evidence(runtime_policy, "Core SRS runtime policy approved"),
+        )
+
+    source = os.environ if env is None else env
+    if not non_srs_policy_allowed(source):
+        return _policy_runtime_reject(
+            "NON_SRS_POLICY_EXPLICIT_APPROVAL_REQUIRED",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    f"Non-SRS runtime policy '{mode_id}' is blocked because {ALLOW_NON_SRS_POLICY_ENV}=1 "
+                    "is required for research-only runtime modes."
+                ),
+            ),
+        )
+
+    if use_mock:
+        return _policy_runtime_approve(
+            "NON_SRS_POLICY_RESEARCH_APPROVED",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    f"Non-SRS runtime policy '{mode_id}' approved for research because USE_MT5_MOCK=1 "
+                    f"and {ALLOW_NON_SRS_POLICY_ENV}=1."
+                ),
+            ),
+        )
+
+    account_is_demo: bool | None
+    try:
+        account_is_demo = bridge.is_demo_account()
+    except Exception:
+        account_is_demo = None
+    if account_is_demo is True:
+        return _policy_runtime_approve(
+            "NON_SRS_POLICY_RESEARCH_APPROVED",
+            _with_policy_evidence(
+                runtime_policy,
+                (
+                    f"Non-SRS runtime policy '{mode_id}' approved for research on a verified demo account "
+                    f"because {ALLOW_NON_SRS_POLICY_ENV}=1."
+                ),
+            ),
+        )
+
+    account_status = "live" if account_is_demo is False else "unverified"
+    return _policy_runtime_reject(
+        "NON_SRS_POLICY_REQUIRES_MOCK_OR_DEMO",
+        _with_policy_evidence(
+            runtime_policy,
+            (
+                f"Non-SRS runtime policy '{mode_id}' is blocked because research-only runtime modes require "
+                f"USE_MT5_MOCK=1 or a verified demo account (account_status={account_status})."
+            ),
+        ),
+    )
 
 
 def _insert_risk_event_with_context(
@@ -166,19 +272,88 @@ def _insert_funnel_event_with_context(
         )
 
 
-def _format_preserve_10_preroute_event(
+def _format_pre_route_feasibility_event(
     policy: Mapping[str, object],
     feasibility,
 ) -> str:
     outcome = "blocked before MT5 routing" if not feasibility.can_assess else "refused before MT5 routing"
+    mode_label = str(policy.get("MODE_LABEL") or policy.get("MODE_ID") or "Policy")
     return _with_policy_evidence(
         policy,
-        f"Preserve-$10 pre-route feasibility {outcome}: {_normalize_preserve_10_feasibility_details(feasibility)}",
+        f"{mode_label} pre-route feasibility {outcome}: {_normalize_pre_route_feasibility_details(feasibility)}",
+    )
+
+
+def _format_strategic_risk_event(
+    policy: Mapping[str, object],
+    eligibility,
+) -> str:
+    outcome = "blocked before downstream routing checks" if not eligibility.can_assess else "rejected as non-deployable"
+    mode_label = str(policy.get("MODE_LABEL") or policy.get("MODE_ID") or "Policy")
+    return _with_policy_evidence(
+        policy,
+        f"{mode_label} strategic-risk eligibility {outcome}: {eligibility.details}",
     )
 
 
 def _pip_size(symbol: str) -> float:
     return 0.01 if symbol.endswith("JPY") else 0.0001
+
+
+def _estimate_recovered_r_multiple(
+    trade_row: Mapping[str, object],
+    broker_summary: Mapping[str, object],
+) -> float | None:
+    symbol = str(trade_row.get("symbol") or broker_summary.get("symbol") or "").strip().upper()
+    direction = str(trade_row.get("direction") or broker_summary.get("direction") or "").strip().upper()
+    if not symbol or direction not in {"BUY", "SELL"}:
+        return None
+
+    try:
+        stop_pips = float(trade_row.get("stop_loss") or 0.0)
+        entry_price = float(broker_summary.get("entry_price") or 0.0)
+        close_price = float(broker_summary.get("close_price") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if stop_pips <= 0 or entry_price <= 0:
+        return None
+
+    stop_distance = stop_pips * _pip_size(symbol)
+    if stop_distance <= 0:
+        return None
+
+    close_legs = broker_summary.get("close_legs")
+    if isinstance(close_legs, list) and close_legs:
+        try:
+            initial_volume = float(broker_summary.get("lot_size") or trade_row.get("lot_size") or 0.0)
+        except (TypeError, ValueError):
+            initial_volume = 0.0
+
+        weighted_r_sum = 0.0
+        closed_volume = 0.0
+        for leg in close_legs:
+            if not isinstance(leg, Mapping):
+                continue
+            try:
+                leg_price = float(leg.get("price") or 0.0)
+                leg_volume = float(leg.get("volume") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if leg_price <= 0 or leg_volume <= 0:
+                continue
+            price_move = leg_price - entry_price if direction == "BUY" else entry_price - leg_price
+            weighted_r_sum += (price_move / stop_distance) * leg_volume
+            closed_volume += leg_volume
+
+        denominator = initial_volume if initial_volume > 0 else closed_volume
+        if denominator > 0 and closed_volume > 0:
+            return round(weighted_r_sum / denominator, 8)
+
+    if close_price <= 0:
+        return None
+
+    price_move = close_price - entry_price if direction == "BUY" else entry_price - close_price
+    return round(price_move / stop_distance, 8)
 
 
 def _read_preserve_10_commission_per_lot_usd(
@@ -197,6 +372,58 @@ def _read_preserve_10_commission_per_lot_usd(
     if commission < 0:
         return None, f"negative {PRESERVE_10_COMMISSION_PER_LOT_ENV}={raw!r}"
     return commission, None
+
+
+def _enforce_demo_only_experiment_account_gate(
+    policy: Mapping[str, object],
+    *,
+    bridge: MT5Connection,
+    use_mock: bool,
+) -> dict:
+    gated = deepcopy(dict(policy))
+    experiments = gated.get("EXPERIMENTS", {})
+    if not isinstance(experiments, Mapping):
+        return gated
+
+    active = [
+        key
+        for key, cfg in experiments.items()
+        if isinstance(cfg, Mapping) and bool(cfg.get("enabled", False))
+    ]
+    if not active or use_mock:
+        return gated
+
+    account_is_demo: bool | None = None
+    if hasattr(bridge, "is_demo_account"):
+        try:
+            account_is_demo = bridge.is_demo_account()
+        except Exception as exc:
+            logger.warning("Failed checking MT5 account demo status for experiments: %s", exc)
+            account_is_demo = None
+
+    if account_is_demo is True:
+        return gated
+
+    for key in active:
+        cfg = experiments.get(key)
+        if isinstance(cfg, dict):
+            cfg["enabled"] = False
+    gated.pop("EXPERIMENT_TAG", None)
+    account_status = "non-demo" if account_is_demo is False else "unverified"
+    logger.warning(
+        "Disabled demo-only runtime experiments %s because connected MT5 account is %s",
+        ",".join(active),
+        account_status,
+    )
+    return gated
+
+
+def _live_trade_mgmt_option_c_enabled(policy: Mapping[str, object]) -> bool:
+    experiments = policy.get("EXPERIMENTS", {})
+    if not isinstance(experiments, Mapping):
+        return False
+    cfg = experiments.get("LIVE_TRADE_MGMT_OPTION_C", {})
+    return isinstance(cfg, Mapping) and bool(cfg.get("enabled", False))
 
 
 def evaluate_preserve_10_startup_approval(
@@ -406,14 +633,46 @@ def evaluate_preserve_10_startup_approval(
 
 
 class Engine:
-    def __init__(self, bridge: MT5Connection, tracer, metrics, use_mock: bool):
+    def __init__(
+        self,
+        bridge: MT5Connection,
+        tracer,
+        metrics,
+        use_mock: bool,
+        *,
+        run_mode: str,
+        policy: Mapping[str, object] | None = None,
+    ):
         self.bridge = bridge
         self.tracer = tracer
         self.metrics = metrics
         self.use_mock = use_mock
+        self.run_mode = run_mode
         self.account_status = AccountStatus()
         self.reset_scheduler = ResetScheduler()
-        self.policy = get_policy_config()
+        base_policy = dict(policy) if policy is not None else apply_runtime_experiment_config(get_policy_config(), run_mode=run_mode)
+        self.policy = _enforce_demo_only_experiment_account_gate(base_policy, bridge=bridge, use_mock=use_mock)
+        runtime_policy_approval = evaluate_runtime_policy_approval(
+            bridge,
+            policy=self.policy,
+            use_mock=self.use_mock,
+            env=os.environ,
+        )
+        if is_non_srs_policy_mode(self.policy["MODE_ID"]) and not runtime_policy_approval.approved:
+            raise RuntimeError(
+                "Non-SRS runtime policy blocked: "
+                f"reason_code={runtime_policy_approval.reason_code} details={runtime_policy_approval.details}"
+            )
+        preserve_startup_approval = evaluate_preserve_10_startup_approval(
+            bridge,
+            policy=self.policy,
+            env=os.environ,
+        )
+        if self.policy["MODE_ID"] == "preserve_10" and not preserve_startup_approval.approved:
+            raise RuntimeError(
+                "Preserve-$10 startup approval refused: "
+                f"reason_code={preserve_startup_approval.reason_code} details={preserve_startup_approval.details}"
+            )
         self.evidence_context = build_runtime_evidence_context(
             self.policy,
             use_mock=use_mock,
@@ -425,6 +684,9 @@ class Engine:
         self._last_reconciliation_reason = ""
         self._processed_execution_feedback: set[tuple[str, int, str, str]] = set()
         self._processed_exit_feedback: set[tuple[str, int, str, str]] = set()
+        self._latest_broker_close_time_utc: datetime | None = None
+        self._consecutive_losses_dirty = False
+        self._consecutive_losses_seeded = False
 
         # Auto-detect MT5 sandbox bridge path
         self.bridge_path = get_mt5_bridge_path()
@@ -469,8 +731,13 @@ class Engine:
 
         self.agents = {
             sym: {
-                "regime": RegimeAgent(sym, bridge.fetch_ohlc_data),
-                "technical": TechnicalAgent(sym, bridge.fetch_ohlc_data, bridge.get_live_spread),
+                "regime": RegimeAgent(sym, bridge.fetch_ohlc_data, policy=self.policy),
+                "technical": TechnicalAgent(
+                    sym,
+                    bridge.fetch_ohlc_data,
+                    bridge.get_live_spread,
+                    policy=self.policy,
+                ),
                 "adversarial": AdversarialAgent(
                     sym,
                     bridge.fetch_ohlc_data,
@@ -481,20 +748,21 @@ class Engine:
             }
             for sym in SYMBOLS
         }
-        self.portfolio_manager = PortfolioManager(fetch_ohlc=bridge.fetch_ohlc_data)
-        self.hard_risk = HardRiskEngine()
+        self.portfolio_manager = PortfolioManager(fetch_ohlc=bridge.fetch_ohlc_data, policy=self.policy)
+        self.hard_risk = HardRiskEngine(policy=self.policy)
         self.ranker = SignalRanker()
         self.ranker_loaded = self.ranker.load()
         logger.info(
-            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s fixed_risk_usd=%s legacy_micro_capital=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
+            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
             self.policy["MODE_ID"],
             self.policy["MODE_LABEL"],
             self.policy["EVIDENCE_LABEL"],
             self.evidence_context.evidence_stream,
             self.evidence_context.account_scope,
             self.use_mock,
+            self.policy.get("EXPERIMENT_TAG", "none"),
             read_fixed_risk_usd(),
-            os.getenv("MICRO_CAPITAL_MODE", "0"),
+            non_srs_policy_allowed(),
             read_max_spread_pips(),
             self.predict_threshold,
             os.getenv("USE_SENTIMENT", "0"),
@@ -560,8 +828,9 @@ class Engine:
         except Exception as exc:
             logger.warning("Failed to persist funnel event stage=%s symbol=%s error=%s", stage, symbol, exc)
 
-    def _preserve_10_pre_route_feasibility(self, symbol: str, risk_percent: float, stop_pips: float):
-        if self.policy["MODE_ID"] != "preserve_10":
+    def _pre_route_feasibility(self, symbol: str, risk_percent: float, stop_pips: float):
+        fixed_risk_usd = self.policy.get("FIXED_RISK_USD")
+        if fixed_risk_usd is None or float(fixed_risk_usd) <= 0:
             return None
         return self.bridge.evaluate_trade_feasibility(
             symbol,
@@ -570,7 +839,18 @@ class Engine:
             account_balance=self.account_status.balance,
         )
 
-    def _fail_closed_preserve_10_bridge(self, reason: str) -> None:
+    def _strategic_risk_eligibility(self, symbol: str, stop_pips: float):
+        fixed_risk_usd = self.policy.get("FIXED_RISK_USD")
+        if fixed_risk_usd is None or float(fixed_risk_usd) <= 0:
+            return None
+        return self.bridge.evaluate_fixed_risk_eligibility(
+            symbol,
+            float(fixed_risk_usd),
+            stop_pips,
+            account_balance=self.account_status.balance,
+        )
+
+    def _fail_closed_bridge_uncertainty(self, reason: str) -> None:
         self.account_status.is_trading_halted = True
         self.account_status.state_reconciled = False
         if not self.account_status.state_reconciliation_reason:
@@ -579,6 +859,9 @@ class Engine:
             self.account_status.state_reconciliation_reason = (
                 f"{self.account_status.state_reconciliation_reason}; {reason}"
             )
+
+    def _fail_closed_preserve_10_bridge(self, reason: str) -> None:
+        self._fail_closed_bridge_uncertainty(reason)
 
     def _validate_bridge_path(self, bridge_path: Path) -> None:
         required = ["pending_signals", "feedback", "exits", "active_locks"]
@@ -599,8 +882,35 @@ class Engine:
             if snapshot is not None and snapshot.get("snapshot_source") == "mock_feedback_simulator" and not self.use_mock:
                 logger.warning("Ignoring mock-generated account snapshot while running in non-mock mode")
                 snapshot = None
+            if snapshot is not None:
+                snapshot = dict(snapshot)
+
+            if snapshot is not None and self._is_snapshot_stale_after_broker_close(snapshot):
+                latest_close = self._latest_broker_close_time_utc.isoformat() if self._latest_broker_close_time_utc else "n/a"
+                logger.info(
+                    "Ignoring stale feedback account snapshot timestamp=%s latest_broker_close=%s",
+                    snapshot.get("timestamp"),
+                    latest_close,
+                )
+                snapshot = None
+
             if snapshot is None:
                 snapshot = self.bridge.get_account_snapshot() or {}
+
+            if (
+                _live_trade_mgmt_option_c_enabled(self.policy)
+                and snapshot
+                and not snapshot.get("error")
+                and int(snapshot.get("open_positions_count", 0) or 0) > 0
+                and "management_state_restored" not in snapshot
+            ):
+                snapshot["management_state_restored"] = False
+                snapshot["management_state_error"] = (
+                    "management restore health unavailable from EA account_snapshot"
+                )
+
+            if self._consecutive_losses_dirty and "consecutive_losses" not in snapshot:
+                snapshot["consecutive_losses"] = self.account_status.consecutive_losses
 
             persisted_state = get_latest_account_metric(
                 evidence_stream=self.evidence_context.evidence_stream,
@@ -617,6 +927,8 @@ class Engine:
                 persisted_state=persisted_state,
                 trade_ledger=trade_ledger,
             )
+            if snapshot and not snapshot.get("error"):
+                self._consecutive_losses_seeded = True
 
             if not self.account_status.state_reconciled:
                 if self.account_status.state_reconciliation_reason != self._last_reconciliation_reason:
@@ -645,6 +957,169 @@ class Engine:
 
         self.metrics.set_gauge("open_positions", self.account_status.open_positions_count)
         self.metrics.set_gauge("open_risk_percent", self.account_status.open_risk_percent)
+
+    def _ensure_consecutive_losses_seeded(self) -> None:
+        if self._consecutive_losses_seeded:
+            return
+        persisted_state = get_latest_account_metric(
+            evidence_stream=self.evidence_context.evidence_stream,
+            account_scope=self.evidence_context.account_scope,
+        )
+        if persisted_state is not None:
+            self.account_status.consecutive_losses = int(
+                persisted_state.get("consecutive_losses", self.account_status.consecutive_losses) or 0
+            )
+        self._consecutive_losses_seeded = True
+
+    def _record_consecutive_loss_update(self, pnl: float) -> None:
+        self._ensure_consecutive_losses_seeded()
+        if pnl < 0:
+            self.account_status.consecutive_losses += 1
+            self._consecutive_losses_dirty = True
+        elif pnl > 0:
+            self.account_status.consecutive_losses = 0
+            self._consecutive_losses_dirty = True
+
+    def _record_broker_close_time(self, close_time_value: object) -> None:
+        close_time_utc = _parse_timestamp_utc(close_time_value)
+        if close_time_utc is None:
+            return
+        if self._latest_broker_close_time_utc is None or close_time_utc > self._latest_broker_close_time_utc:
+            self._latest_broker_close_time_utc = close_time_utc
+
+    def _is_snapshot_stale_after_broker_close(self, snapshot: Mapping[str, object]) -> bool:
+        if not snapshot or snapshot.get("error"):
+            return False
+        if self._latest_broker_close_time_utc is None:
+            return False
+        snapshot_time_utc = _parse_timestamp_utc(snapshot.get("timestamp"))
+        if snapshot_time_utc is None:
+            return False
+        return snapshot_time_utc < self._latest_broker_close_time_utc
+
+    def _fetch_broker_closure_summary(
+        self,
+        *,
+        local_position_ticket: int,
+        trade_id: str,
+    ) -> dict[str, object] | None:
+        broker_summary: dict[str, object] | None = None
+        if local_position_ticket > 0:
+            try:
+                broker_summary = self.bridge.get_position_history_summary(local_position_ticket)
+            except Exception as exc:
+                logger.warning(
+                    "Failed fetching broker history for position_ticket=%s trade_id=%s: %s",
+                    local_position_ticket,
+                    trade_id,
+                    exc,
+                )
+
+        if broker_summary is None and trade_id:
+            try:
+                broker_summary = self.bridge.get_trade_history_summary(trade_id)
+            except Exception as exc:
+                if local_position_ticket > 0:
+                    logger.warning(
+                        "Failed fetching broker history by trade_id=%s after position lookup miss/failure: %s",
+                        trade_id,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "Failed fetching broker history for trade_id=%s without stored tickets: %s",
+                        trade_id,
+                        exc,
+                    )
+        return broker_summary
+
+    def _recover_missing_trade_closures_from_broker(self) -> None:
+        open_trades = list_open_trades(
+            evidence_stream=self.evidence_context.evidence_stream,
+            account_scope=self.evidence_context.account_scope,
+        )
+        if not open_trades:
+            return
+
+        try:
+            open_position_tickets = set(self.bridge.get_open_position_tickets())
+        except Exception as exc:
+            logger.warning("Failed reading broker open positions during lifecycle recovery: %s", exc)
+            return
+
+        for trade in open_trades:
+            local_position_ticket = int(trade.get("position_ticket") or trade.get("trade_ticket") or 0)
+            trade_id = str(trade.get("trade_id") or "").strip()
+            if local_position_ticket > 0 and local_position_ticket in open_position_tickets:
+                continue
+
+            broker_summary = self._fetch_broker_closure_summary(
+                local_position_ticket=local_position_ticket,
+                trade_id=trade_id,
+            )
+            if not broker_summary and not trade_id:
+                continue
+
+            if not broker_summary or not broker_summary.get("close_time"):
+                continue
+
+            trade_id = str(trade_id or broker_summary.get("trade_id") or "").strip()
+            if not trade_id:
+                continue
+
+            recovered_position_ticket = int(
+                broker_summary.get("position_ticket") or local_position_ticket or 0
+            )
+            recovered_trade_ticket = int(
+                broker_summary.get("trade_ticket") or trade.get("trade_ticket") or recovered_position_ticket
+            )
+
+            update_trade_execution_result(
+                {
+                    "trade_id": trade_id,
+                    "ticket": recovered_trade_ticket,
+                    "position_ticket": recovered_position_ticket,
+                    "status": "EXECUTED",
+                    "entry_price": float(broker_summary.get("entry_price") or trade.get("entry_price") or 0.0),
+                    "lot_size": float(broker_summary.get("lot_size") or trade.get("lot_size") or 0.0),
+                    "slippage": 0.0,
+                    "spread_at_entry": 0.0,
+                    "execution_time": broker_summary.get("execution_time"),
+                }
+            )
+
+            recovered_r = _estimate_recovered_r_multiple(trade, broker_summary)
+            matched_trade = update_trade_exit_result(
+                {
+                    "trade_id": trade_id,
+                    "ticket": recovered_trade_ticket,
+                    "position_ticket": recovered_position_ticket,
+                    "status": broker_summary.get("status", "CLOSED"),
+                    "profit_loss": float(broker_summary.get("profit_loss") or 0.0),
+                    "r_multiple": recovered_r,
+                    "close_time": broker_summary.get("close_time"),
+                },
+                evidence_context=self.evidence_context,
+            )
+            if not matched_trade:
+                continue
+
+            pnl = float(broker_summary.get("profit_loss") or 0.0)
+            self._record_consecutive_loss_update(pnl)
+            self._record_broker_close_time(broker_summary.get("close_time"))
+
+            self.router.release_lock(trade_id)
+            recovery_reason = (
+                "Recovered missing trade exit from MT5 broker history "
+                f"trade_id={trade_id} position_ticket={recovered_position_ticket} profit_loss={pnl:.2f}"
+            )
+            self._insert_risk_event(
+                "TRADE_LIFECYCLE_RECOVERED",
+                "WARN",
+                recovery_reason,
+                trade_id,
+            )
+            logger.warning(recovery_reason)
 
     def _consume_feedback(self) -> None:
         with self.tracer.start_as_current_span("consume_feedback"):
@@ -680,10 +1155,8 @@ class Engine:
                 if payload.get("is_final_exit") is False or not matched_trade:
                     continue
                 pnl = float(payload.get("profit_loss", 0.0))
-                if pnl < 0:
-                    self.account_status.consecutive_losses += 1
-                elif pnl > 0:
-                    self.account_status.consecutive_losses = 0
+                self._record_consecutive_loss_update(pnl)
+                self._record_broker_close_time(payload.get("close_time"))
 
     def _is_new_m15_candle(self) -> bool:
         df = self.bridge.fetch_ohlc_data(SYMBOLS[0], TIMEFRAME_M15, 2)
@@ -728,19 +1201,31 @@ class Engine:
                 decision_time=decision_time,
                 stage="REGIME",
                 outcome="PASS",
-                reason_code=regime.regime,
+                reason_code=regime.reason_code,
                 symbol=sym,
-                details=f"trend_state={regime.trend_state} volatility={regime.volatility_state}",
+                details=sym_agents["regime"].last_details,
             )
         else:
             self._insert_funnel_event(
                 decision_time=decision_time,
                 stage="REGIME",
                 outcome="REJECT",
-                reason_code=regime.regime,
+                reason_code=regime.reason_code,
                 symbol=sym,
-                details=f"trend_state={regime.trend_state} volatility={regime.volatility_state}",
+                details=sym_agents["regime"].last_details,
             )
+            self._insert_funnel_event(
+                decision_time=decision_time,
+                stage="TECHNICAL",
+                outcome="SKIP",
+                reason_code="TECH_SKIPPED_REGIME_REJECTED",
+                symbol=sym,
+                details=(
+                    f"regime={regime.regime} regime_reason={regime.reason_code} "
+                    f"trend_state={regime.trend_state}"
+                ),
+            )
+            return
         technical = sym_agents["technical"].evaluate(regime, TIMEFRAME_M15, TIMEFRAME_H1)
 
         if technical is None:
@@ -759,9 +1244,49 @@ class Engine:
             outcome="PASS",
             reason_code=technical.reason_code,
             symbol=sym,
-            details=f"direction={technical.direction} rr={technical.risk_reward}",
+            details=sym_agents["technical"].last_details,
             trade_id=technical.trade_id,
         )
+
+        strategic = self._strategic_risk_eligibility(
+            technical.symbol,
+            technical.stop_pips,
+        )
+        if strategic is not None and (not strategic.can_assess or not strategic.approved):
+            self._insert_funnel_event(
+                decision_time=decision_time,
+                stage="STRATEGIC_RISK",
+                outcome="REJECT",
+                reason_code=strategic.reason_code,
+                symbol=sym,
+                details=strategic.details,
+                trade_id=technical.trade_id,
+            )
+            self._insert_trade_proposal(
+                technical,
+                status="REJECTED",
+                reason_code=strategic.reason_code,
+                risk_percent=0.0,
+                market_regime=regime.regime,
+            )
+            self._insert_risk_event(
+                "STRATEGIC_RISK",
+                "WARN",
+                _format_strategic_risk_event(self.policy, strategic),
+                technical.trade_id,
+            )
+            self.metrics.inc("trades_rejected")
+            return
+        if strategic is not None:
+            self._insert_funnel_event(
+                decision_time=decision_time,
+                stage="STRATEGIC_RISK",
+                outcome="PASS",
+                reason_code=strategic.reason_code,
+                symbol=sym,
+                details=strategic.details,
+                trade_id=technical.trade_id,
+            )
 
         adversarial = sym_agents["adversarial"].evaluate(
             technical, self.account_status, TIMEFRAME_M15
@@ -948,7 +1473,7 @@ class Engine:
         # Apply loss-streak throttle from hard risk engine.
         final_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 8)
 
-        feasibility = self._preserve_10_pre_route_feasibility(
+        feasibility = self._pre_route_feasibility(
             technical.symbol,
             final_risk,
             technical.stop_pips,
@@ -973,7 +1498,7 @@ class Engine:
             self._insert_risk_event(
                 "PRE_ROUTE_FEASIBILITY",
                 "WARN",
-                _format_preserve_10_preroute_event(self.policy, feasibility),
+                _format_pre_route_feasibility_event(self.policy, feasibility),
                 technical.trade_id,
             )
             self.metrics.inc("trades_rejected")
@@ -1115,14 +1640,29 @@ class Engine:
                     )
                     return
             else:
-                for trade_id in cleanup.stale_pending_trade_ids:
-                    mark_trade_expired(trade_id, "ROUTER_PENDING_EXPIRED")
+                stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
+                orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
+                for trade_id in stale_trade_ids:
+                    mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
                     self._insert_risk_event(
-                        "ROUTER_HOUSEKEEPING",
-                        "WARN",
-                        "stale pending signal expired by TTL",
+                        "BRIDGE_EXECUTION_UNCERTAIN",
+                        "BLOCK",
+                        "stale pending signal quarantined; execution truth is uncertain",
                         trade_id,
                     )
+                for trade_id in orphan_trade_ids:
+                    mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
+                    self._insert_risk_event(
+                        "BRIDGE_EXECUTION_UNCERTAIN",
+                        "BLOCK",
+                        "orphan router lock quarantined; execution truth is uncertain",
+                        trade_id,
+                    )
+                if stale_trade_ids or orphan_trade_ids:
+                    self._fail_closed_bridge_uncertainty(
+                        "bridge uncertainty detected during router housekeeping"
+                    )
+                    return
 
             session_name = get_active_session(now_utc)
             for sym in SYMBOLS:
@@ -1131,6 +1671,8 @@ class Engine:
     def run(self, mode: str, iterations: int = 0) -> None:
         count = 0
         while True:
+            self._consume_feedback()
+            self._recover_missing_trade_closures_from_broker()
             self._update_account_state()
 
             if self.account_status.is_stale(max_age_seconds=180):
@@ -1148,8 +1690,6 @@ class Engine:
                 self._insert_risk_event("STATE_RECOVERED", "INFO", "Account state refreshed; trading unhalted")
                 logger.info("Account state recovered after stale episode.")
 
-            self._consume_feedback()
-
             if self._is_new_m15_candle() and not self.account_status.is_trading_halted:
                 self._decision_cycle()
 
@@ -1157,10 +1697,12 @@ class Engine:
                 simulated = self.mock_feedback.process_pending(account_status=self.account_status)
                 if simulated > 0:
                     self._consume_feedback()
+                    self._recover_missing_trade_closures_from_broker()
                     self._update_account_state()
                     self.mock_feedback.clear_account_snapshot()
 
             insert_account_metrics(self.account_status, evidence_context=self.evidence_context)
+            self._consecutive_losses_dirty = False
             self.metrics.inc("decision_cycles")
 
             count += 1
@@ -1173,19 +1715,28 @@ class Engine:
             time.sleep(5)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FX AI Engine")
     parser.add_argument("--mode", choices=["smoke", "demo"], default="smoke")
+    parser.add_argument(
+        "--policy-mode",
+        choices=sorted(MODE_CONFIGS),
+        default=None,
+        help=(
+            "Explicit runtime policy mode. Non-SRS modes are research-only and require "
+            f"{ALLOW_NON_SRS_POLICY_ENV}=1 plus USE_MT5_MOCK=1 or a verified demo account."
+        ),
+    )
     parser.add_argument(
         "--iterations",
         type=int,
         default=0,
         help="Optional loop iterations for demo mode. 0 means run until stopped.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     configure_logging()
     load_runtime_env()
 
@@ -1220,13 +1771,46 @@ def main() -> int:
         return 2
 
     try:
-        policy = get_policy_config()
+        args = parse_args(argv)
+        if args.policy_mode:
+            os.environ["FX_POLICY_MODE"] = args.policy_mode
+        policy = apply_runtime_experiment_config(get_policy_config(), run_mode=args.mode, env=os.environ)
+        if args.policy_mode and policy["MODE_ID"] != args.policy_mode:
+            policy = apply_runtime_experiment_config(get_policy_config(mode_id=args.policy_mode), run_mode=args.mode, env=os.environ)
+        policy = _enforce_demo_only_experiment_account_gate(policy, bridge=bridge, use_mock=use_mock)
         startup_evidence_context = build_runtime_evidence_context(
             policy,
             use_mock=use_mock,
             login=getattr(bridge, "login", 0),
             server=getattr(bridge, "server", ""),
         )
+        policy_approval = evaluate_runtime_policy_approval(
+            bridge,
+            policy=policy,
+            use_mock=use_mock,
+            env=os.environ,
+        )
+        if is_non_srs_policy_mode(policy["MODE_ID"]):
+            severity = "INFO" if policy_approval.approved else "BLOCK"
+            _insert_risk_event_with_context(
+                "NON_SRS_POLICY_APPROVAL",
+                severity,
+                f"{policy_approval.reason_code} {policy_approval.details}",
+                evidence_context=startup_evidence_context,
+            )
+            if policy_approval.approved:
+                logger.warning(
+                    "Non-SRS runtime policy approved: reason_code=%s details=%s",
+                    policy_approval.reason_code,
+                    policy_approval.details,
+                )
+            else:
+                logger.error(
+                    "Non-SRS runtime policy blocked: reason_code=%s details=%s",
+                    policy_approval.reason_code,
+                    policy_approval.details,
+                )
+                return 4
         startup_approval = evaluate_preserve_10_startup_approval(
             bridge,
             policy=policy,
@@ -1254,10 +1838,8 @@ def main() -> int:
                 )
                 return 3
 
-        args = parse_args()
-
         try:
-            engine = Engine(bridge, tracer, metrics, use_mock=use_mock)
+            engine = Engine(bridge, tracer, metrics, use_mock=use_mock, run_mode=args.mode, policy=policy)
         except RuntimeError as exc:
             logger.error("Engine initialization failed: %s", exc)
             return 2

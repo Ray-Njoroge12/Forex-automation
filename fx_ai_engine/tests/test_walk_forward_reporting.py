@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,9 +17,11 @@ from backtesting.simulation_profile import build_simulation_profile
 if pd is not None:
     from backtesting import bt_runner
     from backtesting import walk_forward
+    from backtesting import walk_forward_suite
 else:  # pragma: no cover - environment-dependent
     bt_runner = None
     walk_forward = None
+    walk_forward_suite = None
 
 
 class _FakeAnalyzer:
@@ -179,6 +182,34 @@ class WalkForwardReportingTests(unittest.TestCase):
         self.assertIn("Criteria: Core SRS smoke-test criteria", wf_out.getvalue())
         self.assertIn("SRS=PASS", wf_out.getvalue())
         self.assertNotIn("SRS_BENCHMARK", wf_out.getvalue())
+
+    def test_walk_forward_suite_marks_missing_symbol_data(self) -> None:
+        summary = walk_forward_suite.run_walk_forward_suite(
+            "/tmp/nonexistent-wf-data",
+            symbols=("EURUSD", "GBPUSD"),
+            train_months=1,
+            test_months=1,
+            mode_id="core_srs",
+        )
+
+        self.assertEqual(list(summary["symbol"]), ["EURUSD", "GBPUSD"])
+        self.assertTrue((summary["status"] == "MISSING_DATA").all())
+
+    def test_walk_forward_fixture_forms_real_windows(self) -> None:
+        fixture = Path(__file__).resolve().parent / "fixtures" / "ohlc_walk_forward_fixture.csv"
+
+        results = walk_forward.run_walk_forward(
+            str(fixture),
+            "EURUSD",
+            train_months=6,
+            test_months=1,
+            mode_id="core_srs",
+        )
+
+        self.assertFalse(results.empty)
+        self.assertGreaterEqual(len(results), 1)
+        self.assertTrue((results["simulation_mode"] == "core_srs").all())
+        self.assertIn("window", results.columns)
 
 
 if __name__ == "__main__":

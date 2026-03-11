@@ -41,6 +41,7 @@ class _AccountInfo:
     currency: str = "USD"
     leverage: int = 100
     trade_allowed: bool = True
+    trade_mode: int = 0
 
 
 def _approval_profile() -> str:

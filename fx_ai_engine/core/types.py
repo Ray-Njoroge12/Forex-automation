@@ -35,7 +35,7 @@ class TechnicalSignal:
     be_trigger_r: float = 1.0          # R-multiple to move SL to break-even
     partial_close_r: float = 1.5       # R-multiple for 50% partial close (0 = off)
     trailing_atr_mult: float = 2.0     # ATR multiplier for trailing SL (0 = off)
-    tp_mode: str = "FIXED"             # "FIXED" = hard TP; "TRAIL" = open-ended, trail only
+    tp_mode: str = "FIXED"             # "FIXED" = hard TP; "TRAIL" = trail-only; "HYBRID" = hard TP + trail
     structural_sl_pips: float | None = None  # Set when structural snap occurred; None = ATR used
 
 

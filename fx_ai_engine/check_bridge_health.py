@@ -31,6 +31,37 @@ def check_snapshot_health(bridge_path: Path | str | None = None) -> dict:
     return {"status": status, "age_seconds": round(age, 1), "balance": balance, "path": str(snap)}
 
 
+def check_ea_deployment_drift(
+    bridge_path: Path | str | None = None,
+    *,
+    repo_ea_path: Path | str | None = None,
+) -> dict:
+    if bridge_path is None:
+        from core.bridge_utils import get_mt5_bridge_path
+
+        bridge_path = get_mt5_bridge_path()
+    bridge_path = Path(bridge_path)
+    repo_path = Path(repo_ea_path) if repo_ea_path is not None else Path(__file__).resolve().parent / "mt5_ea" / "FX_Execution.mq5"
+    deployed_path = bridge_path.parent.parent / "Experts" / "FX_Execution.mq5"
+
+    result = {
+        "repo_path": str(repo_path),
+        "deployed_path": str(deployed_path),
+    }
+    if not repo_path.exists():
+        return {**result, "status": "MISSING_REPO"}
+    if not deployed_path.exists():
+        return {**result, "status": "MISSING_DEPLOYED"}
+
+    status = "IN_SYNC" if repo_path.read_bytes() == deployed_path.read_bytes() else "DRIFT"
+    return {
+        **result,
+        "status": status,
+        "repo_mtime": round(repo_path.stat().st_mtime, 3),
+        "deployed_mtime": round(deployed_path.stat().st_mtime, 3),
+    }
+
+
 def main() -> None:
     os.environ.setdefault("USE_MT5_MOCK", "1")
     from core.bridge_utils import get_mt5_bridge_path
@@ -52,6 +83,12 @@ def main() -> None:
         print(f"  Age:         {result['age_seconds']:.0f}s")
     if result["balance"] is not None:
         print(f"  Balance:     ${result['balance']:.2f}")
+
+    drift = check_ea_deployment_drift(bridge_path)
+    print("\nEA deployment:")
+    print(f"  Repo source:     {drift['repo_path']}")
+    print(f"  MT5 deployed EA: {drift['deployed_path']}")
+    print(f"  Status:          {drift['status']}")
 
     pending_dir = bridge_path / "pending_signals"
     if pending_dir.exists():
@@ -81,6 +118,8 @@ def main() -> None:
         print("VERDICT: Bridge snapshot is CORRUPT")
         print("  File exists but JSON is invalid.")
         print("  FIX: Delete the corrupt file and restart the EA.")
+    if drift["status"] == "DRIFT":
+        print("  ACTION: Copy/compile the repo FX_Execution.mq5 into the MT5 Experts folder before relying on live exit feedback or auto stop-management.")
     print(f"{'='*60}\n")
 
 
