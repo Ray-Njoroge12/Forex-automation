@@ -24,6 +24,8 @@ if str(_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(_ENGINE_ROOT))
 
 DB_PATH = _ENGINE_ROOT / "database" / "trading_state.db"
+ALL_STREAMS = "__all__"
+EXPERIMENT_STREAM = "runtime_mt5_core_srs__pair_selective_rising_adx_relax"
 
 # ---------------------------------------------------------------------------
 # DB helpers (read-only; never commit)
@@ -35,52 +37,89 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+def _scope_sql(evidence_stream: str | None) -> tuple[str, tuple[str, ...]]:
+    if not evidence_stream or evidence_stream == ALL_STREAMS:
+        return "", ()
+    return " WHERE evidence_stream = ?", (evidence_stream,)
+
+
 @st.cache_data(ttl=30)
-def load_account_metrics() -> pd.DataFrame:
+def load_evidence_streams() -> list[str]:
     try:
+        with _conn() as c:
+            rows = c.execute(
+                """
+                SELECT DISTINCT evidence_stream
+                  FROM (
+                        SELECT evidence_stream FROM trades
+                        UNION ALL
+                        SELECT evidence_stream FROM account_metrics
+                        UNION ALL
+                        SELECT evidence_stream FROM risk_events
+                  )
+                 WHERE COALESCE(TRIM(evidence_stream), '') <> ''
+                 ORDER BY evidence_stream ASC
+                """
+            ).fetchall()
+            return [str(row[0]) for row in rows if row[0]]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=30)
+def load_account_metrics(evidence_stream: str | None = None) -> pd.DataFrame:
+    try:
+        where_sql, params = _scope_sql(evidence_stream)
         with _conn() as c:
             return pd.read_sql_query(
                 "SELECT timestamp, balance, equity, drawdown_percent, "
                 "daily_loss_percent, weekly_loss_percent, consecutive_losses, "
                 "open_risk_percent, is_trading_halted "
-                "FROM account_metrics ORDER BY timestamp",
+                f"FROM account_metrics{where_sql} ORDER BY timestamp",
                 c,
+                params=params,
             )
     except Exception:
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=30)
-def load_trades(limit: int = 200) -> pd.DataFrame:
+def load_trades(limit: int = 200, evidence_stream: str | None = None) -> pd.DataFrame:
     try:
+        where_sql, params = _scope_sql(evidence_stream)
         with _conn() as c:
             return pd.read_sql_query(
                 f"""
-                SELECT trade_id, symbol, direction, status, reason_code,
+                SELECT evidence_stream, trade_id, symbol, direction, status, reason_code,
                        risk_percent, stop_loss, take_profit, market_regime,
                        profit_loss, r_multiple, open_time, close_time
                   FROM trades
+                  {where_sql}
                  ORDER BY open_time DESC
                  LIMIT {limit}
                 """,
                 c,
+                params=params,
             )
     except Exception:
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=30)
-def load_risk_events(limit: int = 100) -> pd.DataFrame:
+def load_risk_events(limit: int = 100, evidence_stream: str | None = None) -> pd.DataFrame:
     try:
+        where_sql, params = _scope_sql(evidence_stream)
         with _conn() as c:
             return pd.read_sql_query(
                 f"""
-                SELECT timestamp, rule_name, severity, reason, trade_id
+                SELECT timestamp, evidence_stream, rule_name, severity, reason, trade_id
                   FROM risk_events
+                  {where_sql}
                  ORDER BY timestamp DESC
                  LIMIT {limit}
                 """,
                 c,
+                params=params,
             )
     except Exception:
         return pd.DataFrame()
@@ -101,14 +140,26 @@ st.title("FX AI Engine — Live Monitor")
 # Sidebar
 with st.sidebar:
     st.header("Controls")
+    available_streams = load_evidence_streams()
+    stream_options = [ALL_STREAMS, *available_streams]
+    default_stream = EXPERIMENT_STREAM if EXPERIMENT_STREAM in available_streams else ALL_STREAMS
+    selected_stream = st.selectbox(
+        "Evidence stream",
+        stream_options,
+        index=stream_options.index(default_stream),
+        format_func=lambda value: "All streams" if value == ALL_STREAMS else value,
+    )
     if st.button("🔄 Refresh data"):
         st.cache_data.clear()
         st.rerun()
     st.caption(f"DB: {DB_PATH}")
+    if selected_stream != ALL_STREAMS:
+        st.caption(f"Filter: {selected_stream}")
 
-metrics_df = load_account_metrics()
-trades_df = load_trades()
-events_df = load_risk_events()
+evidence_stream = None if selected_stream == ALL_STREAMS else selected_stream
+metrics_df = load_account_metrics(evidence_stream)
+trades_df = load_trades(evidence_stream=evidence_stream)
+events_df = load_risk_events(evidence_stream=evidence_stream)
 
 # ---------------------------------------------------------------------------
 # Section 1 — Live Risk Gauges

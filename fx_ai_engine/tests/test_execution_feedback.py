@@ -96,6 +96,10 @@ def test_account_snapshot_validation(tmp_path) -> None:
         "margin_free": 850.0,
         "open_positions_count": 1,
         "floating_pnl": -1.0,
+        "management_state_restored": True,
+        "managed_positions_count": 1,
+        "managed_position_tickets": [1880903],
+        "unmanaged_position_tickets": [],
     }
     (feedback_dir / "account_snapshot.json").write_text(json.dumps(payload), encoding="utf-8")
 
@@ -104,6 +108,8 @@ def test_account_snapshot_validation(tmp_path) -> None:
 
     assert row is not None
     assert row["equity"] == 999.0
+    assert row["management_state_restored"] is True
+    assert row["managed_position_tickets"] == [1880903]
 
 
 def test_trade_exit_feedback_accepts_position_ticket_and_trade_id(tmp_path) -> None:

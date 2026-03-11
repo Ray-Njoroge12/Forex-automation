@@ -253,10 +253,20 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def update_trade_execution_result(payload: dict[str, Any]) -> None:
     raw_status = str(payload.get("status", "UNKNOWN")).upper()
     ticket = _positive_int(payload.get("ticket")) or 0
     position_ticket = _positive_int(payload.get("position_ticket"))
+    entry_price = _positive_float(payload.get("entry_price"))
+    lot_size = _positive_float(payload.get("lot_size"))
     executed_open = raw_status == "EXECUTED" and ticket > 0
     rejected = raw_status.startswith("REJECTED")
     status = "EXECUTED_OPEN" if executed_open else ("REJECTED" if rejected else raw_status)
@@ -270,7 +280,8 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                    SET trade_ticket = ?,
                        position_ticket = ?,
                        status = ?,
-                       entry_price = ?,
+                       lot_size = COALESCE(?, lot_size),
+                       entry_price = COALESCE(?, entry_price),
                        slippage = ?,
                        spread_exec_price = ?,
                        execution_time = ?
@@ -280,10 +291,13 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                     ticket,
                     position_ticket or ticket,
                     status,
-                    payload.get("entry_price", 0.0),
+                    lot_size,
+                    entry_price,
                     payload.get("slippage", 0.0),
                     payload.get("spread_at_entry", 0.0),
-                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                    payload.get("execution_time")
+                    or payload.get("close_time")
+                    or datetime.now(timezone.utc).isoformat(),
                     payload.get("trade_id"),
                 ),
             )
@@ -480,6 +494,42 @@ def get_open_trade_ledger(
     evidence_stream: str | None = None,
     account_scope: str | None = None,
 ) -> dict[str, Any]:
+    rows = list_open_trades(evidence_stream=evidence_stream, account_scope=account_scope)
+    open_trade_ids = sorted(str(row["trade_id"]) for row in rows if row["trade_id"])
+    open_trade_tickets = sorted(
+        {
+            int(row["trade_ticket"])
+            for row in rows
+            if _positive_int(row["trade_ticket"]) is not None
+        }
+    )
+    open_position_tickets = sorted(
+        {
+            int(row["position_ticket"])
+            for row in rows
+            if _positive_int(row["position_ticket"]) is not None
+        }
+    )
+    open_statuses = sorted({str(row["status"]) for row in rows if row["status"]})
+    return {
+        "open_trade_count": len(rows),
+        "open_risk_percent": round(
+            sum(float(row["risk_percent"] or 0.0) for row in rows),
+            8,
+        ),
+        "open_symbols": sorted({str(row["symbol"]) for row in rows if row["symbol"]}),
+        "open_trade_ids": open_trade_ids,
+        "open_trade_tickets": open_trade_tickets,
+        "open_position_tickets": open_position_tickets,
+        "open_statuses": open_statuses,
+    }
+
+
+def list_open_trades(
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> list[dict[str, Any]]:
     clauses = ["status IN ('EXECUTED_OPEN', 'EXECUTION_UNCERTAIN')"]
     params: list[Any] = []
     if evidence_stream:
@@ -491,20 +541,129 @@ def get_open_trade_ledger(
     with get_conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT symbol, COALESCE(risk_percent, 0.0) AS risk_percent
+            SELECT trade_id,
+                   trade_ticket,
+                   position_ticket,
+                   symbol,
+                   direction,
+                   status,
+                   COALESCE(risk_percent, 0.0) AS risk_percent,
+                   COALESCE(stop_loss, 0.0) AS stop_loss,
+                   COALESCE(take_profit, 0.0) AS take_profit,
+                   COALESCE(entry_price, 0.0) AS entry_price,
+                   COALESCE(lot_size, 0.0) AS lot_size,
+                   open_time,
+                   execution_time
               FROM trades
              WHERE {' AND '.join(clauses)}
             """,
             tuple(params),
         ).fetchall()
-    return {
-        "open_trade_count": len(rows),
-        "open_risk_percent": round(
-            sum(float(row["risk_percent"] or 0.0) for row in rows),
-            8,
-        ),
-        "open_symbols": sorted({str(row["symbol"]) for row in rows if row["symbol"]}),
-    }
+    return [dict(row) for row in rows]
+
+
+def _legacy_partition_where_clause() -> str:
+    return (
+        "COALESCE(NULLIF(TRIM(evidence_stream), ''), '') = ? "
+        "OR COALESCE(NULLIF(TRIM(policy_mode), ''), '') = ? "
+        "OR COALESCE(NULLIF(TRIM(execution_mode), ''), '') = 'legacy' "
+        "OR COALESCE(NULLIF(TRIM(account_scope), ''), '') = ?"
+    )
+
+
+def count_legacy_partition_rows() -> dict[str, int]:
+    table_counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+            if not _table_exists(conn, table):
+                table_counts[table] = 0
+                continue
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                  FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            ).fetchone()
+            table_counts[table] = int(row["n"] or 0)
+    table_counts["total"] = sum(table_counts.values())
+    return table_counts
+
+
+def _create_archive_table_like(
+    conn: sqlite3.Connection,
+    source_table: str,
+    archive_table: str,
+) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {archive_table} AS
+        SELECT source.*,
+               CAST('' AS TEXT) AS archived_at,
+               CAST('' AS TEXT) AS archive_reason
+          FROM {source_table} AS source
+         WHERE 0
+        """
+    )
+
+
+def archive_legacy_partition_rows(*, archive_reason: str = "manual_archive") -> dict[str, int]:
+    archived_at = datetime.now(timezone.utc).isoformat()
+    archived_counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+            if not _table_exists(conn, table):
+                archived_counts[table] = 0
+                continue
+            archive_table = f"{table}_archive"
+            _create_archive_table_like(conn, table, archive_table)
+            rows = conn.execute(
+                f"""
+                SELECT *
+                  FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            ).fetchall()
+            archived_counts[table] = len(rows)
+            if not rows:
+                continue
+
+            source_columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            archive_columns = source_columns + ["archived_at", "archive_reason"]
+            placeholders = ", ".join("?" for _ in archive_columns)
+            conn.executemany(
+                f"""
+                INSERT INTO {archive_table} ({", ".join(archive_columns)})
+                VALUES ({placeholders})
+                """,
+                [
+                    tuple(row[column] for column in source_columns) + (archived_at, archive_reason)
+                    for row in rows
+                ],
+            )
+            conn.execute(
+                f"""
+                DELETE FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            )
+    archived_counts["total"] = sum(archived_counts.values())
+    return archived_counts
 
 
 def insert_risk_event(

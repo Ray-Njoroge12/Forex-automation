@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = Path(__file__).parent / "signal_ranker_model.joblib"
 MIN_TRAINING_SAMPLES = 500
 PREDICT_THRESHOLD = 0.55  # minimum probability to route a signal
+MODEL_METADATA_VERSION = 1
+TRAINING_POLICY_MODE = "core_srs"
+TRAINING_EXECUTION_MODE = "mt5"
 
 _FEATURE_NAMES = [
     "regime_confidence",
@@ -63,7 +67,17 @@ _FEATURE_NAMES = [
 # DB data loading
 # ---------------------------------------------------------------------------
 
-def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
+def _training_scope_metadata(sample_count: int) -> dict[str, Any]:
+    return {
+        "metadata_version": MODEL_METADATA_VERSION,
+        "policy_mode": TRAINING_POLICY_MODE,
+        "execution_mode": TRAINING_EXECUTION_MODE,
+        "min_training_samples": MIN_TRAINING_SAMPLES,
+        "sample_count": sample_count,
+    }
+
+
+def _load_training_data() -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
     """Load feature matrix and labels from SQLite.  Returns None on failure."""
     try:
         import sqlite3
@@ -84,7 +98,10 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
              WHERE status LIKE 'CLOSED%'
                AND r_multiple IS NOT NULL
                AND regime_confidence IS NOT NULL
-            """
+               AND policy_mode = ?
+               AND execution_mode = ?
+            """,
+            (TRAINING_POLICY_MODE, TRAINING_EXECUTION_MODE),
         ).fetchall()
         conn.close()
 
@@ -118,7 +135,11 @@ def _load_training_data() -> tuple[np.ndarray, np.ndarray] | None:
             except (TypeError, ValueError):
                 continue
 
-        return np.array(X, dtype=np.float32), np.array(y, dtype=np.int32)
+        return (
+            np.array(X, dtype=np.float32),
+            np.array(y, dtype=np.int32),
+            _training_scope_metadata(len(y)),
+        )
 
     except Exception as exc:
         logger.error("Failed to load training data: %s", exc)
@@ -145,6 +166,7 @@ class SignalRanker:
 
     def __init__(self):
         self._model: Any = None
+        self._metadata: dict[str, Any] = {}
 
     def is_ready(self) -> bool:
         """Return True if the model is loaded and ready for inference."""
@@ -157,7 +179,43 @@ class SignalRanker:
             return False
         try:
             import joblib  # type: ignore[import]
-            self._model = joblib.load(MODEL_PATH)
+            payload = joblib.load(MODEL_PATH)
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "SignalRanker model at %s is missing scope metadata; bypassing load.",
+                    MODEL_PATH,
+                )
+                return False
+            metadata = payload.get("metadata")
+            model = payload.get("model")
+            if not isinstance(metadata, dict) or model is None:
+                logger.warning(
+                    "SignalRanker model at %s is malformed; bypassing load.",
+                    MODEL_PATH,
+                )
+                return False
+            if metadata.get("metadata_version") != MODEL_METADATA_VERSION:
+                logger.warning(
+                    "SignalRanker model metadata version mismatch at %s; bypassing load.",
+                    MODEL_PATH,
+                )
+                return False
+            if metadata.get("policy_mode") != TRAINING_POLICY_MODE or metadata.get("execution_mode") != TRAINING_EXECUTION_MODE:
+                logger.warning(
+                    "SignalRanker model at %s was not trained on clean %s/%s evidence; bypassing load.",
+                    MODEL_PATH,
+                    TRAINING_POLICY_MODE,
+                    TRAINING_EXECUTION_MODE,
+                )
+                return False
+            if int(metadata.get("sample_count", 0) or 0) < MIN_TRAINING_SAMPLES:
+                logger.warning(
+                    "SignalRanker model at %s has insufficient clean samples; bypassing load.",
+                    MODEL_PATH,
+                )
+                return False
+            self._model = model
+            self._metadata = metadata
             logger.info("SignalRanker loaded from %s", MODEL_PATH)
             return True
         except Exception as exc:
@@ -217,7 +275,7 @@ class SignalRanker:
         if data is None:
             return False
 
-        X, y = data
+        X, y, metadata = data
         logger.info("Training SignalRanker on %d samples…", len(y))
 
         if use_xgb:
@@ -248,9 +306,22 @@ class SignalRanker:
         scores = cross_val_score(clf, X, y, cv=5, scoring="roc_auc")
         logger.info("CV ROC-AUC: %.3f ± %.3f", scores.mean(), scores.std())
 
-        joblib.dump(clf, MODEL_PATH)
+        bundle = {
+            "model": clf,
+            "metadata": {
+                **metadata,
+                "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+                "feature_names": list(_FEATURE_NAMES),
+                "predict_threshold": PREDICT_THRESHOLD,
+                "cv_roc_auc_mean": float(scores.mean()),
+                "cv_roc_auc_std": float(scores.std()),
+            },
+        }
+
+        joblib.dump(bundle, MODEL_PATH)
         logger.info("Model saved to %s", MODEL_PATH)
         self._model = clf
+        self._metadata = bundle["metadata"]
 
         # Feature importance report.
         if use_xgb:

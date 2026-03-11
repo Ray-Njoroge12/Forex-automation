@@ -17,8 +17,24 @@ from core.agents.adversarial_agent import AdversarialAgent
 from core.agents.portfolio_manager import PortfolioManager
 from core.agents.regime_agent import RegimeAgent
 from core.agents.technical_agent import TechnicalAgent
-from config_microcapital import get_policy_config
+from config_microcapital import apply_agent_threshold_overrides, get_policy_config
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
+
+TIMEFRAME_H4 = 16388
+
+
+def _resample_backtest_ohlc(df: pd.DataFrame, timeframe: int) -> pd.DataFrame:
+    if timeframe == TIMEFRAME_H1:
+        df = df.resample("1h").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        )
+        return df.dropna()
+    if timeframe == TIMEFRAME_H4:
+        df = df.resample("4h").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        )
+        return df.dropna()
+    return df
 
 
 @dataclass
@@ -29,11 +45,14 @@ class BacktestContext:
 
 
 class AgentBacktestStrategy(bt.Strategy):
-    params = dict(symbol="EURUSD", simulation_profile=None, lookback=400)
+    params = dict(symbol="EURUSD", simulation_profile=None, lookback=400, agent_threshold_overrides=None)
 
     def __init__(self) -> None:
         self.simulation_profile = self.p.simulation_profile or build_simulation_profile()
-        self.policy = get_policy_config(mode_id=self.simulation_profile.mode_id)
+        self.policy = apply_agent_threshold_overrides(
+            get_policy_config(mode_id=self.simulation_profile.mode_id),
+            self.p.agent_threshold_overrides,
+        )
         self.account_status = AccountStatus()
         self._last_dt = None
         self.simulated_balance_usd = float(self.simulation_profile.starting_cash)
@@ -46,9 +65,12 @@ class AgentBacktestStrategy(bt.Strategy):
             get_spread=self._get_spread,
         )
 
-        self.regime_agent = RegimeAgent(self.p.symbol, self.context.fetch_ohlc)
+        self.regime_agent = RegimeAgent(self.p.symbol, self.context.fetch_ohlc, policy=self.policy)
         self.technical_agent = TechnicalAgent(
-            self.p.symbol, self.context.fetch_ohlc, self.context.get_spread
+            self.p.symbol,
+            self.context.fetch_ohlc,
+            self.context.get_spread,
+            policy=self.policy,
         )
         self.adversarial_agent = AdversarialAgent(
             self.p.symbol,
@@ -72,8 +94,9 @@ class AgentBacktestStrategy(bt.Strategy):
 
         self._current_risk_amount: float = 0.0
         self._current_entry_info: dict = {}
+        self._current_bar_count: int = 0
 
-    def _record_funnel(self, stage: str, outcome: str, reason_code: str) -> None:
+    def _record_funnel(self, stage: str, outcome: str, reason_code: str, details: str = "") -> None:
         self.funnel_events.append(
             {
                 "timestamp": self.data.datetime.datetime(0).isoformat(),
@@ -81,6 +104,7 @@ class AgentBacktestStrategy(bt.Strategy):
                 "stage": stage,
                 "outcome": outcome,
                 "reason_code": reason_code,
+                "details": details,
             }
         )
         self.funnel_counts[f"{stage}:{outcome}"] += 1
@@ -110,46 +134,63 @@ class AgentBacktestStrategy(bt.Strategy):
             self._last_dt = dt
 
         lines = self.data
-        available = min(len(lines.close.array), num_candles)
+        current_len = self._current_bar_count
+        available = min(current_len, num_candles)
         if available <= 0:
             return pd.DataFrame()
 
-        idx = pd.to_datetime(lines.datetime.array[-available:], unit="s", utc=True)
+        def _line_value(line, ago: int):
+            return line[-ago] if ago else line[0]
+
+        ago_values = list(range(available - 1, -1, -1))
+        idx = pd.to_datetime([_line_value(lines.datetime, ago) for ago in ago_values], unit="s", utc=True)
         df = pd.DataFrame(
             {
-                "open": lines.open.array[-available:],
-                "high": lines.high.array[-available:],
-                "low": lines.low.array[-available:],
-                "close": lines.close.array[-available:],
-                "volume": lines.volume.array[-available:],
+                "open": [_line_value(lines.open, ago) for ago in ago_values],
+                "high": [_line_value(lines.high, ago) for ago in ago_values],
+                "low": [_line_value(lines.low, ago) for ago in ago_values],
+                "close": [_line_value(lines.close, ago) for ago in ago_values],
+                "volume": [_line_value(lines.volume, ago) for ago in ago_values],
             },
             index=idx,
         )
 
-        if timeframe == TIMEFRAME_H1:
-            df = df.resample("1h").agg(
-                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-            )
-            df = df.dropna()
-
-        return df
+        return _resample_backtest_ohlc(df, timeframe)
 
     def next(self) -> None:
+        self._current_bar_count += 1
         self._refresh_account_status()
         if self.position.size != 0:
             return  # already in a trade — wait for bracket to resolve
 
         regime = self.regime_agent.evaluate(TIMEFRAME_H1)
         if regime.regime in {"TRENDING_BULL", "TRENDING_BEAR"}:
-            self._record_funnel("REGIME", "PASS", regime.regime)
+            self._record_funnel("REGIME", "PASS", regime.reason_code, self.regime_agent.last_details)
         else:
-            self._record_funnel("REGIME", "REJECT", regime.regime)
+            self._record_funnel("REGIME", "REJECT", regime.reason_code, self.regime_agent.last_details)
+            self._record_funnel(
+                "TECHNICAL",
+                "SKIP",
+                "TECH_SKIPPED_REGIME_REJECTED",
+                f"regime={regime.regime} regime_reason={regime.reason_code} trend_state={regime.trend_state}",
+            )
+            return
         technical = self.technical_agent.evaluate(regime, TIMEFRAME_M15, TIMEFRAME_H1)
 
         if technical is None:
-            self._record_funnel("TECHNICAL", "REJECT", self.technical_agent.last_reason_code)
+            self._record_funnel(
+                "TECHNICAL",
+                "REJECT",
+                self.technical_agent.last_reason_code,
+                self.technical_agent.last_details,
+            )
             return
-        self._record_funnel("TECHNICAL", "PASS", technical.reason_code)
+        self._record_funnel(
+            "TECHNICAL",
+            "PASS",
+            technical.reason_code,
+            self.technical_agent.last_details,
+        )
 
         adversarial = self.adversarial_agent.evaluate(technical, self.account_status, TIMEFRAME_M15)
         if adversarial.approved:

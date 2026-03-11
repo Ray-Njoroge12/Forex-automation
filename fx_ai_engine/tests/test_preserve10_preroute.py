@@ -7,7 +7,14 @@ import pandas as pd
 
 import main as main_mod
 from bridge.signal_router import RouterCleanupResult, SignalRouteError
-from core.mt5_bridge import TradeFeasibilityDecision
+from core.mt5_bridge import (
+    PRESERVE_10_REQUIRED_SYMBOLS,
+    FixedRiskEligibilityDecision,
+    Preserve10AccountFacts,
+    Preserve10ApprovalFacts,
+    Preserve10SymbolFacts,
+    TradeFeasibilityDecision,
+)
 from core.types import AdversarialDecision, RegimeOutput, TechnicalSignal
 
 
@@ -31,15 +38,24 @@ class _FakeMetrics:
 class _StaticEvaluator:
     def __init__(self, output):
         self.output = output
+        self.last_details = "test-double"
 
     def evaluate(self, *args, **kwargs):
         return self.output
 
 
 class _FakeBridge:
-    def __init__(self, feasibility: TradeFeasibilityDecision):
+    def __init__(
+        self,
+        feasibility: TradeFeasibilityDecision,
+        strategic: FixedRiskEligibilityDecision,
+        approval_facts: Preserve10ApprovalFacts | None = None,
+    ):
         self.feasibility = feasibility
-        self.calls: list[tuple[str, float, float, float | None]] = []
+        self.strategic = strategic
+        self.approval_facts = approval_facts
+        self.feasibility_calls: list[tuple[str, float, float, float | None]] = []
+        self.strategic_calls: list[tuple[str, float, float, float | None]] = []
 
     def fetch_ohlc_data(self, *_args, **_kwargs):
         return pd.DataFrame()
@@ -50,8 +66,17 @@ class _FakeBridge:
     def get_account_snapshot(self):
         return None
 
+    def get_preserve_10_approval_facts(self, *, now=None):
+        if self.approval_facts is None:
+            raise AssertionError("Preserve-$10 approval facts were not configured")
+        return self.approval_facts
+
+    def evaluate_fixed_risk_eligibility(self, symbol: str, fixed_risk_usd: float, stop_pips: float, *, account_balance=None):
+        self.strategic_calls.append((symbol, fixed_risk_usd, stop_pips, account_balance))
+        return self.strategic
+
     def evaluate_trade_feasibility(self, symbol: str, risk_percent: float, stop_pips: float, *, account_balance=None):
-        self.calls.append((symbol, risk_percent, stop_pips, account_balance))
+        self.feasibility_calls.append((symbol, risk_percent, stop_pips, account_balance))
         return self.feasibility
 
 
@@ -63,11 +88,77 @@ class _FakeRanker:
         return 0.5
 
 
-def _build_engine(monkeypatch, tmp_path, *, mode: str | None, feasibility: TradeFeasibilityDecision):
-    for name in ("FX_POLICY_MODE", "MICRO_CAPITAL_MODE", "FIXED_RISK_USD"):
+def _approved_symbol_facts() -> dict[str, Preserve10SymbolFacts]:
+    now = datetime.now(timezone.utc).isoformat()
+    facts: dict[str, Preserve10SymbolFacts] = {}
+    for symbol in PRESERVE_10_REQUIRED_SYMBOLS:
+        is_jpy = symbol.endswith("JPY")
+        facts[symbol] = Preserve10SymbolFacts(
+            symbol=symbol,
+            trade_mode=1,
+            tradable=True,
+            volume_min=0.01,
+            volume_step=0.01,
+            volume_max=10.0,
+            contract_size=100000.0,
+            tick_value=1.0,
+            tick_size=0.001 if is_jpy else 0.00001,
+            point=0.001 if is_jpy else 0.00001,
+            digits=3 if is_jpy else 5,
+            stops_level=0,
+            freeze_level=0,
+            spread_price=0.00008,
+            spread_pips=0.8,
+            min_lot_margin=25.0,
+            quote_time_utc=now,
+            quote_age_seconds=15,
+        )
+    return facts
+
+
+def _approved_preserve_10_facts() -> Preserve10ApprovalFacts:
+    return Preserve10ApprovalFacts(
+        can_assess=True,
+        reason_code="APPROVAL_FACTS_READY",
+        details="ready",
+        fetched_at_utc=datetime.now(timezone.utc).isoformat(),
+        account=Preserve10AccountFacts(
+            currency="USC",
+            denomination="usd_cent",
+            unit_scale=0.01,
+            reported_balance=1000.0,
+            reported_equity=1000.0,
+            normalized_balance_usd=10.0,
+            normalized_equity_usd=10.0,
+            leverage=500,
+            trade_allowed=True,
+        ),
+        symbols=_approved_symbol_facts(),
+    )
+
+
+def _build_engine(
+    monkeypatch,
+    tmp_path,
+    *,
+    mode: str | None,
+    feasibility: TradeFeasibilityDecision,
+    strategic: FixedRiskEligibilityDecision | None = None,
+):
+    for name in (
+        "FX_POLICY_MODE",
+        "FX_ALLOW_NON_SRS_POLICY",
+        "MICRO_CAPITAL_MODE",
+        "FIXED_RISK_USD",
+        main_mod.PRESERVE_10_COMMISSION_PER_LOT_ENV,
+    ):
         monkeypatch.delenv(name, raising=False)
     if mode is not None:
         monkeypatch.setenv("FX_POLICY_MODE", mode)
+        if mode != "core_srs":
+            monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
+        if mode == "preserve_10":
+            monkeypatch.setenv(main_mod.PRESERVE_10_COMMISSION_PER_LOT_ENV, "0")
 
     for folder in ("pending_signals", "feedback", "exits", "active_locks"):
         (tmp_path / folder).mkdir(parents=True, exist_ok=True)
@@ -78,8 +169,24 @@ def _build_engine(monkeypatch, tmp_path, *, mode: str | None, feasibility: Trade
     monkeypatch.setattr(main_mod, "SentimentAgent", lambda: object())
     monkeypatch.setattr(main_mod, "SignalRanker", _FakeRanker)
 
-    bridge = _FakeBridge(feasibility)
-    engine = main_mod.Engine(bridge=bridge, tracer=_FakeTracer(), metrics=_FakeMetrics(), use_mock=True)
+    strategic = strategic or FixedRiskEligibilityDecision(
+        can_assess=True,
+        approved=True,
+        reason_code="STRATEGIC_RISK_ELIGIBLE",
+        details="fixed risk supports broker minimum lot",
+    )
+    bridge = _FakeBridge(
+        feasibility,
+        strategic,
+        approval_facts=_approved_preserve_10_facts() if mode == "preserve_10" else None,
+    )
+    engine = main_mod.Engine(
+        bridge=bridge,
+        tracer=_FakeTracer(),
+        metrics=_FakeMetrics(),
+        use_mock=True,
+        run_mode="smoke",
+    )
     engine.account_status.balance = 10.0
 
     regime = RegimeOutput(
@@ -147,7 +254,8 @@ def test_preserve_10_rejects_infeasible_trade_before_router(monkeypatch, tmp_pat
     assert "refused before MT5 routing" in risk_events[-1][2]
     assert "trade blocked before MT5 routing" in risk_events[-1][2]
     assert "evidence=Preserve-$10 doctrine" in risk_events[-1][2]
-    assert bridge.calls and bridge.calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
 
 
 def test_preserve_10_rejects_unassessable_trade_before_router(monkeypatch, tmp_path) -> None:
@@ -179,7 +287,8 @@ def test_preserve_10_rejects_unassessable_trade_before_router(monkeypatch, tmp_p
     assert "blocked before MT5 routing" in risk_events[-1][2]
     assert "contract data is unavailable" in risk_events[-1][2]
     assert "evidence=Preserve-$10 doctrine" in risk_events[-1][2]
-    assert bridge.calls and bridge.calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
 
 
 def test_preserve_10_routes_feasible_trade_without_preroute_warning(monkeypatch, tmp_path) -> None:
@@ -208,7 +317,8 @@ def test_preserve_10_routes_feasible_trade_without_preroute_warning(monkeypatch,
     assert proposals[-1]["status"] == "PENDING"
     assert proposals[-1]["reason_code"] == "ROUTED_TO_MT5"
     assert all(event[0] != "PRE_ROUTE_FEASIBILITY" for event in risk_events)
-    assert bridge.calls and bridge.calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
 
 
 def test_core_srs_bypasses_preserve_10_preroute_gate(monkeypatch, tmp_path) -> None:
@@ -236,8 +346,84 @@ def test_core_srs_bypasses_preserve_10_preroute_gate(monkeypatch, tmp_path) -> N
     assert len(sent_payloads) == 1
     assert proposals[-1]["status"] == "PENDING"
     assert proposals[-1]["reason_code"] == "ROUTED_TO_MT5"
-    assert bridge.calls == []
+    assert bridge.strategic_calls == []
+    assert bridge.feasibility_calls == []
     assert all(event[0] != "PRE_ROUTE_FEASIBILITY" for event in risk_events)
+
+
+def test_legacy_micro_capital_rejects_infeasible_trade_before_router(monkeypatch, tmp_path) -> None:
+    proposals = []
+    risk_events = []
+    sent_payloads = []
+    monkeypatch.setattr(main_mod, "insert_trade_proposal", lambda *args, **kwargs: proposals.append(kwargs))
+    monkeypatch.setattr(main_mod, "insert_risk_event", lambda *args: risk_events.append(args))
+
+    engine, bridge = _build_engine(
+        monkeypatch,
+        tmp_path,
+        mode="legacy_micro_capital",
+        feasibility=TradeFeasibilityDecision(
+            can_assess=True,
+            approved=False,
+            reason_code="REJECTED_LOT_PREROUTE",
+            details="raw_limit=0.002500 min_lot=0.0100",
+        ),
+    )
+    engine.router.send = lambda payload: sent_payloads.append(payload)
+
+    _run_symbol(engine)
+
+    assert sent_payloads == []
+    assert proposals[-1]["status"] == "REJECTED"
+    assert proposals[-1]["reason_code"] == "REJECTED_LOT_PREROUTE"
+    assert risk_events[-1][0] == "PRE_ROUTE_FEASIBILITY"
+    assert "Legacy Micro-Capital pre-route feasibility refused before MT5 routing" in risk_events[-1][2]
+    assert "trade blocked before MT5 routing" in risk_events[-1][2]
+    assert "evidence=Legacy micro-capital path" in risk_events[-1][2]
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
+
+
+def test_legacy_micro_capital_rejects_strategically_ineligible_trade_before_downstream_gates(monkeypatch, tmp_path) -> None:
+    proposals = []
+    risk_events = []
+    sent_payloads = []
+    monkeypatch.setattr(main_mod, "insert_trade_proposal", lambda *args, **kwargs: proposals.append(kwargs))
+    monkeypatch.setattr(main_mod, "insert_risk_event", lambda *args: risk_events.append(args))
+
+    engine, bridge = _build_engine(
+        monkeypatch,
+        tmp_path,
+        mode="legacy_micro_capital",
+        strategic=FixedRiskEligibilityDecision(
+            can_assess=True,
+            approved=False,
+            reason_code="STRATEGIC_RISK_INELIGIBLE",
+            details=(
+                "configured fixed risk cannot fund the broker minimum lot "
+                "for symbol=EURUSD fixed_risk_usd=0.5000 minimum_risk_usd=1.2000"
+            ),
+            minimum_risk_usd=1.2,
+        ),
+        feasibility=TradeFeasibilityDecision(
+            can_assess=True,
+            approved=True,
+            reason_code="TRADE_FEASIBLE",
+            details="should not be reached",
+        ),
+    )
+    engine.router.send = lambda payload: sent_payloads.append(payload)
+
+    _run_symbol(engine)
+
+    assert sent_payloads == []
+    assert proposals[-1]["status"] == "REJECTED"
+    assert proposals[-1]["reason_code"] == "STRATEGIC_RISK_INELIGIBLE"
+    assert risk_events[-1][0] == "STRATEGIC_RISK"
+    assert "strategic-risk eligibility rejected as non-deployable" in risk_events[-1][2]
+    assert "minimum_risk_usd=1.2000" in risk_events[-1][2]
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
+    assert bridge.feasibility_calls == []
 
 
 def test_preserve_10_halts_on_router_publish_uncertainty(monkeypatch, tmp_path) -> None:

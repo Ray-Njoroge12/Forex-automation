@@ -18,9 +18,13 @@ def _default_mock_bridge_path() -> Path:
     return Path(__file__).resolve().parent.parent / "mock_mt5_bridge"
 
 
+def _is_windows_runtime() -> bool:
+    return os.name == "nt"
+
+
 def _coerce_bridge_path(raw_path: str) -> Path:
     windows_match = re.match(r"^([A-Za-z]):[\\/](.*)$", raw_path)
-    if windows_match and os.name != "nt":
+    if windows_match and not _is_windows_runtime():
         drive = windows_match.group(1).lower()
         remainder = windows_match.group(2).replace("\\", "/")
         return Path(f"/mnt/{drive}/{remainder}")
@@ -31,8 +35,6 @@ def _current_policy_mode() -> str:
     explicit = os.getenv("FX_POLICY_MODE", "").strip().lower()
     if explicit:
         return explicit
-    if os.getenv("MICRO_CAPITAL_MODE") == "1":
-        return "legacy_micro_capital"
     return "core_srs"
 
 

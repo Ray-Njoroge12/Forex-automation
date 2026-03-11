@@ -49,8 +49,8 @@ class HardRiskEngine:
     LOSS_THROTTLE: dict[int, float] = {1: 0.75, 2: 0.50}
     LOSS_HALT_THRESHOLD = 3
 
-    def __init__(self):
-        self.policy = get_policy_config()
+    def __init__(self, policy: dict | None = None):
+        self.policy = get_policy_config() if policy is None else dict(policy)
         self.mode_id = self.policy["MODE_ID"]
         self.mode_label = self.policy["MODE_LABEL"]
         self.evidence_label = self.policy["EVIDENCE_LABEL"]
@@ -63,7 +63,7 @@ class HardRiskEngine:
         self.loss_throttle = dict(self.policy.get("LOSS_THROTTLE_STEPS", self.LOSS_THROTTLE))
 
         # Fixed-USD mode: ceiling is 2x per-trade risk as a fraction (set dynamically).
-        self._fixed_risk_usd = _read_fixed_risk_usd()
+        self._fixed_risk_usd = self.policy.get("FIXED_RISK_USD") if policy is not None else _read_fixed_risk_usd()
 
     def _combined_exposure_limit(self, balance: float) -> float:
         """Return the combined exposure ceiling as a fraction of balance.

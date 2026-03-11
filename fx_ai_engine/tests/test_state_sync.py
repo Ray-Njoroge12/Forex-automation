@@ -131,6 +131,8 @@ def test_state_sync_halts_on_broker_trade_ledger_mismatch() -> None:
     assert status.is_trading_halted is True
     assert status.state_reconciled is False
     assert "broker_positions=1 local_open_trades=0" in status.state_reconciliation_reason
+    assert "broker_symbols=['EURUSD']" in status.state_reconciliation_reason
+    assert "local_trade_ids=[]" in status.state_reconciliation_reason
     assert status.open_risk_percent == 0.032
 
 
@@ -156,6 +158,7 @@ def test_state_sync_halts_on_open_risk_disagreement() -> None:
     assert status.is_trading_halted is True
     assert status.state_reconciled is False
     assert "broker/local open-risk mismatch" in status.state_reconciliation_reason
+    assert "local_statuses=[]" in status.state_reconciliation_reason
     assert status.open_risk_percent == 0.04
 
 
@@ -175,10 +178,49 @@ def test_state_sync_halts_when_broker_is_flat_but_local_trade_remains() -> None:
         status,
         snapshot,
         persisted_state={"open_risk_percent": 0.032},
-        trade_ledger={"open_trade_count": 1, "open_risk_percent": 0.032, "open_symbols": ["EURUSD"]},
+        trade_ledger={
+            "open_trade_count": 1,
+            "open_risk_percent": 0.032,
+            "open_symbols": ["EURUSD"],
+            "open_trade_ids": ["AI_live_001"],
+            "open_trade_tickets": [991001],
+            "open_position_tickets": [881001],
+            "open_statuses": ["EXECUTED_OPEN"],
+        },
     )
 
     assert status.is_trading_halted is True
     assert status.state_reconciled is False
     assert "broker_positions=0 but local_open_trades=1" in status.state_reconciliation_reason
+    assert "local_trade_ids=['AI_live_001']" in status.state_reconciliation_reason
+    assert "local_position_tickets=[881001]" in status.state_reconciliation_reason
     assert status.open_risk_percent == 0.032
+
+
+def test_state_sync_halts_when_broker_management_restore_failed() -> None:
+    status = AccountStatus()
+    snapshot = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "balance": 1000.0,
+        "equity": 995.0,
+        "margin_free": 800.0,
+        "open_positions_count": 1,
+        "open_symbols": ["AUDUSD"],
+        "floating_pnl": -5.0,
+        "management_state_restored": False,
+        "managed_positions_count": 0,
+        "managed_position_tickets": [],
+        "unmanaged_position_tickets": [1880903],
+        "management_state_error": "managed_positions=0/1 missing_tickets=[1880903]",
+    }
+
+    update_account_status_from_snapshot(
+        status,
+        snapshot,
+        trade_ledger={"open_trade_count": 1, "open_risk_percent": 0.032, "open_symbols": ["AUDUSD"]},
+    )
+
+    assert status.is_trading_halted is True
+    assert status.state_reconciled is False
+    assert "broker management-state restore failed" in status.state_reconciliation_reason
+    assert "unmanaged_tickets=[1880903]" in status.state_reconciliation_reason

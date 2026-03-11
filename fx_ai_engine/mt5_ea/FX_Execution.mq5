@@ -23,6 +23,8 @@ double g_be_trigger_r[MAX_POS];
 double g_partial_close_r[MAX_POS];
 double g_trailing_atr_mult[MAX_POS];
 bool   g_tp_mode_trail[MAX_POS];
+double g_initial_stop_dist[MAX_POS];
+double g_initial_volume[MAX_POS];
 bool   g_partial_closed[MAX_POS];
 
 void InitPositionArrays()
@@ -35,6 +37,8 @@ void InitPositionArrays()
       g_partial_close_r[i]   = 1.5;
       g_trailing_atr_mult[i] = 2.0;
       g_tp_mode_trail[i]     = false;
+      g_initial_stop_dist[i] = 0.0;
+      g_initial_volume[i]    = 0.0;
       g_partial_closed[i]    = false;
    }
 }
@@ -64,6 +68,8 @@ void FreeSlot(ulong ticket)
       g_partial_close_r[s]   = 1.5;
       g_trailing_atr_mult[s] = 2.0;
       g_tp_mode_trail[s]     = false;
+      g_initial_stop_dist[s] = 0.0;
+      g_initial_volume[s]    = 0.0;
       g_partial_closed[s]    = false;
    }
 }
@@ -75,12 +81,39 @@ string PendingFolder() { return RootFolder + "\\pending_signals"; }
 string LockFolder() { return RootFolder + "\\active_locks"; }
 string FeedbackFolder() { return RootFolder + "\\feedback"; }
 string ExitsFolder() { return RootFolder + "\\exits"; }
+string ManagementStateFilePath(const ulong ticket) { return FeedbackFolder() + "\\management_state_" + StringFormat("%I64u", ticket) + ".json"; }
+string ExitFilePath(const ulong ticket) { return ExitsFolder() + "\\exit_" + StringFormat("%I64u", ticket) + ".json"; }
+
+bool WriteManagementStateForSlot(const int slot);
+void DeleteManagementStateFile(const ulong ticket);
+void RestoreManagementState();
+int CountManagedOpenPositions();
+string BuildManagedTicketsJson(bool managed);
+string BuildManagementStateError();
+bool TryLoadManagementState(
+   const ulong ticket,
+   string &tradeId,
+   double &initialStopDist,
+   double &initialVolume,
+   bool &partialClosed);
+double DealNetProfit(const ulong dealTicket);
+bool BuildClosedPositionSummary(
+   const ulong ticket,
+   string &tradeId,
+   double &profitLoss,
+   double &rMultiple,
+   bool &hasRMultiple,
+   datetime &closeTime);
+bool FinalizeClosedPosition(const ulong ticket, const string fallbackTradeId = "");
+void SweepClosedManagedPositions();
 
 int OnInit()
 {
+   InitPositionArrays();
+   RestoreManagementState();
    EventSetTimer(PollIntervalSeconds);
    LogDebug("OnInit: FX_Execution Started");
-   InitPositionArrays();
+   WriteAccountSnapshot();
    return(INIT_SUCCEEDED);
 }
 
@@ -110,20 +143,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
                return;
             }
 
-            double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
-            double fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
-            double swap = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
-            double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
-            
-            double total_pl = profit + fee + swap + commission;
-            
-            datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
             string trade_id = GetTradeIdForPosition(pos_ticket);
             if(trade_id == "")
                trade_id = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
-            
-            WriteExitFeedback(pos_ticket, trade_id, total_pl, close_time);
-            FreeSlot(pos_ticket);
+
+            if(!FinalizeClosedPosition(pos_ticket, trade_id))
+               LogDebug("Deferred final close finalization for position=" + (string)pos_ticket);
          }
       }
    }
@@ -135,6 +160,7 @@ void OnTimer()
    
    ProcessPendingSignal();
    ManageOpenPositions();
+   SweepClosedManagedPositions();
    
    if(TimeCurrent() - lastSnapshot >= 5) { // Update every 5s
       WriteAccountSnapshot();
@@ -164,10 +190,14 @@ void ManageOpenPositions()
       double slotPartial = (slot >= 0) ? g_partial_close_r[slot]   : PartialCloseR;
       double slotTrail   = (slot >= 0) ? g_trailing_atr_mult[slot] : TrailingATRMultiplier;
       bool   slotClosed  = (slot >= 0) ? g_partial_closed[slot]    : false;
-      bool   slotTrailMode = (slot >= 0) ? g_tp_mode_trail[slot]     : false;
+      bool   slotTrailMode = (slot >= 0) ? g_tp_mode_trail[slot]    : false;
+      double slotInitialStopDist = (slot >= 0) ? g_initial_stop_dist[slot] : 0.0;
 
-      // Calculate initial stop distance (R-unit) from entry and current SL
-      double initialStopDist = MathAbs(openPrice - currentSL);
+      // Calculate initial stop distance (R-unit) from the original entry risk.
+      // Fall back to current SL only when no stored original stop distance exists yet.
+      double initialStopDist = slotInitialStopDist;
+      if(initialStopDist <= 0)
+         initialStopDist = MathAbs(openPrice - currentSL);
       if(initialStopDist <= 0) continue; // Safety: skip if no SL set
       
       // Get current price
@@ -244,7 +274,11 @@ void ManageOpenPositions()
             if(trade.PositionClosePartial(ticket, halfVol))
             {
                LogDebug("Partial close: ticket=" + (string)ticket + " closed=" + DoubleToString(halfVol, 2) + " at R=" + DoubleToString(currentR, 2));
-               if(slot >= 0) g_partial_closed[slot] = true;
+               if(slot >= 0)
+               {
+                  g_partial_closed[slot] = true;
+                  WriteManagementStateForSlot(slot);
+               }
             }
             else
                LogDebug("Partial close fail: ticket=" + (string)ticket + " err=" + trade.ResultRetcodeDescription());
@@ -453,6 +487,7 @@ void WriteExecutionFeedback(
    const double entryPrice,
    const double slippage,
    const double spreadAtEntry,
+   const double lotSize,
    const double profitLoss,
    const double rMultiple)
 {
@@ -464,6 +499,7 @@ void WriteExecutionFeedback(
    payload += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
    payload += "\"slippage\":" + DoubleToString(slippage, 6) + ",";
    payload += "\"spread_at_entry\":" + DoubleToString(spreadAtEntry, 6) + ",";
+   payload += "\"lot_size\":" + DoubleToString(lotSize, 2) + ",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
    payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
    payload += "\"close_time\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\"";
@@ -477,19 +513,29 @@ void WriteExitFeedback(
    const ulong ticket,
    const string tradeId,
    const double profitLoss,
-   const datetime closeTime)
+   const datetime closeTime,
+   const double rMultiple,
+   const bool hasRMultiple)
 {
+   string status = "CLOSED_BREAKEVEN";
+   if(profitLoss > 0)
+      status = "CLOSED_WIN";
+   else if(profitLoss < 0)
+      status = "CLOSED_LOSS";
+
    string payload = "{";
    payload += "\"ticket\":" + StringFormat("%I64u", ticket) + ",";
    payload += "\"position_ticket\":" + StringFormat("%I64u", ticket) + ",";
    payload += "\"trade_id\":\"" + tradeId + "\",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
-   payload += "\"status\":\"CLOSED\",";
+   payload += "\"status\":\"" + status + "\",";
    payload += "\"is_final_exit\":true,";
+   if(hasRMultiple)
+      payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
    payload += "\"close_time\":\"" + TimeToString(closeTime, TIME_DATE | TIME_SECONDS) + "\"";
    payload += "}";
 
-   string filePath = ExitsFolder() + "\\exit_" + StringFormat("%I64u", ticket) + ".json";
+   string filePath = ExitFilePath(ticket);
    WriteTextFile(filePath, payload);
 }
 
@@ -524,6 +570,11 @@ void WriteAccountSnapshot()
       }
    }
    openSymbolsJson += "]";
+   int managedPositions = CountManagedOpenPositions();
+   bool managementStateRestored = (positions <= 0) || (managedPositions == positions);
+   string managedTicketsJson = BuildManagedTicketsJson(true);
+   string unmanagedTicketsJson = BuildManagedTicketsJson(false);
+   string managementStateError = BuildManagementStateError();
 
    string payload = "{";
    payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\",";
@@ -533,7 +584,13 @@ void WriteAccountSnapshot()
    payload += "\"open_positions_count\":" + IntegerToString(positions) + ",";
    payload += "\"floating_pnl\":" + DoubleToString(floating, 2) + ",";
    payload += "\"open_symbols\":" + openSymbolsJson + ",";
-   payload += "\"open_usd_exposure_count\":" + IntegerToString(usdExposureCount);
+   payload += "\"open_usd_exposure_count\":" + IntegerToString(usdExposureCount) + ",";
+   payload += "\"management_state_restored\":" + (managementStateRestored ? "true" : "false") + ",";
+   payload += "\"managed_positions_count\":" + IntegerToString(managedPositions) + ",";
+   payload += "\"managed_position_tickets\":" + managedTicketsJson + ",";
+   payload += "\"unmanaged_position_tickets\":" + unmanagedTicketsJson;
+   if(!managementStateRestored)
+      payload += ",\"management_state_error\":\"" + managementStateError + "\"";
    payload += "}";
 
    WriteTextFile(FeedbackFolder() + "\\account_snapshot.json", payload);
@@ -545,6 +602,215 @@ string GetTradeIdForPosition(ulong ticket)
    if(s >= 0)
       return g_trade_ids[s];
    return "";
+}
+
+bool TryLoadManagementState(
+   const ulong ticket,
+   string &tradeId,
+   double &initialStopDist,
+   double &initialVolume,
+   bool &partialClosed)
+{
+   string content;
+   if(!ReadTextFile(ManagementStateFilePath(ticket), content))
+      return false;
+
+   double ticketValue = 0.0;
+   double partialClosedValue = 0.0;
+   double initialVolumeValue = 0.0;
+   bool ok = true;
+   ok = ok && ExtractJsonDouble(content, "position_ticket", ticketValue);
+   ok = ok && ExtractJsonString(content, "trade_id", tradeId);
+   ok = ok && ExtractJsonDouble(content, "initial_stop_dist", initialStopDist);
+   ok = ok && ExtractJsonDouble(content, "partial_closed", partialClosedValue);
+   ExtractJsonDouble(content, "initial_volume", initialVolumeValue);
+   if(!ok || (ulong)ticketValue != ticket)
+      return false;
+
+   initialVolume = initialVolumeValue;
+   partialClosed = (partialClosedValue > 0.5);
+   return true;
+}
+
+double DealNetProfit(const ulong dealTicket)
+{
+   double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+   double fee = HistoryDealGetDouble(dealTicket, DEAL_FEE);
+   double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+   double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+   return profit + fee + swap + commission;
+}
+
+bool BuildClosedPositionSummary(
+   const ulong ticket,
+   string &tradeId,
+   double &profitLoss,
+   double &rMultiple,
+   bool &hasRMultiple,
+   datetime &closeTime)
+{
+   profitLoss = 0.0;
+   rMultiple = 0.0;
+   hasRMultiple = false;
+   closeTime = 0;
+   if(ticket == 0)
+      return false;
+
+   double initialStopDist = 0.0;
+   double initialVolume = 0.0;
+   int slot = FindSlot(ticket);
+   if(slot >= 0)
+   {
+      if(tradeId == "")
+         tradeId = g_trade_ids[slot];
+      initialStopDist = g_initial_stop_dist[slot];
+      initialVolume = g_initial_volume[slot];
+   }
+
+   if(tradeId == "" || initialStopDist <= 0 || initialVolume <= 0)
+   {
+      string persistedTradeId = "";
+      double persistedStopDist = 0.0;
+      double persistedInitialVolume = 0.0;
+      bool persistedPartialClosed = false;
+      if(TryLoadManagementState(ticket, persistedTradeId, persistedStopDist, persistedInitialVolume, persistedPartialClosed))
+      {
+         if(tradeId == "")
+            tradeId = persistedTradeId;
+         if(initialStopDist <= 0)
+            initialStopDist = persistedStopDist;
+         if(initialVolume <= 0)
+            initialVolume = persistedInitialVolume;
+      }
+   }
+
+   datetime historyStart = TimeCurrent() - 86400 * 30;
+   if(!HistorySelect(historyStart, TimeCurrent() + 60))
+      return false;
+
+   ulong openDeal = 0;
+   datetime openTime = 0;
+   string commentTradeId = tradeId;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if((ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) != ticket)
+         continue;
+
+      string dealComment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+      StringTrimLeft(dealComment);
+      StringTrimRight(dealComment);
+      if(commentTradeId == "" && dealComment != "")
+         commentTradeId = dealComment;
+
+      long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(dealEntry == DEAL_ENTRY_IN)
+      {
+         if(openDeal == 0 || dealTime < openTime)
+         {
+            openDeal = dealTicket;
+            openTime = dealTime;
+         }
+         continue;
+      }
+      if(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_INOUT || dealEntry == DEAL_ENTRY_OUT_BY)
+      {
+         profitLoss += DealNetProfit(dealTicket);
+         if(dealTime >= closeTime)
+            closeTime = dealTime;
+      }
+   }
+
+   if(closeTime <= 0)
+      return false;
+   if(tradeId == "")
+      tradeId = commentTradeId;
+   if(openDeal != 0 && initialVolume <= 0)
+      initialVolume = HistoryDealGetDouble(openDeal, DEAL_VOLUME);
+
+   if(openDeal != 0 && initialStopDist > 0 && initialVolume > 0)
+   {
+      double entryPrice = HistoryDealGetDouble(openDeal, DEAL_PRICE);
+      long openType = HistoryDealGetInteger(openDeal, DEAL_TYPE);
+      bool isBuy = (openType == DEAL_TYPE_BUY);
+      if(isBuy || openType == DEAL_TYPE_SELL)
+      {
+         for(int i = 0; i < HistoryDealsTotal(); i++)
+         {
+            ulong dealTicket = HistoryDealGetTicket(i);
+            if(dealTicket == 0) continue;
+            if((ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID) != ticket)
+               continue;
+            long dealEntry = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+            if(!(dealEntry == DEAL_ENTRY_OUT || dealEntry == DEAL_ENTRY_INOUT || dealEntry == DEAL_ENTRY_OUT_BY))
+               continue;
+
+            double closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+            double closedVolume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+            double legR = isBuy ? ((closePrice - entryPrice) / initialStopDist) : ((entryPrice - closePrice) / initialStopDist);
+            rMultiple += legR * (closedVolume / initialVolume);
+         }
+         hasRMultiple = true;
+      }
+   }
+   return true;
+}
+
+bool FinalizeClosedPosition(const ulong ticket, const string fallbackTradeId)
+{
+   if(ticket == 0)
+      return false;
+   if(PositionSelectByTicket(ticket))
+      return false;
+
+   string tradeId = fallbackTradeId;
+   double profitLoss = 0.0;
+   double rMultiple = 0.0;
+   bool hasRMultiple = false;
+   datetime closeTime = 0;
+   if(!BuildClosedPositionSummary(ticket, tradeId, profitLoss, rMultiple, hasRMultiple, closeTime))
+      return false;
+
+   if(!FileIsExist(ExitFilePath(ticket)))
+      WriteExitFeedback(ticket, tradeId, profitLoss, closeTime, rMultiple, hasRMultiple);
+   DeleteManagementStateFile(ticket);
+   FreeSlot(ticket);
+   LogDebug("Finalized closed position ticket=" + (string)ticket + " profit_loss=" + DoubleToString(profitLoss, 2));
+   return true;
+}
+
+void SweepClosedManagedPositions()
+{
+   for(int i = 0; i < MAX_POS; i++)
+   {
+      ulong ticket = g_tickets[i];
+      if(ticket == 0) continue;
+      if(!PositionSelectByTicket(ticket))
+         FinalizeClosedPosition(ticket, g_trade_ids[i]);
+   }
+
+   string fileName;
+   long findHandle = FileFindFirst(FeedbackFolder() + "\\management_state_*.json", fileName);
+   if(findHandle == INVALID_HANDLE)
+      return;
+
+   do
+   {
+      string content;
+      if(!ReadTextFile(FeedbackFolder() + "\\" + fileName, content))
+         continue;
+      double ticketValue = 0.0;
+      if(!ExtractJsonDouble(content, "position_ticket", ticketValue))
+         continue;
+      ulong ticket = (ulong)ticketValue;
+      if(ticket == 0 || PositionSelectByTicket(ticket))
+         continue;
+      FinalizeClosedPosition(ticket);
+   }
+   while(FileFindNext(findHandle, fileName));
+   FileFindClose(findHandle);
 }
 
 ulong FindPositionTicketByTradeId(const string symbol, const string tradeId)
@@ -561,6 +827,158 @@ ulong FindPositionTicketByTradeId(const string symbol, const string tradeId)
          return positionTicket;
    }
    return 0;
+}
+
+bool WriteManagementStateForSlot(const int slot)
+{
+   if(slot < 0 || slot >= MAX_POS) return false;
+   ulong ticket = g_tickets[slot];
+   if(ticket == 0) return false;
+
+   string payload = "{";
+   payload += "\"position_ticket\":" + StringFormat("%I64u", ticket) + ",";
+   payload += "\"trade_id\":\"" + g_trade_ids[slot] + "\",";
+   payload += "\"be_trigger_r\":" + DoubleToString(g_be_trigger_r[slot], 4) + ",";
+   payload += "\"partial_close_r\":" + DoubleToString(g_partial_close_r[slot], 4) + ",";
+   payload += "\"trailing_atr_mult\":" + DoubleToString(g_trailing_atr_mult[slot], 4) + ",";
+   payload += "\"tp_mode_trail\":" + (g_tp_mode_trail[slot] ? "1" : "0") + ",";
+   payload += "\"initial_stop_dist\":" + DoubleToString(g_initial_stop_dist[slot], 8) + ",";
+   payload += "\"initial_volume\":" + DoubleToString(g_initial_volume[slot], 2) + ",";
+   payload += "\"partial_closed\":" + (g_partial_closed[slot] ? "1" : "0") + ",";
+   payload += "\"saved_at\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\"";
+   payload += "}";
+   return WriteTextFile(ManagementStateFilePath(ticket), payload);
+}
+
+void DeleteManagementStateFile(const ulong ticket)
+{
+   if(ticket == 0) return;
+   FileDelete(ManagementStateFilePath(ticket));
+}
+
+void RestoreManagementState()
+{
+   string fileName;
+   long findHandle = FileFindFirst(FeedbackFolder() + "\\management_state_*.json", fileName);
+   if(findHandle != INVALID_HANDLE)
+   {
+      do
+      {
+         string filePath = FeedbackFolder() + "\\" + fileName;
+         string content;
+         if(!ReadTextFile(filePath, content))
+         {
+            LogDebug("Management restore read fail: " + fileName);
+            continue;
+         }
+
+         double ticketValue = 0.0;
+         double beR = 1.0;
+         double partialR = 1.5;
+         double trailMult = 2.0;
+         double trailMode = 0.0;
+         double initialStopDist = 0.0;
+         double initialVolume = 0.0;
+         double partialClosed = 0.0;
+         string tradeId = "";
+         bool ok = true;
+         ok = ok && ExtractJsonDouble(content, "position_ticket", ticketValue);
+         ok = ok && ExtractJsonString(content, "trade_id", tradeId);
+         ok = ok && ExtractJsonDouble(content, "be_trigger_r", beR);
+         ok = ok && ExtractJsonDouble(content, "partial_close_r", partialR);
+         ok = ok && ExtractJsonDouble(content, "trailing_atr_mult", trailMult);
+         ok = ok && ExtractJsonDouble(content, "tp_mode_trail", trailMode);
+         ok = ok && ExtractJsonDouble(content, "initial_stop_dist", initialStopDist);
+         ok = ok && ExtractJsonDouble(content, "partial_closed", partialClosed);
+         ExtractJsonDouble(content, "initial_volume", initialVolume);
+         ulong ticket = (ulong)ticketValue;
+
+         if(!ok || ticket == 0)
+         {
+            LogDebug("Management restore parse fail: " + fileName);
+            continue;
+         }
+         if(!PositionSelectByTicket(ticket))
+         {
+            LogDebug("Removing stale management state: " + fileName);
+            FileDelete(filePath);
+            continue;
+         }
+
+         int slot = AllocSlot(ticket);
+         if(slot < 0)
+         {
+            LogDebug("Management restore slot allocation fail: " + fileName);
+            continue;
+         }
+
+         g_trade_ids[slot] = tradeId;
+         g_be_trigger_r[slot] = beR;
+         g_partial_close_r[slot] = partialR;
+         g_trailing_atr_mult[slot] = trailMult;
+         g_tp_mode_trail[slot] = (trailMode > 0.5);
+         g_initial_stop_dist[slot] = initialStopDist;
+         g_initial_volume[slot] = (initialVolume > 0) ? initialVolume : PositionGetDouble(POSITION_VOLUME);
+         g_partial_closed[slot] = (partialClosed > 0.5);
+         LogDebug("Management restored: ticket=" + (string)ticket + " trade_id=" + tradeId);
+      }
+      while(FileFindNext(findHandle, fileName));
+      FileFindClose(findHandle);
+   }
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(FindSlot(ticket) < 0)
+         LogDebug("Management restore missing for open position=" + (string)ticket);
+   }
+}
+
+int CountManagedOpenPositions()
+{
+   int managed = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      int slot = FindSlot(ticket);
+      if(slot >= 0 && g_initial_stop_dist[slot] > 0)
+         managed++;
+   }
+   return managed;
+}
+
+string BuildManagedTicketsJson(bool managed)
+{
+   string out = "[";
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      int slot = FindSlot(ticket);
+      bool hasState = (slot >= 0 && g_initial_stop_dist[slot] > 0);
+      if(hasState != managed)
+         continue;
+      if(count > 0)
+         out += ",";
+      out += StringFormat("%I64u", ticket);
+      count++;
+   }
+   out += "]";
+   return out;
+}
+
+string BuildManagementStateError()
+{
+   int total = PositionsTotal();
+   if(total <= 0)
+      return "";
+   int managed = CountManagedOpenPositions();
+   if(managed == total)
+      return "";
+   return "managed_positions=" + IntegerToString(managed) + "/" + IntegerToString(total) + " missing_tickets=" + BuildManagedTicketsJson(false);
 }
 
 void ProcessPendingSignal()
@@ -604,7 +1022,23 @@ void ProcessPendingSignal()
    ExtractJsonDouble(content, "partial_close_r",   partialR);
    ExtractJsonDouble(content, "trailing_atr_mult", trailMult);
    ExtractJsonString(content, "tp_mode",           tpModeStr);
-   bool trailMode = (tpModeStr == "TRAIL");
+   bool trailMode = false;
+   bool hardTpMode = true;
+   if(tpModeStr == "TRAIL")
+   {
+      trailMode = true;
+      hardTpMode = false;
+   }
+   else if(tpModeStr == "HYBRID")
+   {
+      trailMode = true;
+      hardTpMode = true;
+   }
+   else if(tpModeStr != "FIXED")
+   {
+      LogDebug("Unknown tp_mode, defaulting to FIXED: " + tpModeStr);
+      tpModeStr = "FIXED";
+   }
 
    LogDebug("Parsed symbol: " + symbol + " dir: " + direction + " order_type: " + orderType);
 
@@ -627,7 +1061,7 @@ void ProcessPendingSignal()
    if(spreadPips > MaxSpreadPips)
    {
       LogDebug("Spread too wide: " + (string)spreadPips);
-      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -636,7 +1070,7 @@ void ProcessPendingSignal()
    if(recalculateLot <= 0.0)
    {
       LogDebug("Lot calculation fail (too small)");
-      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -654,9 +1088,10 @@ void ProcessPendingSignal()
       // LIMIT ORDER: place pending order at the specified limit_price
       int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
       limitPrice = NormalizeDouble(limitPrice, digits);
+      entry = limitPrice;
       double sl = (direction == "BUY") ? (limitPrice - stopPips * PipValue(symbol)) : (limitPrice + stopPips * PipValue(symbol));
       double tp = 0.0;
-      if(!trailMode)
+      if(hardTpMode)
          tp = (direction == "BUY") ? (limitPrice + takeProfitPips * PipValue(symbol)) : (limitPrice - takeProfitPips * PipValue(symbol));
       sl = NormalizeDouble(sl, digits);
       tp = NormalizeDouble(tp, digits);
@@ -674,7 +1109,7 @@ void ProcessPendingSignal()
       entry = (direction == "BUY") ? tick.ask : tick.bid;
       double sl = (direction == "BUY") ? (entry - stopPips * PipValue(symbol)) : (entry + stopPips * PipValue(symbol));
       double tp = 0.0;
-      if(!trailMode)
+      if(hardTpMode)
          tp = (direction == "BUY") ? (entry + takeProfitPips * PipValue(symbol)) : (entry - takeProfitPips * PipValue(symbol));
       
       LogDebug("Sending MARKET Order: " + symbol + " " + direction + " lot: " + (string)finalLot);
@@ -688,13 +1123,16 @@ void ProcessPendingSignal()
    if(!placed)
    {
       LogDebug("Order Execution FAIL: " + trade.ResultRetcodeDescription());
-      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, 0.0, 0.0);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
 
    double fillPrice = trade.ResultPrice();
-   double slippage = MathAbs(fillPrice - entry);
+   double resolvedEntryPrice = (fillPrice > 0.0) ? fillPrice : entry;
+   double slippage = 0.0;
+   if(fillPrice > 0.0 && entry > 0.0)
+      slippage = MathAbs(fillPrice - entry);
    ulong ticket = trade.ResultDeal();
    if(ticket == 0) ticket = trade.ResultOrder();
    
@@ -703,6 +1141,15 @@ void ProcessPendingSignal()
    if(posTicket == 0 && PositionSelectByTicket(trade.ResultOrder())) posTicket = trade.ResultOrder();
    if(posTicket == 0 && PositionSelectByTicket(trade.ResultDeal())) posTicket = trade.ResultDeal();
    if(posTicket == 0) posTicket = trade.ResultOrder();
+   double initialStopDist = stopPips * PipValue(symbol);
+   if(posTicket != 0 && PositionSelectByTicket(posTicket))
+   {
+      double posOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posStopPrice = PositionGetDouble(POSITION_SL);
+      double actualStopDist = MathAbs(posOpenPrice - posStopPrice);
+      if(actualStopDist > 0)
+         initialStopDist = actualStopDist;
+   }
    int slot = AllocSlot(posTicket);
    if(slot >= 0)
    {
@@ -711,9 +1158,20 @@ void ProcessPendingSignal()
       g_partial_close_r[slot]  = partialR;
       g_trailing_atr_mult[slot]= trailMult;
       g_tp_mode_trail[slot]    = trailMode;
+      g_initial_stop_dist[slot]= initialStopDist;
+      g_initial_volume[slot]   = finalLot;
       g_partial_closed[slot]   = false;
+      WriteManagementStateForSlot(slot);
    }
-   WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", fillPrice, slippage, spread, 0.0, 0.0);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   LogDebug(
+      "Trade management armed: ticket=" + (string)posTicket +
+      " tp_mode=" + tpModeStr +
+      " trail=" + (trailMode ? "1" : "0") +
+      " hard_tp=" + (hardTpMode ? "1" : "0") +
+      " initial_stop_dist=" + DoubleToString(initialStopDist, digits)
+   );
+   WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", resolvedEntryPrice, slippage, spread, finalLot, 0.0, 0.0);
 
    FileDelete(filePath);
 }

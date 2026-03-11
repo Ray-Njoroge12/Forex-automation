@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from backtesting.data_loader import load_ohlc_csv
 from backtesting.simulation_profile import build_simulation_profile
@@ -20,7 +20,13 @@ def _load_backtesting_runtime():
     return bt, AgentBacktestStrategy
 
 
-def run_backtest_on_df(df, symbol: str, *, mode_id: str | None = None) -> "AgentBacktestStrategy":
+def run_backtest_on_df(
+    df,
+    symbol: str,
+    *,
+    mode_id: str | None = None,
+    agent_threshold_overrides: Mapping[str, object] | None = None,
+) -> "AgentBacktestStrategy":
     bt, AgentBacktestStrategy = _load_backtesting_runtime()
     profile = build_simulation_profile(mode_id)
     data = bt.feeds.PandasData(
@@ -36,7 +42,12 @@ def run_backtest_on_df(df, symbol: str, *, mode_id: str | None = None) -> "Agent
     cerebro = bt.Cerebro()
     cerebro.broker.setcash(profile.starting_cash)
     cerebro.adddata(data, name=symbol)
-    cerebro.addstrategy(AgentBacktestStrategy, symbol=symbol, simulation_profile=profile)
+    cerebro.addstrategy(
+        AgentBacktestStrategy,
+        symbol=symbol,
+        simulation_profile=profile,
+        agent_threshold_overrides=agent_threshold_overrides,
+    )
 
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0, annualize=True)
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
@@ -46,9 +57,20 @@ def run_backtest_on_df(df, symbol: str, *, mode_id: str | None = None) -> "Agent
     return results[0]
 
 
-def run_backtest(csv_path: str, symbol: str, *, mode_id: str | None = None) -> "AgentBacktestStrategy":
+def run_backtest(
+    csv_path: str,
+    symbol: str,
+    *,
+    mode_id: str | None = None,
+    agent_threshold_overrides: Mapping[str, object] | None = None,
+) -> "AgentBacktestStrategy":
     df = load_ohlc_csv(csv_path)
-    return run_backtest_on_df(df, symbol, mode_id=mode_id)
+    return run_backtest_on_df(
+        df,
+        symbol,
+        mode_id=mode_id,
+        agent_threshold_overrides=agent_threshold_overrides,
+    )
 
 
 def _print_stats(strategy: AgentBacktestStrategy) -> None:
@@ -87,6 +109,7 @@ def _print_stats(strategy: AgentBacktestStrategy) -> None:
             "REGIME:PASS",
             "REGIME:REJECT",
             "TECHNICAL:PASS",
+            "TECHNICAL:SKIP",
             "TECHNICAL:REJECT",
             "ADVERSARIAL:PASS",
             "ADVERSARIAL:REJECT",

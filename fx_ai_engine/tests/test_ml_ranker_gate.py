@@ -1,7 +1,22 @@
 """Tests for the ML ranker gate in the decision pipeline."""
 from __future__ import annotations
 
-from ml.signal_ranker import PREDICT_THRESHOLD, SignalRanker
+import pytest
+
+joblib = pytest.importorskip("joblib")
+
+from ml import signal_ranker as ranker_mod
+from ml.signal_ranker import (
+    MIN_TRAINING_SAMPLES,
+    MODEL_METADATA_VERSION,
+    PREDICT_THRESHOLD,
+    SignalRanker,
+)
+
+
+class _SerializableModel:
+    def predict_proba(self, _features):
+        return [[0.2, 0.8]]
 
 
 def test_ranker_returns_neutral_when_no_model() -> None:
@@ -42,3 +57,35 @@ def test_ranker_predict_proba_with_empty_features() -> None:
 def test_ranker_is_ready_false_before_load() -> None:
     ranker = SignalRanker()
     assert ranker.is_ready() is False
+
+
+def test_ranker_rejects_legacy_model_without_metadata(tmp_path, monkeypatch) -> None:
+    model_path = tmp_path / "signal_ranker_model.joblib"
+    joblib.dump({"not": "a model bundle"}, model_path)
+    monkeypatch.setattr(ranker_mod, "MODEL_PATH", model_path)
+
+    ranker = SignalRanker()
+    assert ranker.load() is False
+    assert ranker.is_ready() is False
+
+
+def test_ranker_loads_clean_scoped_model_bundle(tmp_path, monkeypatch) -> None:
+    model_path = tmp_path / "signal_ranker_model.joblib"
+    joblib.dump(
+        {
+            "model": _SerializableModel(),
+            "metadata": {
+                "metadata_version": MODEL_METADATA_VERSION,
+                "policy_mode": ranker_mod.TRAINING_POLICY_MODE,
+                "execution_mode": ranker_mod.TRAINING_EXECUTION_MODE,
+                "sample_count": MIN_TRAINING_SAMPLES,
+            },
+        },
+        model_path,
+    )
+    monkeypatch.setattr(ranker_mod, "MODEL_PATH", model_path)
+
+    ranker = SignalRanker()
+    assert ranker.load() is True
+    assert ranker.is_ready() is True
+    assert ranker.predict_proba({}) == 0.8

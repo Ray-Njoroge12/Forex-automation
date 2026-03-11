@@ -6,21 +6,24 @@ import pytest
 def _clear_policy_env(monkeypatch) -> None:
     for name in (
         "FX_POLICY_MODE",
+        "FX_ALLOW_NON_SRS_POLICY",
         "MICRO_CAPITAL_MODE",
         "FIXED_RISK_USD",
         "MAX_SPREAD_PIPS",
         "ML_PREDICT_THRESHOLD",
+        "FX_EXPERIMENT_PAIR_SELECTIVE_RISING_ADX_RELAX",
+        "FX_EXPERIMENT_AUDUSD_PULLBACK_RELAX",
+        "FX_EXPERIMENT_LIVE_TRADE_MGMT_OPTION_C",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_micro_capital_env_vars_are_valid(monkeypatch):
-    """Legacy/preserve mode may still use explicit governed runtime overrides."""
+def test_governed_runtime_overrides_require_explicit_non_srs_approval(monkeypatch):
     _clear_policy_env(monkeypatch)
-    monkeypatch.setenv("MICRO_CAPITAL_MODE", "1")
-    monkeypatch.setenv("FIXED_RISK_USD", "0.50")
-    monkeypatch.setenv("MAX_SPREAD_PIPS", "3.5")
-    monkeypatch.setenv("ML_PREDICT_THRESHOLD", "-1.0")
+    monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
+    monkeypatch.setenv("FIXED_RISK_USD", "0.75")
+    monkeypatch.setenv("MAX_SPREAD_PIPS", "4.2")
+    monkeypatch.setenv("ML_PREDICT_THRESHOLD", "-0.25")
     from config_microcapital import (
         read_fixed_risk_usd,
         read_max_spread_pips,
@@ -30,6 +33,11 @@ def test_micro_capital_env_vars_are_valid(monkeypatch):
     assert read_fixed_risk_usd() == 0.50
     assert read_max_spread_pips() == 3.5
     assert read_predict_threshold() == -1.0
+
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
+    assert read_fixed_risk_usd() == 0.75
+    assert read_max_spread_pips() == 4.2
+    assert read_predict_threshold() == -0.25
 
     monkeypatch.setenv("FIXED_RISK_USD", "invalid")
     monkeypatch.setenv("MAX_SPREAD_PIPS", "invalid")
@@ -45,6 +53,15 @@ def test_policy_resolution_defaults_to_core_srs(monkeypatch):
 
     policy = get_policy_config()
     assert policy["MODE_ID"] == "core_srs"
+
+
+def test_policy_resolution_ignores_deprecated_micro_capital_toggle(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("MICRO_CAPITAL_MODE", "1")
+    from config_microcapital import get_policy_config
+
+    policy = get_policy_config()
+    assert policy["MODE_ID"] == "core_srs"
     assert policy["MODE_LABEL"] == "Core SRS"
     assert policy["EVIDENCE_LABEL"] == "Core SRS v1"
     assert policy["FIXED_RISK_USD"] is None
@@ -55,8 +72,152 @@ def test_policy_resolution_defaults_to_core_srs(monkeypatch):
     assert policy["LOSS_HALT_THRESHOLD"] == 3
 
 
+def test_policy_thresholds_are_deep_copied_and_mergeable(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    from config_microcapital import apply_agent_threshold_overrides, get_policy_config
+
+    policy = get_policy_config()
+    policy["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] = 18.0
+
+    fresh = get_policy_config()
+    assert fresh["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] == 20.0
+
+    merged = apply_agent_threshold_overrides(
+        fresh,
+        {
+            "AGENT_THRESHOLDS": {
+                "REGIME": {"adx_no_trade_below": 18.0},
+                "TECHNICAL": {"buy_rsi_min": 39.0},
+            }
+        },
+    )
+
+    assert merged["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] == 18.0
+    assert merged["AGENT_THRESHOLDS"]["TECHNICAL"]["buy_rsi_min"] == 39.0
+
+
+def test_runtime_experiment_defaults_to_disabled(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    from config_microcapital import apply_runtime_experiment_config, get_policy_config
+
+    policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+
+    assert policy["EXPERIMENTS"]["PAIR_SELECTIVE_RISING_ADX_RELAX"]["enabled"] is False
+    assert policy["EXPERIMENTS"]["AUDUSD_PULLBACK_RELAX"]["enabled"] is False
+    assert policy["EXPERIMENTS"]["LIVE_TRADE_MGMT_OPTION_C"]["enabled"] is False
+    assert "EXPERIMENT_TAG" not in policy
+
+
+def test_runtime_experiment_enables_only_for_core_srs_demo(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_PAIR_SELECTIVE_RISING_ADX_RELAX", "1")
+    from config_microcapital import (
+        PAIR_SELECTIVE_RISING_ADX_RELAX_TAG,
+        apply_runtime_experiment_config,
+        get_policy_config,
+    )
+
+    demo_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    smoke_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="smoke")
+
+    assert demo_policy["EXPERIMENTS"]["PAIR_SELECTIVE_RISING_ADX_RELAX"]["enabled"] is True
+    assert demo_policy["EXPERIMENT_TAG"] == PAIR_SELECTIVE_RISING_ADX_RELAX_TAG
+    assert smoke_policy["EXPERIMENTS"]["PAIR_SELECTIVE_RISING_ADX_RELAX"]["enabled"] is False
+    assert "EXPERIMENT_TAG" not in smoke_policy
+
+
+def test_runtime_audusd_pullback_experiment_enables_only_for_core_srs_demo(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_AUDUSD_PULLBACK_RELAX", "1")
+    from config_microcapital import (
+        AUDUSD_PULLBACK_RELAX_TAG,
+        apply_runtime_experiment_config,
+        get_policy_config,
+    )
+
+    demo_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    smoke_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="smoke")
+
+    assert demo_policy["EXPERIMENTS"]["AUDUSD_PULLBACK_RELAX"]["enabled"] is True
+    assert demo_policy["EXPERIMENT_TAG"] == AUDUSD_PULLBACK_RELAX_TAG
+    assert smoke_policy["EXPERIMENTS"]["AUDUSD_PULLBACK_RELAX"]["enabled"] is False
+    assert "EXPERIMENT_TAG" not in smoke_policy
+
+
+def test_runtime_live_trade_mgmt_option_c_enables_only_for_core_srs_demo(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_LIVE_TRADE_MGMT_OPTION_C", "1")
+    from config_microcapital import (
+        LIVE_TRADE_MGMT_OPTION_C_TAG,
+        apply_runtime_experiment_config,
+        get_policy_config,
+    )
+
+    demo_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    smoke_policy = apply_runtime_experiment_config(get_policy_config(), run_mode="smoke")
+
+    assert demo_policy["EXPERIMENTS"]["LIVE_TRADE_MGMT_OPTION_C"]["enabled"] is True
+    assert demo_policy["EXPERIMENT_TAG"] == LIVE_TRADE_MGMT_OPTION_C_TAG
+    assert smoke_policy["EXPERIMENTS"]["LIVE_TRADE_MGMT_OPTION_C"]["enabled"] is False
+    assert "EXPERIMENT_TAG" not in smoke_policy
+
+
+def test_runtime_evidence_context_appends_experiment_stream_suffix(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_PAIR_SELECTIVE_RISING_ADX_RELAX", "1")
+    from config_microcapital import apply_runtime_experiment_config, get_policy_config
+    from core.evidence import build_runtime_evidence_context
+
+    policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    ctx = build_runtime_evidence_context(policy, use_mock=False, login=123, server="Demo-Server")
+
+    assert ctx.evidence_stream == "runtime_mt5_core_srs__pair_selective_rising_adx_relax"
+    assert ctx.policy_mode == "core_srs"
+    assert ctx.account_scope == "mt5:Demo-Server:123"
+
+
+def test_runtime_evidence_context_appends_audusd_pullback_experiment_stream_suffix(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_AUDUSD_PULLBACK_RELAX", "1")
+    from config_microcapital import apply_runtime_experiment_config, get_policy_config
+    from core.evidence import build_runtime_evidence_context
+
+    policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    ctx = build_runtime_evidence_context(policy, use_mock=False, login=123, server="Demo-Server")
+
+    assert ctx.evidence_stream == "runtime_mt5_core_srs__audusd_pullback_relax"
+    assert ctx.policy_mode == "core_srs"
+    assert ctx.account_scope == "mt5:Demo-Server:123"
+
+
+def test_runtime_evidence_context_appends_live_trade_mgmt_option_c_stream_suffix(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_EXPERIMENT_LIVE_TRADE_MGMT_OPTION_C", "1")
+    from config_microcapital import apply_runtime_experiment_config, get_policy_config
+    from core.evidence import build_runtime_evidence_context
+
+    policy = apply_runtime_experiment_config(get_policy_config(), run_mode="demo")
+    ctx = build_runtime_evidence_context(policy, use_mock=False, login=123, server="Demo-Server")
+
+    assert ctx.evidence_stream == "runtime_mt5_core_srs__live_trade_mgmt_option_c"
+    assert ctx.policy_mode == "core_srs"
+    assert ctx.account_scope == "mt5:Demo-Server:123"
+
+
+def test_agent_threshold_overrides_reject_locked_fields(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    from config_microcapital import apply_agent_threshold_overrides, get_policy_config
+
+    with pytest.raises(ValueError, match="Unsupported TECHNICAL threshold override"):
+        apply_agent_threshold_overrides(
+            get_policy_config(),
+            {"AGENT_THRESHOLDS": {"TECHNICAL": {"min_rr": 2.0}}},
+        )
+
+
 def test_preserve_10_is_explicit_mode_not_legacy_alias(monkeypatch):
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     from config_microcapital import (
         LEGACY_MICRO_CAPITAL_CONFIG,
@@ -79,6 +240,7 @@ def test_preserve_10_is_explicit_mode_not_legacy_alias(monkeypatch):
 
 def test_explicit_policy_mode_overrides_legacy_micro_capital_toggle(monkeypatch):
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     monkeypatch.setenv("MICRO_CAPITAL_MODE", "1")
     from config_microcapital import get_policy_config
@@ -87,21 +249,21 @@ def test_explicit_policy_mode_overrides_legacy_micro_capital_toggle(monkeypatch)
     assert policy["MODE_ID"] == "preserve_10"
 
 
-def test_hard_risk_engine_reads_legacy_micro_capital_mode(monkeypatch):
-    """HardRiskEngine must use relaxed legacy limits when MICRO_CAPITAL_MODE=1."""
+def test_hard_risk_engine_ignores_deprecated_legacy_micro_capital_toggle(monkeypatch):
     _clear_policy_env(monkeypatch)
     monkeypatch.setenv("MICRO_CAPITAL_MODE", "1")
     from core.risk.hard_risk_engine import HardRiskEngine
 
     engine = HardRiskEngine()
-    assert engine.mode_id == "legacy_micro_capital"
-    assert engine.max_daily_loss == 0.15
-    assert engine.max_weekly_loss == 0.25
-    assert engine.max_simultaneous_trades == 1
+    assert engine.mode_id == "core_srs"
+    assert engine.max_daily_loss == 0.08
+    assert engine.max_weekly_loss == 0.15
+    assert engine.max_simultaneous_trades == 2
 
 
 def test_hard_risk_engine_reads_explicit_preserve_10_mode(monkeypatch):
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     from core.risk.hard_risk_engine import HardRiskEngine, _read_fixed_risk_usd
 
@@ -143,6 +305,7 @@ def test_core_srs_ignores_governed_runtime_env_overrides(monkeypatch):
 
 def test_preserve_10_allows_governed_runtime_env_overrides(monkeypatch):
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     monkeypatch.setenv("FIXED_RISK_USD", "0.75")
     monkeypatch.setenv("MAX_SPREAD_PIPS", "4.2")
@@ -175,6 +338,7 @@ def test_preserve_10_allows_governed_runtime_env_overrides(monkeypatch):
 def test_adversarial_agent_reads_max_spread_pips(monkeypatch):
     """AdversarialAgent must read preserve-$10 mode defaults at instantiation."""
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     import pandas as pd
     from core.agents.adversarial_agent import AdversarialAgent
@@ -190,6 +354,7 @@ def test_adversarial_agent_reads_max_spread_pips(monkeypatch):
 
 def test_portfolio_manager_reads_preserve_10_fixed_risk(monkeypatch):
     _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
     from core.agents.portfolio_manager import PortfolioManager
 
@@ -229,9 +394,11 @@ def test_bridge_base_path_windows_env_is_coerced_under_wsl(monkeypatch):
     monkeypatch.delenv("USE_MT5_MOCK", raising=False)
     monkeypatch.setenv("BRIDGE_BASE_PATH", r"C:\Users\rayng\AppData\Roaming\MetaQuotes\Terminal\ABC\MQL5\Files\bridge")
 
-    from core.bridge_utils import get_mt5_bridge_path
+    import core.bridge_utils as bridge_utils
 
-    bridge_path = get_mt5_bridge_path()
+    monkeypatch.setattr(bridge_utils, "_is_windows_runtime", lambda: False)
+
+    bridge_path = bridge_utils.get_mt5_bridge_path()
 
     assert bridge_path.as_posix() == "/mnt/c/Users/rayng/AppData/Roaming/MetaQuotes/Terminal/ABC/MQL5/Files/bridge"
 
@@ -241,9 +408,11 @@ def test_mock_bridge_override_windows_env_is_coerced_under_wsl(monkeypatch):
     monkeypatch.setenv("USE_MT5_MOCK", "1")
     monkeypatch.setenv("MT5_MOCK_BRIDGE_PATH", r"D:\temp\mock_bridge")
 
-    from core.bridge_utils import get_mt5_bridge_path
+    import core.bridge_utils as bridge_utils
 
-    bridge_path = get_mt5_bridge_path()
+    monkeypatch.setattr(bridge_utils, "_is_windows_runtime", lambda: False)
+
+    bridge_path = bridge_utils.get_mt5_bridge_path()
 
     assert bridge_path.as_posix() == "/mnt/d/temp/mock_bridge"
 
@@ -255,7 +424,7 @@ def test_bridge_base_path_windows_env_not_coerced_on_windows(monkeypatch):
 
     import core.bridge_utils as bridge_utils
 
-    monkeypatch.setattr(bridge_utils.os, "name", "nt")
+    monkeypatch.setattr(bridge_utils, "_is_windows_runtime", lambda: True)
 
     bridge_path = bridge_utils.get_mt5_bridge_path()
 
@@ -265,6 +434,7 @@ def test_bridge_base_path_windows_env_not_coerced_on_windows(monkeypatch):
 def test_mock_runtime_state_path_is_namespaced_by_policy(monkeypatch, tmp_path):
     _clear_policy_env(monkeypatch)
     monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
     monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
 
     from core.bridge_utils import get_mock_runtime_state_path
