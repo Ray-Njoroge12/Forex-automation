@@ -277,14 +277,86 @@ Streamlit-based read-only dashboard:
 
 ---
 
-## 12. Production Readiness Assessment
+## 12. Critical Issues Identified
 
-**Ready:**
-- Core SRS policy mode is locked and fully tested
-- Hard risk engine is independent authority with no bypass paths
-- Full audit trail in SQLite
-- Mock-first testing strategy
-- 30-day demo validation infrastructure in place
+### 12.1 CRITICAL (must fix before live)
+
+**1. Consecutive Loss Seeding Race Condition**
+- **Location:** `main.py` `_ensure_consecutive_losses_seeded()`
+- **Issue:** Consecutive losses only seeded from DB on first trade exit. If engine restarts after a loss, `consecutive_losses` resets to 0 until next feedback arrives.
+- **Impact:** Loss streak throttle can be bypassed if engine restarts strategically.
+- **Fix:** Seed consecutive_losses from DB in `Engine.__init__()`.
+
+**2. ML Ranker TP Scaling Not in SRS**
+- **Location:** `main.py` `_evaluate_symbol()` ~line 1464
+- **Issue:** If ranker `prob >= 0.70` and trend is strong, TP is multiplied by 1.5x. This is NOT documented in SRS v1 and can violate R:R assumptions.
+- **Impact:** Positions sized for 2.2R but have 3.3R targets; risk calculations become invalid.
+- **Fix:** Either document as approved experiment or remove.
+
+**3. Stale Account Snapshot Handling**
+- **Location:** `main.py` `_update_account_state()`
+- **Issue:** If MT5 snapshot is stale and MT5 is not responding, last good snapshot is used for 180+ seconds before halt.
+- **Impact:** Position counts and risk calculations can be incorrect during brief MT5 interruptions.
+
+**4. Loss Streak Throttle Not Persisted Atomically**
+- **Location:** `hard_risk_engine.py` `validate()`
+- **Issue:** Modifies `account_status.consecutive_losses` but doesn't persist immediately. Engine crash between loss and DB update loses the loss count.
+
+### 12.2 HIGH PRIORITY
+
+**5. No Broker-Side Signal Heartbeat**
+- If EA crashes, signals sit in `pending_signals/` for 600s before stale cleanup. No retry or escalation mechanism.
+
+**6. Account State Reconciliation Opaque**
+- If broker and local state diverge, reconciliation reason is just a string. No automated recovery path — trading halts indefinitely.
+
+**7. No Partial Fill Handling**
+- Bridge assumes full fill or rejection. Partial fills break lot_size tracking.
+
+**8. Signal Router Registry O(n) Scaling**
+- Entire processed `trade_id` list rewritten to JSON on every signal. Becomes slow at 1000+ trades.
+
+### 12.3 MODERATE
+
+- Hardcoded thresholds not configurable at runtime (must edit Python)
+- No indicator warm-up period (first trades may use partial history)
+- Session filter hard-coded to London/NY (no Asian session)
+- Correlation matrix recomputed infrequently (5-day D1 only)
+- No slippage simulation in backtest (results are optimistic)
+- Database insert failures not retried (audit trail can be incomplete)
+
+---
+
+## 13. Architecture Strengths & Weaknesses
+
+### Strengths
+1. Clear multi-agent pipeline with single responsibility per agent
+2. Hard Risk Engine as sole authority — cannot be bypassed
+3. Atomic JSON bridge with tmp→rename and lock files
+4. Comprehensive audit trail in SQLite
+5. Mock-first testing with USE_MT5_MOCK=1
+6. Deterministic indicators, no external APIs
+7. Explicit experiment framework with gated features
+8. Evidence context partitioning for multi-policy support
+
+### Weaknesses
+1. Tight coupling between agents and AccountStatus
+2. Synchronous sequential evaluation (no parallelization)
+3. No graceful degradation (stale data → halt, not fallback)
+4. Limited error recovery (log and skip, no circuit breaker)
+5. Backtest lacks realism (no slippage, partial fills, or commission tracking)
+
+---
+
+## 14. Production Readiness Assessment
+
+**Overall:** Fit for 30-day demo validation on Core SRS mode, but NOT yet production-ready for live capital.
+
+**Must Fix Before Live:**
+- Consecutive loss seeding race condition (#1)
+- ML ranker TP scaling documentation/removal (#2)
+- Atomic loss streak persistence (#4)
+- Account reconciliation auto-recovery (#6)
 
 **Pre-Live Requirements (per SRS v1):**
 - 30-day demo validation must pass:
@@ -294,7 +366,8 @@ Streamlit-based read-only dashboard:
   - <= 15% max drawdown
 - Abort if: drawdown >20%, win rate <40%, avg R <1.8
 
-**Minor Gaps (non-blocking):**
+**Non-Blocking Gaps:**
 - Signal ranker not yet trained (needs 500+ live trades)
 - Dashboard has no unit tests (acceptable for read-only Streamlit UI)
 - 2 empty test modules (backtesting_profiles, walk_forward_reporting)
+- No signal rate limiting (all 6 symbols can generate simultaneously)
