@@ -492,6 +492,10 @@ def test_preserve_10_approval_facts_normalize_cent_account_and_all_srs_symbols(m
 def test_is_demo_account_detects_demo_and_real_trade_modes(monkeypatch) -> None:
     import core.mt5_bridge as bridge_mod
 
+    # Disable the USE_MT5_MOCK shortcut so the method exercises the real
+    # trade_mode check path against our monkeypatched mt5 objects.
+    monkeypatch.delenv("USE_MT5_MOCK", raising=False)
+
     monkeypatch.setattr(bridge_mod, "mt5", _ApprovalFactsMT5())
     demo_bridge = MT5Connection(login=123, password="x", server="demo")
     assert demo_bridge.connect() is True

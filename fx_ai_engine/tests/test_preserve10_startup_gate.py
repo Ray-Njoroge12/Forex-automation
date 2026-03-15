@@ -447,6 +447,7 @@ def test_main_allows_non_srs_policy_in_mock_mode_with_explicit_approval(monkeypa
     monkeypatch.setattr(main_mod, "init_metrics", lambda: object())
     monkeypatch.setattr(main_mod, "MT5Connection", _Bridge)
     monkeypatch.setattr(main_mod, "Engine", _Engine)
+    monkeypatch.setattr(main_mod, "_insert_risk_event_with_context", lambda *a, **kw: None)
 
     exit_code = main_mod.main(["--mode", "smoke", "--policy-mode", "legacy_micro_capital"])
 
