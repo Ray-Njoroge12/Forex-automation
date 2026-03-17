@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from core.account_status import AccountStatus
+from core.evidence import (
+    EvidenceContext,
+    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+    LEGACY_UNPARTITIONED_STREAM,
+)
 from core.types import TechnicalSignal
 
 DB_PATH = Path(__file__).parent / "trading_state.db"
@@ -35,6 +40,14 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in rows)
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -47,6 +60,7 @@ def migrate_phase8_columns() -> None:
     """
     with get_conn() as conn:
         _ensure_column(conn, "trades", "trade_id", "TEXT")
+        _ensure_column(conn, "trades", "position_ticket", "INTEGER")
         _ensure_column(conn, "trades", "direction", "TEXT")
         _ensure_column(conn, "trades", "risk_percent", "REAL")
         _ensure_column(conn, "trades", "reason_code", "TEXT")
@@ -57,6 +71,9 @@ def migrate_phase8_columns() -> None:
         _ensure_column(conn, "trades", "execution_time", "DATETIME")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_id ON trades(trade_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_position_ticket ON trades(position_ticket)"
         )
 
         _ensure_column(conn, "account_metrics", "open_risk_percent", "REAL DEFAULT 0.0")
@@ -89,6 +106,73 @@ def migrate_add_risk_events() -> None:
         )
 
 
+def migrate_add_decision_funnel_events() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_funnel_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+                policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+                execution_mode TEXT DEFAULT 'legacy',
+                account_scope TEXT DEFAULT 'legacy_unpartitioned',
+                decision_time DATETIME NOT NULL,
+                symbol TEXT,
+                stage TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                trade_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_funnel_scope_stage_time
+                ON decision_funnel_events(evidence_stream, account_scope, stage, decision_time)
+            """
+        )
+
+
+def _default_evidence_context() -> EvidenceContext:
+    return EvidenceContext(
+        evidence_stream=LEGACY_UNPARTITIONED_STREAM,
+        policy_mode=LEGACY_UNPARTITIONED_STREAM,
+        execution_mode="legacy",
+        account_scope=LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+    )
+
+
+def migrate_add_evidence_partition_columns() -> None:
+    with get_conn() as conn:
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+            if not _table_exists(conn, table):
+                continue
+            _ensure_column(conn, table, "evidence_stream", "TEXT DEFAULT 'legacy_unpartitioned'")
+            _ensure_column(conn, table, "policy_mode", "TEXT DEFAULT 'legacy_unpartitioned'")
+            _ensure_column(conn, table, "execution_mode", "TEXT DEFAULT 'legacy'")
+            _ensure_column(conn, table, "account_scope", "TEXT DEFAULT 'legacy_unpartitioned'")
+            conn.execute(
+                f"""
+                UPDATE {table}
+                   SET evidence_stream = COALESCE(NULLIF(TRIM(evidence_stream), ''), ?),
+                       policy_mode = COALESCE(NULLIF(TRIM(policy_mode), ''), ?),
+                       execution_mode = COALESCE(NULLIF(TRIM(execution_mode), ''), 'legacy'),
+                       account_scope = COALESCE(NULLIF(TRIM(account_scope), ''), ?)
+                 WHERE COALESCE(NULLIF(TRIM(evidence_stream), ''), '') = ''
+                    OR COALESCE(NULLIF(TRIM(policy_mode), ''), '') = ''
+                    OR COALESCE(NULLIF(TRIM(execution_mode), ''), '') = ''
+                    OR COALESCE(NULLIF(TRIM(account_scope), ''), '') = ''
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            )
+
+
 def migrate_add_ml_feature_columns() -> None:
     """Adds ML feature columns required for SignalRanker training. Idempotent."""
     with get_conn() as conn:
@@ -109,26 +193,33 @@ def insert_trade_proposal(
     risk_percent: float,
     market_regime: str,
     *,
+    evidence_context: EvidenceContext | None = None,
     regime_confidence: float = 0.0,
     atr_ratio: float = 1.0,
     is_london_session: int = 0,
     is_newyork_session: int = 0,
     rate_differential: float = 0.0,
 ) -> None:
+    evidence = evidence_context or _default_evidence_context()
     with get_conn() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO trades (
-                trade_id, symbol, direction, order_type, lot_size, 
+                trade_id, evidence_stream, policy_mode, execution_mode, account_scope,
+                symbol, direction, order_type, lot_size, 
                 stop_loss, take_profit,
                 risk_percent, market_regime, status, reason_code, open_time,
                 regime_confidence, rsi_at_entry, atr_ratio,
                 is_london_session, is_newyork_session, rate_differential, risk_reward, rsi_slope,
                 spread_entry, spread_signal_pips
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal.trade_id,
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
                 signal.symbol,
                 signal.direction,
                 "MARKET",  # order_type
@@ -154,9 +245,28 @@ def insert_trade_proposal(
         )
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def update_trade_execution_result(payload: dict[str, Any]) -> None:
     raw_status = str(payload.get("status", "UNKNOWN")).upper()
-    ticket = int(payload.get("ticket") or 0)
+    ticket = _positive_int(payload.get("ticket")) or 0
+    position_ticket = _positive_int(payload.get("position_ticket"))
+    entry_price = _positive_float(payload.get("entry_price"))
+    lot_size = _positive_float(payload.get("lot_size"))
     executed_open = raw_status == "EXECUTED" and ticket > 0
     rejected = raw_status.startswith("REJECTED")
     status = "EXECUTED_OPEN" if executed_open else ("REJECTED" if rejected else raw_status)
@@ -168,8 +278,10 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                 """
                 UPDATE trades
                    SET trade_ticket = ?,
+                       position_ticket = ?,
                        status = ?,
-                       entry_price = ?,
+                       lot_size = COALESCE(?, lot_size),
+                       entry_price = COALESCE(?, entry_price),
                        slippage = ?,
                        spread_exec_price = ?,
                        execution_time = ?
@@ -177,11 +289,15 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                 """,
                 (
                     ticket,
+                    position_ticket or ticket,
                     status,
-                    payload.get("entry_price", 0.0),
+                    lot_size,
+                    entry_price,
                     payload.get("slippage", 0.0),
                     payload.get("spread_at_entry", 0.0),
-                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
+                    payload.get("execution_time")
+                    or payload.get("close_time")
+                    or datetime.now(timezone.utc).isoformat(),
                     payload.get("trade_id"),
                 ),
             )
@@ -192,6 +308,7 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
             """
             UPDATE trades
                SET trade_ticket = ?,
+                   position_ticket = COALESCE(position_ticket, ?),
                    status = ?,
                    reason_code = ?,
                    entry_price = ?,
@@ -202,6 +319,7 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
             """,
             (
                 ticket if ticket > 0 else None,
+                position_ticket or ticket,
                 status,
                 reason_code,
                 payload.get("entry_price", 0.0),
@@ -230,7 +348,14 @@ def mark_trade_execution_uncertain(
         )
 
 
-def update_trade_exit_result(payload: dict[str, Any]) -> None:
+def update_trade_exit_result(
+    payload: dict[str, Any],
+    *,
+    evidence_context: EvidenceContext | None = None,
+) -> bool:
+    if payload.get("is_final_exit") is False:
+        return False
+
     pnl = float(payload.get("profit_loss", 0.0))
     raw_status = str(payload.get("status", "CLOSED")).upper()
     if raw_status.startswith("CLOSED"):
@@ -242,55 +367,77 @@ def update_trade_exit_result(payload: dict[str, Any]) -> None:
     else:
         status = "CLOSED_BREAKEVEN"
 
-    with get_conn() as conn:
-        if payload.get("r_multiple") is not None:
-            conn.execute(
-                """
+    close_time = payload.get("close_time", datetime.now(timezone.utc).isoformat())
+    r_multiple = payload.get("r_multiple")
+    position_ticket = _positive_int(payload.get("position_ticket"))
+    ticket = _positive_int(payload.get("ticket"))
+    trade_id = str(payload.get("trade_id") or "").strip() or None
+
+    filter_clause = ""
+    filter_params: tuple[Any, ...] = ()
+    if evidence_context is not None:
+        filter_clause = " AND evidence_stream = ? AND account_scope = ?"
+        filter_params = (evidence_context.evidence_stream, evidence_context.account_scope)
+
+    def _apply_update(conn: sqlite3.Connection, where_clause: str, match_value: Any) -> int:
+        if r_multiple is not None:
+            cursor = conn.execute(
+                f"""
                 UPDATE trades
                    SET status = ?,
                        profit_loss = ?,
                        r_multiple = ?,
                        close_time = ?
-                 WHERE trade_ticket = ?
+                 WHERE {where_clause}{filter_clause}
                 """,
-                (
-                    status,
-                    pnl,
-                    float(payload.get("r_multiple", 0.0)),
-                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
-                    payload.get("ticket"),
-                ),
+                (status, pnl, float(r_multiple), close_time, match_value, *filter_params),
             )
         else:
-            conn.execute(
-                """
+            cursor = conn.execute(
+                f"""
                 UPDATE trades
                    SET status = ?,
                        profit_loss = ?,
                        close_time = ?
-                 WHERE trade_ticket = ?
+                 WHERE {where_clause}{filter_clause}
                 """,
-                (
-                    status,
-                    pnl,
-                    payload.get("close_time", datetime.now(timezone.utc).isoformat()),
-                    payload.get("ticket"),
-                ),
+                (status, pnl, close_time, match_value, *filter_params),
             )
+        return int(cursor.rowcount or 0)
+
+    with get_conn() as conn:
+        updated = 0
+        if position_ticket is not None:
+            updated = _apply_update(conn, "position_ticket = ?", position_ticket)
+        if updated == 0 and trade_id:
+            updated = _apply_update(conn, "trade_id = ?", trade_id)
+        if updated == 0 and ticket is not None:
+            updated = _apply_update(conn, "trade_ticket = ?", ticket)
+    return updated > 0
 
 
-def insert_account_metrics(account_status: AccountStatus) -> None:
+def insert_account_metrics(
+    account_status: AccountStatus,
+    *,
+    evidence_context: EvidenceContext | None = None,
+) -> None:
+    evidence = evidence_context or _default_evidence_context()
     with get_conn() as conn:
         conn.execute(
             """
             INSERT INTO account_metrics (
+                evidence_stream, policy_mode, execution_mode, account_scope,
                 timestamp, balance, equity, open_risk_percent,
                 open_usd_exposure_count, daily_loss_percent, weekly_loss_percent,
                 drawdown_percent, peak_equity, daily_anchor_date, daily_anchor_equity,
                 weekly_anchor_key, weekly_anchor_equity, consecutive_losses, is_trading_halted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
                 account_status.updated_at.isoformat(),
                 account_status.balance,
                 account_status.equity,
@@ -310,32 +457,60 @@ def insert_account_metrics(account_status: AccountStatus) -> None:
         )
 
 
-def get_latest_account_metric() -> dict[str, Any] | None:
+def get_latest_account_metric(
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> dict[str, Any] | None:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if evidence_stream:
+        clauses.append("evidence_stream = ?")
+        params.append(evidence_stream)
+    if account_scope:
+        clauses.append("account_scope = ?")
+        params.append(account_scope)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with get_conn() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT balance, equity, open_risk_percent, open_usd_exposure_count,
                    daily_loss_percent, weekly_loss_percent, drawdown_percent,
                    peak_equity, daily_anchor_date, daily_anchor_equity,
                    weekly_anchor_key, weekly_anchor_equity,
                    consecutive_losses, is_trading_halted, timestamp
               FROM account_metrics
+              {where}
           ORDER BY timestamp DESC, id DESC
              LIMIT 1
-            """
+            """,
+            tuple(params),
         ).fetchone()
     return dict(row) if row is not None else None
 
 
-def get_open_trade_ledger() -> dict[str, Any]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT symbol, COALESCE(risk_percent, 0.0) AS risk_percent
-              FROM trades
-             WHERE status IN ('EXECUTED_OPEN', 'EXECUTION_UNCERTAIN')
-            """
-        ).fetchall()
+def get_open_trade_ledger(
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> dict[str, Any]:
+    rows = list_open_trades(evidence_stream=evidence_stream, account_scope=account_scope)
+    open_trade_ids = sorted(str(row["trade_id"]) for row in rows if row["trade_id"])
+    open_trade_tickets = sorted(
+        {
+            int(row["trade_ticket"])
+            for row in rows
+            if _positive_int(row["trade_ticket"]) is not None
+        }
+    )
+    open_position_tickets = sorted(
+        {
+            int(row["position_ticket"])
+            for row in rows
+            if _positive_int(row["position_ticket"]) is not None
+        }
+    )
+    open_statuses = sorted({str(row["status"]) for row in rows if row["status"]})
     return {
         "open_trade_count": len(rows),
         "open_risk_percent": round(
@@ -343,17 +518,220 @@ def get_open_trade_ledger() -> dict[str, Any]:
             8,
         ),
         "open_symbols": sorted({str(row["symbol"]) for row in rows if row["symbol"]}),
+        "open_trade_ids": open_trade_ids,
+        "open_trade_tickets": open_trade_tickets,
+        "open_position_tickets": open_position_tickets,
+        "open_statuses": open_statuses,
     }
 
 
-def insert_risk_event(rule_name: str, severity: str, reason: str, trade_id: str | None = None) -> None:
+def list_open_trades(
+    *,
+    evidence_stream: str | None = None,
+    account_scope: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["status IN ('EXECUTED_OPEN', 'EXECUTION_UNCERTAIN')"]
+    params: list[Any] = []
+    if evidence_stream:
+        clauses.append("evidence_stream = ?")
+        params.append(evidence_stream)
+    if account_scope:
+        clauses.append("account_scope = ?")
+        params.append(account_scope)
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT trade_id,
+                   trade_ticket,
+                   position_ticket,
+                   symbol,
+                   direction,
+                   status,
+                   COALESCE(risk_percent, 0.0) AS risk_percent,
+                   COALESCE(stop_loss, 0.0) AS stop_loss,
+                   COALESCE(take_profit, 0.0) AS take_profit,
+                   COALESCE(entry_price, 0.0) AS entry_price,
+                   COALESCE(lot_size, 0.0) AS lot_size,
+                   open_time,
+                   execution_time
+              FROM trades
+             WHERE {' AND '.join(clauses)}
+            """,
+            tuple(params),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _legacy_partition_where_clause() -> str:
+    return (
+        "COALESCE(NULLIF(TRIM(evidence_stream), ''), '') = ? "
+        "OR COALESCE(NULLIF(TRIM(policy_mode), ''), '') = ? "
+        "OR COALESCE(NULLIF(TRIM(execution_mode), ''), '') = 'legacy' "
+        "OR COALESCE(NULLIF(TRIM(account_scope), ''), '') = ?"
+    )
+
+
+def count_legacy_partition_rows() -> dict[str, int]:
+    table_counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+            if not _table_exists(conn, table):
+                table_counts[table] = 0
+                continue
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                  FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            ).fetchone()
+            table_counts[table] = int(row["n"] or 0)
+    table_counts["total"] = sum(table_counts.values())
+    return table_counts
+
+
+def _create_archive_table_like(
+    conn: sqlite3.Connection,
+    source_table: str,
+    archive_table: str,
+) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {archive_table} AS
+        SELECT source.*,
+               CAST('' AS TEXT) AS archived_at,
+               CAST('' AS TEXT) AS archive_reason
+          FROM {source_table} AS source
+         WHERE 0
+        """
+    )
+
+
+def archive_legacy_partition_rows(*, archive_reason: str = "manual_archive") -> dict[str, int]:
+    archived_at = datetime.now(timezone.utc).isoformat()
+    archived_counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+            if not _table_exists(conn, table):
+                archived_counts[table] = 0
+                continue
+            archive_table = f"{table}_archive"
+            _create_archive_table_like(conn, table, archive_table)
+            rows = conn.execute(
+                f"""
+                SELECT *
+                  FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            ).fetchall()
+            archived_counts[table] = len(rows)
+            if not rows:
+                continue
+
+            source_columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            archive_columns = source_columns + ["archived_at", "archive_reason"]
+            placeholders = ", ".join("?" for _ in archive_columns)
+            conn.executemany(
+                f"""
+                INSERT INTO {archive_table} ({", ".join(archive_columns)})
+                VALUES ({placeholders})
+                """,
+                [
+                    tuple(row[column] for column in source_columns) + (archived_at, archive_reason)
+                    for row in rows
+                ],
+            )
+            conn.execute(
+                f"""
+                DELETE FROM {table}
+                 WHERE {_legacy_partition_where_clause()}
+                """,
+                (
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_STREAM,
+                    LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
+                ),
+            )
+    archived_counts["total"] = sum(archived_counts.values())
+    return archived_counts
+
+
+def insert_risk_event(
+    rule_name: str,
+    severity: str,
+    reason: str,
+    trade_id: str | None = None,
+    *,
+    evidence_context: EvidenceContext | None = None,
+) -> None:
+    evidence = evidence_context or _default_evidence_context()
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO risk_events (timestamp, rule_name, severity, reason, trade_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO risk_events (
+                timestamp, evidence_stream, policy_mode, execution_mode, account_scope,
+                rule_name, severity, reason, trade_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (datetime.now(timezone.utc).isoformat(), rule_name, severity, reason, trade_id),
+            (
+                datetime.now(timezone.utc).isoformat(),
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
+                rule_name,
+                severity,
+                reason,
+                trade_id,
+            ),
+        )
+
+
+def insert_decision_funnel_event(
+    *,
+    decision_time: datetime,
+    stage: str,
+    outcome: str,
+    reason_code: str,
+    symbol: str | None = None,
+    details: str = "",
+    trade_id: str | None = None,
+    evidence_context: EvidenceContext | None = None,
+) -> None:
+    evidence = evidence_context or _default_evidence_context()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO decision_funnel_events (
+                timestamp, evidence_stream, policy_mode, execution_mode, account_scope,
+                decision_time, symbol, stage, outcome, reason_code, details, trade_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
+                decision_time.isoformat(),
+                symbol,
+                stage,
+                outcome,
+                reason_code,
+                details,
+                trade_id,
+            ),
         )
 
 
