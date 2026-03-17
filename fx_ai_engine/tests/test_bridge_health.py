@@ -51,3 +51,25 @@ def test_bridge_health_detects_stale_snapshot(tmp_path):
     result = check_snapshot_health(bridge_path=tmp_path / "bridge")
     assert result["status"] == "STALE"
     assert result["age_seconds"] > 180
+
+
+def test_ea_deployment_drift_detects_mismatch(tmp_path):
+    from check_bridge_health import check_ea_deployment_drift
+
+    bridge_path = tmp_path / "MQL5" / "Files" / "bridge"
+    bridge_path.mkdir(parents=True)
+    repo_ea = tmp_path / "repo" / "FX_Execution.mq5"
+    repo_ea.parent.mkdir(parents=True)
+    repo_ea.write_text("repo version", encoding="utf-8")
+
+    deployed_ea = tmp_path / "MQL5" / "Experts" / "FX_Execution.mq5"
+    deployed_ea.parent.mkdir(parents=True)
+    deployed_ea.write_text("older deployed version", encoding="utf-8")
+
+    result = check_ea_deployment_drift(bridge_path=bridge_path, repo_ea_path=repo_ea)
+
+    assert result["status"] == "DRIFT"
+    assert Path(result["repo_path"]).name == "FX_Execution.mq5"
+    assert Path(result["repo_path"]).parent.name == "repo"
+    assert Path(result["deployed_path"]).name == "FX_Execution.mq5"
+    assert Path(result["deployed_path"]).parent.name == "Experts"

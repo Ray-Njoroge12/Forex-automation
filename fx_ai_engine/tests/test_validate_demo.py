@@ -162,6 +162,74 @@ def test_empty_db_returns_pending(tmp_path, monkeypatch) -> None:
     assert metrics["total_trades"] == 0
 
 
+def test_validation_filters_partitioned_runtime_evidence(tmp_path, monkeypatch) -> None:
+    db = tmp_path / "partitioned.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id TEXT, symbol TEXT, direction TEXT,
+            r_multiple REAL, profit_loss REAL,
+            status TEXT, close_time TEXT, open_time TEXT, execution_time TEXT, reason_code TEXT,
+            evidence_stream TEXT, policy_mode TEXT, execution_mode TEXT, account_scope TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE account_metrics (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, balance REAL, equity REAL, is_trading_halted INTEGER DEFAULT 0,
+            evidence_stream TEXT, policy_mode TEXT, execution_mode TEXT, account_scope TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE risk_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            rule_name TEXT,
+            severity TEXT,
+            reason TEXT,
+            trade_id TEXT,
+            evidence_stream TEXT,
+            policy_mode TEXT,
+            execution_mode TEXT,
+            account_scope TEXT
+        )
+        """
+    )
+    now = datetime.now(timezone.utc)
+    conn.executemany(
+        "INSERT INTO trades (trade_id, symbol, direction, r_multiple, profit_loss, status, close_time, open_time, execution_time, reason_code, evidence_stream, policy_mode, execution_mode, account_scope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("AI_core_1", "EURUSD", "BUY", 2.5, 25.0, "CLOSED_WIN", now.isoformat(), now.isoformat(), now.isoformat(), "TECH", "runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1"),
+            ("AI_core_2", "EURUSD", "BUY", -1.0, -10.0, "CLOSED_LOSS", now.isoformat(), now.isoformat(), now.isoformat(), "TECH", "runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1"),
+            ("AI_mock_1", "EURUSD", "BUY", 5.0, 50.0, "CLOSED_WIN", now.isoformat(), now.isoformat(), now.isoformat(), "TECH", "runtime_mock_core_srs", "core_srs", "mock", "mock"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO account_metrics (id, timestamp, balance, equity, is_trading_halted, evidence_stream, policy_mode, execution_mode, account_scope) VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            (1, now.isoformat(), 100000.0, 100000.0, 0, "runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1"),
+            (2, now.isoformat(), 100000.0, 99000.0, 0, "runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1"),
+            (3, now.isoformat(), 10000.0, 10000.0, 0, "runtime_mock_core_srs", "core_srs", "mock", "mock"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(vd, "DB_PATH", db)
+
+    verdict, metrics = vd.run_validation(days=30, profile="core_srs")
+
+    assert verdict == "PENDING"
+    assert metrics["total_trades"] == 2
+    assert metrics["max_drawdown"] == pytest.approx(0.01)
+
+
 # --- check_abort_criteria tests ---
 
 def test_compounding_milestone_at_10():

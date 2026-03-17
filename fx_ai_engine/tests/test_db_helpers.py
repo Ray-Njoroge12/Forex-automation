@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.account_status import AccountStatus
+from core.evidence import EvidenceContext
 from core.types import TechnicalSignal
 from database import db as db_mod
 
@@ -33,8 +34,10 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
 
     db_mod.initialize_schema()
     db_mod.migrate_add_risk_events()
+    db_mod.migrate_add_decision_funnel_events()
     db_mod.migrate_add_ml_feature_columns()
     db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
 
     signal = TechnicalSignal(
         trade_id="AI_20260225_130000_ff22aa",
@@ -61,7 +64,9 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
         {
             "trade_id": signal.trade_id,
             "ticket": 999001,
+            "position_ticket": 777001,
             "status": "EXECUTED",
+            "lot_size": 0.23,
             "entry_price": 1.10123,
             "slippage": 0.00002,
             "spread_at_entry": 0.00011,
@@ -72,7 +77,9 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
     )
     db_mod.update_trade_exit_result(
         {
-            "ticket": 999001,
+            "ticket": 777001,
+            "position_ticket": 777001,
+            "trade_id": signal.trade_id,
             "status": "CLOSED_WIN",
             "profit_loss": 12.3,
             "r_multiple": 2.4,
@@ -93,21 +100,72 @@ def test_db_schema_and_trade_lifecycle(tmp_path, monkeypatch) -> None:
     )
     db_mod.insert_account_metrics(status)
     db_mod.insert_risk_event("HARD_RISK", "BLOCK", "RISK_DAILY_STOP", signal.trade_id)
+    db_mod.insert_decision_funnel_event(
+        decision_time=datetime.now(timezone.utc),
+        stage="ROUTER",
+        outcome="ROUTED",
+        reason_code="ROUTED_TO_MT5",
+        symbol=signal.symbol,
+        trade_id=signal.trade_id,
+    )
 
     with _temp_conn(temp_db) as conn:
         trade = conn.execute(
-            "SELECT trade_ticket, status, r_multiple, rsi_slope FROM trades WHERE trade_id=?",
+            "SELECT trade_ticket, position_ticket, lot_size, status, r_multiple, rsi_slope FROM trades WHERE trade_id=?",
             (signal.trade_id,),
         ).fetchone()
         metrics = conn.execute("SELECT COUNT(*) AS n FROM account_metrics").fetchone()
         events = conn.execute("SELECT COUNT(*) AS n FROM risk_events").fetchone()
+        funnel = conn.execute("SELECT COUNT(*) AS n FROM decision_funnel_events").fetchone()
 
     assert trade["trade_ticket"] == 999001
+    assert trade["position_ticket"] == 777001
+    assert float(trade["lot_size"]) == 0.23
     assert trade["status"] == "CLOSED_WIN"
     assert float(trade["r_multiple"]) == 2.4
     assert float(trade["rsi_slope"]) == 3.5
     assert metrics["n"] == 1
     assert events["n"] == 1
+    assert funnel["n"] == 1
+
+
+def test_decision_funnel_event_respects_evidence_context(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    live_ctx = EvidenceContext("runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1")
+
+    db_mod.insert_decision_funnel_event(
+        decision_time=datetime(2026, 3, 7, 12, 0, tzinfo=timezone.utc),
+        stage="TECHNICAL",
+        outcome="REJECT",
+        reason_code="TECH_PULLBACK_OR_RSI_INVALID",
+        symbol="EURUSD",
+        details="pulled_back=False rsi_ok=True",
+        evidence_context=live_ctx,
+    )
+
+    with _temp_conn(temp_db) as conn:
+        row = conn.execute(
+            "SELECT evidence_stream, policy_mode, execution_mode, account_scope, stage, outcome, reason_code, symbol FROM decision_funnel_events"
+        ).fetchone()
+
+    assert dict(row) == {
+        "evidence_stream": "runtime_mt5_core_srs",
+        "policy_mode": "core_srs",
+        "execution_mode": "mt5",
+        "account_scope": "mt5:demo:1",
+        "stage": "TECHNICAL",
+        "outcome": "REJECT",
+        "reason_code": "TECH_PULLBACK_OR_RSI_INVALID",
+        "symbol": "EURUSD",
+    }
 
 
 def test_mark_trade_expired_updates_pending_only(tmp_path, monkeypatch) -> None:
@@ -121,6 +179,7 @@ def test_mark_trade_expired_updates_pending_only(tmp_path, monkeypatch) -> None:
 
     db_mod.initialize_schema()
     db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
     sig = TechnicalSignal(
         trade_id="AI_expire_1",
         symbol="EURUSD",
@@ -152,6 +211,7 @@ def test_execution_uncertain_trade_stays_on_open_ledger(tmp_path, monkeypatch) -
 
     db_mod.initialize_schema()
     db_mod.migrate_phase8_columns()
+    db_mod.migrate_add_evidence_partition_columns()
     sig = TechnicalSignal(
         trade_id="AI_uncertain_1",
         symbol="EURUSD",
@@ -201,6 +261,7 @@ def test_phase8_column_migration_from_phase1_baseline(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
     db_mod.migrate_phase8_columns()
     db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
 
     with _temp_conn(temp_db) as conn:
         trades_cols = {row["name"] for row in conn.execute("PRAGMA table_info(trades)").fetchall()}
@@ -208,12 +269,16 @@ def test_phase8_column_migration_from_phase1_baseline(tmp_path, monkeypatch) -> 
             row["name"] for row in conn.execute("PRAGMA table_info(account_metrics)").fetchall()
         }
 
-    assert {"trade_id", "direction", "risk_percent", "reason_code", "spread_entry", "slippage"} <= trades_cols
+    assert {"trade_id", "position_ticket", "direction", "risk_percent", "reason_code", "spread_entry", "slippage"} <= trades_cols
     assert {
         "open_risk_percent",
         "open_usd_exposure_count",
         "drawdown_percent",
         "peak_equity",
+        "evidence_stream",
+        "policy_mode",
+        "execution_mode",
+        "account_scope",
         "daily_anchor_date",
         "daily_anchor_equity",
         "weekly_anchor_key",
@@ -233,6 +298,7 @@ def test_restart_state_persistence_and_open_trade_ledger(tmp_path, monkeypatch) 
     db_mod.initialize_schema()
     db_mod.migrate_phase8_columns()
     db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
 
     sig = TechnicalSignal(
         trade_id="AI_restart_001",
@@ -285,3 +351,298 @@ def test_restart_state_persistence_and_open_trade_ledger(tmp_path, monkeypatch) 
     assert ledger["open_trade_count"] == 1
     assert ledger["open_symbols"] == ["EURUSD"]
     assert ledger["open_risk_percent"] == 0.032
+    assert ledger["open_trade_ids"] == ["AI_restart_001"]
+    assert ledger["open_trade_tickets"] == [99123]
+    assert ledger["open_position_tickets"] == [99123]
+    assert ledger["open_statuses"] == ["EXECUTED_OPEN"]
+
+
+def test_evidence_partitioning_scopes_runtime_reads(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    db_mod.migrate_phase8_columns()
+    db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
+
+    live_ctx = EvidenceContext("runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1")
+    mock_ctx = EvidenceContext("runtime_mock_core_srs", "core_srs", "mock", "mock")
+
+    live_sig = TechnicalSignal(
+        trade_id="AI_live_001",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    mock_sig = TechnicalSignal(
+        trade_id="AI_mock_001",
+        symbol="GBPUSD",
+        direction="SELL",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_SELL",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+
+    db_mod.insert_trade_proposal(live_sig, "EXECUTION_UNCERTAIN", "ROUTED_TO_MT5", 0.032, "TRENDING_BULL", evidence_context=live_ctx)
+    db_mod.insert_trade_proposal(mock_sig, "EXECUTION_UNCERTAIN", "ROUTED_TO_MT5", 0.016, "TRENDING_BEAR", evidence_context=mock_ctx)
+    db_mod.insert_account_metrics(AccountStatus(balance=1000.0, equity=995.0), evidence_context=live_ctx)
+    db_mod.insert_account_metrics(AccountStatus(balance=10000.0, equity=10000.0), evidence_context=mock_ctx)
+
+    latest = db_mod.get_latest_account_metric(
+        evidence_stream=live_ctx.evidence_stream,
+        account_scope=live_ctx.account_scope,
+    )
+    ledger = db_mod.get_open_trade_ledger(
+        evidence_stream=live_ctx.evidence_stream,
+        account_scope=live_ctx.account_scope,
+    )
+
+    assert latest is not None
+    assert float(latest["equity"]) == 995.0
+    assert ledger["open_trade_count"] == 1
+    assert ledger["open_symbols"] == ["EURUSD"]
+
+
+def test_archive_legacy_partition_rows_moves_legacy_rows_out_of_operational_tables(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    db_mod.migrate_add_risk_events()
+    db_mod.migrate_add_decision_funnel_events()
+    db_mod.migrate_add_restart_state_columns()
+    db_mod.migrate_add_evidence_partition_columns()
+
+    legacy_sig = TechnicalSignal(
+        trade_id="AI_legacy_001",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    live_sig = TechnicalSignal(
+        trade_id="AI_live_002",
+        symbol="GBPUSD",
+        direction="SELL",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_SELL",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    live_ctx = EvidenceContext("runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1")
+
+    db_mod.insert_trade_proposal(legacy_sig, "CLOSED_WIN", "LEGACY_OK", 0.01, "TRENDING_BULL")
+    db_mod.insert_trade_proposal(live_sig, "CLOSED_WIN", "LIVE_OK", 0.01, "TRENDING_BEAR", evidence_context=live_ctx)
+    db_mod.insert_account_metrics(AccountStatus(balance=1000.0, equity=1000.0))
+    db_mod.insert_account_metrics(AccountStatus(balance=1000.0, equity=1000.0), evidence_context=live_ctx)
+    db_mod.insert_risk_event("LEGACY_RULE", "INFO", "legacy row")
+    db_mod.insert_risk_event("LIVE_RULE", "INFO", "live row", evidence_context=live_ctx)
+    db_mod.insert_decision_funnel_event(
+        decision_time=datetime.now(timezone.utc),
+        stage="TECHNICAL",
+        outcome="PASS",
+        reason_code="LEGACY_PASS",
+        symbol="EURUSD",
+    )
+    db_mod.insert_decision_funnel_event(
+        decision_time=datetime.now(timezone.utc),
+        stage="TECHNICAL",
+        outcome="PASS",
+        reason_code="LIVE_PASS",
+        symbol="GBPUSD",
+        evidence_context=live_ctx,
+    )
+
+    counts_before = db_mod.count_legacy_partition_rows()
+    archived = db_mod.archive_legacy_partition_rows(archive_reason="test_archive")
+    counts_after = db_mod.count_legacy_partition_rows()
+
+    assert counts_before == {
+        "trades": 1,
+        "account_metrics": 1,
+        "risk_events": 1,
+        "decision_funnel_events": 1,
+        "total": 4,
+    }
+    assert archived == counts_before
+    assert counts_after == {
+        "trades": 0,
+        "account_metrics": 0,
+        "risk_events": 0,
+        "decision_funnel_events": 0,
+        "total": 0,
+    }
+
+    with _temp_conn(temp_db) as conn:
+        active_trade_row = conn.execute("SELECT COUNT(*) AS n FROM trades").fetchone()
+        archived_trade = conn.execute(
+            "SELECT archive_reason, evidence_stream FROM trades_archive WHERE trade_id=?",
+            ("AI_legacy_001",),
+        ).fetchone()
+        archived_metric_count = conn.execute("SELECT COUNT(*) AS n FROM account_metrics_archive").fetchone()
+        archived_risk_count = conn.execute("SELECT COUNT(*) AS n FROM risk_events_archive").fetchone()
+        archived_funnel_count = conn.execute("SELECT COUNT(*) AS n FROM decision_funnel_events_archive").fetchone()
+
+    assert int(active_trade_row["n"]) == 1
+    assert archived_trade["archive_reason"] == "test_archive"
+    assert archived_trade["evidence_stream"] == "legacy_unpartitioned"
+    assert int(archived_metric_count["n"]) == 1
+    assert int(archived_risk_count["n"]) == 1
+    assert int(archived_funnel_count["n"]) == 1
+
+
+def test_non_final_exit_feedback_does_not_close_trade(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    db_mod.migrate_phase8_columns()
+
+    sig = TechnicalSignal(
+        trade_id="AI_partial_001",
+        symbol="EURUSD",
+        direction="BUY",
+        stop_pips=10.0,
+        take_profit_pips=22.0,
+        risk_reward=2.2,
+        confidence=0.7,
+        reason_code="TECH_CONFIRMED_BUY",
+        timestamp_utc=datetime.now(timezone.utc).isoformat(),
+    )
+    db_mod.insert_trade_proposal(sig, "PENDING", "ROUTED_TO_MT5", 0.032, "TRENDING_BULL")
+    db_mod.update_trade_execution_result(
+        {
+            "trade_id": sig.trade_id,
+            "ticket": 991001,
+            "position_ticket": 881001,
+            "status": "EXECUTED",
+            "entry_price": 1.10123,
+            "slippage": 0.00002,
+            "spread_at_entry": 0.00011,
+            "profit_loss": 0.0,
+            "r_multiple": 0.0,
+            "close_time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    db_mod.update_trade_exit_result(
+        {
+            "ticket": 881001,
+            "position_ticket": 881001,
+            "trade_id": sig.trade_id,
+            "status": "CLOSED_WIN",
+            "profit_loss": 6.1,
+            "r_multiple": 0.8,
+            "is_final_exit": False,
+            "close_time": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    with _temp_conn(temp_db) as conn:
+        row = conn.execute(
+            "SELECT status, profit_loss, r_multiple FROM trades WHERE trade_id=?",
+            (sig.trade_id,),
+        ).fetchone()
+
+    assert row["status"] == "EXECUTED_OPEN"
+    assert float(row["profit_loss"] or 0.0) == 0.0
+    assert float(row["r_multiple"] or 0.0) == 0.0
+
+
+def test_exit_update_is_scoped_to_evidence_context(tmp_path, monkeypatch) -> None:
+    temp_db = tmp_path / "trading_state.db"
+    temp_schema = tmp_path / "schema.sql"
+    temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+
+    db_mod.initialize_schema()
+    db_mod.migrate_phase8_columns()
+    db_mod.migrate_add_evidence_partition_columns()
+
+    live_ctx = EvidenceContext("runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:1")
+    other_ctx = EvidenceContext("runtime_mt5_core_srs", "core_srs", "mt5", "mt5:demo:2")
+
+    for trade_id, ctx in (("AI_scope_live", live_ctx), ("AI_scope_other", other_ctx)):
+        sig = TechnicalSignal(
+            trade_id=trade_id,
+            symbol="EURUSD",
+            direction="BUY",
+            stop_pips=10.0,
+            take_profit_pips=22.0,
+            risk_reward=2.2,
+            confidence=0.7,
+            reason_code="TECH_CONFIRMED_BUY",
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        )
+        db_mod.insert_trade_proposal(sig, "PENDING", "ROUTED_TO_MT5", 0.032, "TRENDING_BULL", evidence_context=ctx)
+        db_mod.update_trade_execution_result(
+            {
+                "trade_id": trade_id,
+                "ticket": 900001 if trade_id.endswith("live") else 900002,
+                "position_ticket": 880001,
+                "status": "EXECUTED",
+                "entry_price": 1.10123,
+                "slippage": 0.00002,
+                "spread_at_entry": 0.00011,
+                "profit_loss": 0.0,
+                "r_multiple": 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    matched = db_mod.update_trade_exit_result(
+        {
+            "ticket": 880001,
+            "position_ticket": 880001,
+            "trade_id": "AI_scope_live",
+            "status": "CLOSED_WIN",
+            "profit_loss": 12.0,
+            "r_multiple": 2.0,
+            "close_time": datetime.now(timezone.utc).isoformat(),
+        },
+        evidence_context=live_ctx,
+    )
+
+    with _temp_conn(temp_db) as conn:
+        rows = conn.execute(
+            "SELECT trade_id, status FROM trades WHERE position_ticket=880001 ORDER BY trade_id ASC"
+        ).fetchall()
+
+    assert matched is True
+    assert [tuple(row) for row in rows] == [
+        ("AI_scope_live", "CLOSED_WIN"),
+        ("AI_scope_other", "EXECUTED_OPEN"),
+    ]

@@ -19,6 +19,43 @@ def _period_loss_percent(anchor_equity: float, equity: float) -> float:
     return max(0.0, (anchor_equity - equity) / anchor_equity)
 
 
+def _format_float_token(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.6f}"
+
+
+def _format_ticket_list(raw: Any) -> list[int]:
+    if not isinstance(raw, list):
+        return []
+    tickets: list[int] = []
+    for item in raw:
+        try:
+            tickets.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tickets
+
+
+def _ledger_detail_suffix(
+    *,
+    broker_symbols: list[str],
+    broker_open_risk: float | None,
+    trade_ledger: dict[str, Any] | None,
+) -> str:
+    ledger = trade_ledger or {}
+    return (
+        f" broker_symbols={sorted(set(broker_symbols))}"
+        f" local_symbols={sorted(set(str(symbol) for symbol in ledger.get('open_symbols', []) if symbol))}"
+        f" broker_open_risk={_format_float_token(broker_open_risk)}"
+        f" local_open_risk={_format_float_token(float(ledger.get('open_risk_percent', 0.0) or 0.0))}"
+        f" local_trade_ids={list(ledger.get('open_trade_ids', []) or [])}"
+        f" local_trade_tickets={list(ledger.get('open_trade_tickets', []) or [])}"
+        f" local_position_tickets={list(ledger.get('open_position_tickets', []) or [])}"
+        f" local_statuses={list(ledger.get('open_statuses', []) or [])}"
+    )
+
+
 def _mark_unreconciled(account_status: AccountStatus, reason: str) -> None:
     account_status.state_reconciled = False
     account_status.is_trading_halted = True
@@ -107,21 +144,39 @@ def update_account_status_from_snapshot(
         if "open_risk_percent" in snapshot
         else None
     )
+    detail_suffix = _ledger_detail_suffix(
+        broker_symbols=account_status.open_symbols,
+        broker_open_risk=broker_open_risk,
+        trade_ledger=trade_ledger,
+    )
+    management_state_restored = snapshot.get("management_state_restored")
+    managed_positions_count = int(snapshot.get("managed_positions_count", 0) or 0)
+    managed_position_tickets = _format_ticket_list(snapshot.get("managed_position_tickets", []))
+    unmanaged_position_tickets = _format_ticket_list(snapshot.get("unmanaged_position_tickets", []))
+    management_state_error = str(snapshot.get("management_state_error", "") or "")
 
     if account_status.open_positions_count <= 0:
         account_status.open_risk_percent = fallback_open_risk if ledger_available and ledger_count > 0 else 0.0
         if ledger_available and ledger_count > 0:
             _mark_unreconciled(
                 account_status,
-                f"broker_positions=0 but local_open_trades={ledger_count}",
+                f"broker_positions=0 but local_open_trades={ledger_count}{detail_suffix}",
             )
     else:
         account_status.open_risk_percent = broker_open_risk if broker_open_risk is not None else fallback_open_risk
+        if management_state_restored is False or managed_positions_count < account_status.open_positions_count:
+            error_suffix = f" error={management_state_error}" if management_state_error else ""
+            _mark_unreconciled(
+                account_status,
+                "broker management-state restore failed "
+                f"managed_positions={managed_positions_count}/{account_status.open_positions_count} "
+                f"managed_tickets={managed_position_tickets} unmanaged_tickets={unmanaged_position_tickets}{error_suffix}{detail_suffix}",
+            )
         if ledger_available and ledger_count != account_status.open_positions_count:
             _mark_unreconciled(
                 account_status,
                 "broker/local open-position mismatch "
-                f"broker_positions={account_status.open_positions_count} local_open_trades={ledger_count}",
+                f"broker_positions={account_status.open_positions_count} local_open_trades={ledger_count}{detail_suffix}",
             )
         if (
             ledger_available
@@ -131,7 +186,8 @@ def update_account_status_from_snapshot(
         ):
             _mark_unreconciled(
                 account_status,
-                f"broker/local open-symbol mismatch broker={sorted(set(account_status.open_symbols))} local={sorted(set(ledger_symbols))}",
+                "broker/local open-symbol mismatch "
+                f"broker={sorted(set(account_status.open_symbols))} local={sorted(set(ledger_symbols))}{detail_suffix}",
             )
         if (
             ledger_available
@@ -144,7 +200,7 @@ def update_account_status_from_snapshot(
             _mark_unreconciled(
                 account_status,
                 "broker/local open-risk mismatch "
-                f"broker_open_risk={broker_open_risk:.6f} local_open_risk={ledger_open_risk:.6f}",
+                f"broker_open_risk={broker_open_risk:.6f} local_open_risk={ledger_open_risk:.6f}{detail_suffix}",
             )
 
     account_status.peak_equity = max(

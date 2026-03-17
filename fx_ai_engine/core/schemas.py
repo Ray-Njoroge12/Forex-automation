@@ -46,8 +46,8 @@ def validate_signal_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise SchemaError("SignalPayload limit_price required for LIMIT orders")
 
     # Validate tp_mode if present
-    if "tp_mode" in payload and payload["tp_mode"] not in {"FIXED", "TRAIL"}:
-        raise SchemaError("SignalPayload tp_mode must be FIXED or TRAIL")
+    if "tp_mode" in payload and payload["tp_mode"] not in {"FIXED", "TRAIL", "HYBRID"}:
+        raise SchemaError("SignalPayload tp_mode must be FIXED, TRAIL, or HYBRID")
 
     return payload
 
@@ -91,6 +91,16 @@ def validate_account_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     _required(payload, required, "AccountSnapshot")
     if "open_symbols" in payload and not isinstance(payload["open_symbols"], list):
         raise SchemaError("AccountSnapshot open_symbols must be a list when provided")
+    if "management_state_restored" in payload and not isinstance(payload["management_state_restored"], bool):
+        raise SchemaError("AccountSnapshot management_state_restored must be a bool when provided")
+    if "managed_positions_count" in payload and int(payload["managed_positions_count"]) < 0:
+        raise SchemaError("AccountSnapshot managed_positions_count must be >= 0 when provided")
+    if "managed_position_tickets" in payload and not isinstance(payload["managed_position_tickets"], list):
+        raise SchemaError("AccountSnapshot managed_position_tickets must be a list when provided")
+    if "unmanaged_position_tickets" in payload and not isinstance(payload["unmanaged_position_tickets"], list):
+        raise SchemaError("AccountSnapshot unmanaged_position_tickets must be a list when provided")
+    if "management_state_error" in payload and not isinstance(payload["management_state_error"], str):
+        raise SchemaError("AccountSnapshot management_state_error must be a string when provided")
     return payload
 
 
