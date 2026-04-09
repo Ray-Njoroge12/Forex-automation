@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Smoke-level exposure helper checks.
+
+Boundary and integration-focused cases are covered in
+tests/test_exposure_manager_comprehensive.py.
+"""
+
 from core.account_status import AccountStatus
 from core.risk.exposure_manager import (
     can_add_usd_exposure,

@@ -4,6 +4,9 @@
 **/.pytest_cache/
 **/.venv/
 
+# IDE / editor artifacts
+.idea/
+
 # Local environment
 .env
 .env.local
@@ -16,9 +19,21 @@ fx_ai_engine/bridge/pending_signals/*.json
 fx_ai_engine/bridge/feedback/*.json
 fx_ai_engine/bridge/active_locks/*.lock
 fx_ai_engine/bridge/trade_id_registry.json
+fx_ai_engine/mock_mt5_bridge/trade_id_registry.json
+fx_ai_engine/mock_mt5_bridge/mock_runtime_state*.json
+fx_ai_engine/mock_mt5_bridge_preserve10_verify/trade_id_registry.json
+fx_ai_engine/mock_mt5_bridge_preserve10_verify/mock_runtime_state*.json
+
+# Local scratch/diagnostic scripts
+fx_ai_engine/.tmp_*
+tmp_close_all.py
+tmp_pnl.py
 
 # SQLite runtime
 fx_ai_engine/database/trading_state.db
+fx_ai_engine/database/trading_state.pre_archive_*.db
+fx_ai_engine/trading_state.db
+/trading_state.db
 
 # macOS
 .DS_Store
@@ -27,6 +42,7 @@ fx_ai_engine/database/trading_state.db
 
 # Temporary files & AI logs
 tmp/
+NUL
 
 # Ignore user-specific Claude Code config only; hooks/agents/skills/settings.json are team-facing
 .claude/settings.local.json

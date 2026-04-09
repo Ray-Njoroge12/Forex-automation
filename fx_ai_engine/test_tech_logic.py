@@ -1,3 +1,19 @@
+"""Live MT5 technical-logic diagnostic.
+
+Run manually via: python test_tech_logic.py
+Excluded from pytest collection to avoid live-broker dependency in automated runs.
+"""
+
+from __future__ import annotations
+
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip(
+        "Diagnostic script (live MT5 dependency). Run manually: python test_tech_logic.py",
+        allow_module_level=True,
+    )
+
 import os
 import pandas as pd
 from datetime import datetime, timezone
