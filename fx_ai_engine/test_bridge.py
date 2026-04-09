@@ -1,4 +1,18 @@
+"""Live MT5 diagnostic script.
+
+Run manually via: python test_bridge.py
+Excluded from pytest collection to avoid live-broker dependency in CI/local suite runs.
+"""
+
 from __future__ import annotations
+
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip(
+        "Diagnostic script (live MT5 dependency). Run manually: python test_bridge.py",
+        allow_module_level=True,
+    )
 
 import logging
 import sys
