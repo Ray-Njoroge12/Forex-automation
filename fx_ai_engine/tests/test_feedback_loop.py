@@ -40,7 +40,7 @@ def test_winning_trade_resets_consecutive_losses(tmp_path) -> None:
     feedback_dir.mkdir(parents=True)
     payload = {
         "trade_id": "AI_fb_win_001", "ticket": 10001, "status": "CLOSED",
-        "entry_price": 1.1000, "slippage": 0.00001, "spread_at_entry": 0.0001,
+        "entry_price": 1.1000, "lot_size": 0.2, "slippage": 0.00001, "spread_at_entry": 0.0001,
         "profit_loss": 25.0, "r_multiple": 2.4,
         "close_time": datetime.now(timezone.utc).isoformat(),
     }
@@ -60,7 +60,7 @@ def test_losing_trade_increments_consecutive_losses(tmp_path) -> None:
     feedback_dir.mkdir(parents=True)
     payload = {
         "trade_id": "AI_fb_loss_001", "ticket": 10002, "status": "CLOSED",
-        "entry_price": 1.1000, "slippage": 0.00001, "spread_at_entry": 0.0001,
+        "entry_price": 1.1000, "lot_size": 0.2, "slippage": 0.00001, "spread_at_entry": 0.0001,
         "profit_loss": -15.0, "r_multiple": -1.0,
         "close_time": datetime.now(timezone.utc).isoformat(),
     }

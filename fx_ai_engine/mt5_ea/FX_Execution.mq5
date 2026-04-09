@@ -19,6 +19,20 @@ CTrade trade;
 #define MAX_POS 10
 ulong  g_tickets[MAX_POS];
 string g_trade_ids[MAX_POS];
+string g_processed_ids[100];
+int    g_processed_ptr = 0;
+
+bool IsProcessed(string tid) {
+   if(tid == "") return false;
+   for(int i=0; i<100; i++) if(g_processed_ids[i] == tid) return true;
+   return false;
+}
+
+void MarkProcessed(string tid) {
+   if(tid == "") return;
+   g_processed_ids[g_processed_ptr] = tid;
+   g_processed_ptr = (g_processed_ptr + 1) % 100;
+}
 double g_be_trigger_r[MAX_POS];
 double g_partial_close_r[MAX_POS];
 double g_trailing_atr_mult[MAX_POS];
@@ -419,7 +433,7 @@ bool ReadTextFile(const string filePath, string &content)
 
 bool WriteTextFile(const string filePath, const string content)
 {
-   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_WRITE);
+   int handle = FileOpen(filePath, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_SHARE_WRITE | FILE_SHARE_READ);
    if(handle == INVALID_HANDLE)
       return false;
 
@@ -1006,6 +1020,12 @@ void ProcessPendingSignal()
    double limitPrice = 0.0;
 
    if(!ExtractJsonString(content, "trade_id", tradeId)) { LogDebug("JSON fail: tid"); return; }
+   if(IsProcessed(tradeId))
+   {
+      LogDebug("Signal already processed locally: " + tradeId);
+      FileDelete(filePath);
+      return;
+   }
    if(!ExtractJsonString(content, "symbol", symbol)) { LogDebug("JSON fail: sym"); return; }
    if(!ExtractJsonString(content, "direction", direction)) { LogDebug("JSON fail: dir"); return; }
    if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) { LogDebug("JSON fail: risk"); return; }
@@ -1171,7 +1191,9 @@ void ProcessPendingSignal()
       " hard_tp=" + (hardTpMode ? "1" : "0") +
       " initial_stop_dist=" + DoubleToString(initialStopDist, digits)
    );
+   MarkProcessed(tradeId);
    WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", resolvedEntryPrice, slippage, spread, finalLot, 0.0, 0.0);
 
-   FileDelete(filePath);
+   if(!FileDelete(filePath))
+      LogDebug("WARNING: Failed to delete signal file: " + filePath + " err=" + (string)GetLastError());
 }

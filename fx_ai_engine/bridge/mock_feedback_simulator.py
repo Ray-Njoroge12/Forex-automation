@@ -142,6 +142,16 @@ class MockFeedbackSimulator:
             exit_status, r_multiple = self._resolve_outcome(outcome_token, target_rr)
             base_balance = round(max(float(state["balance"]), 0.01), 2)
             risk_usd = round(max(base_balance * float(payload.get("risk_percent", 0.0)), 0.0), 4)
+            
+            # Estimate lot size for reporting (mock-only)
+            symbol = str(payload.get("symbol", "EURUSD"))
+            stop_pips = max(float(payload.get("stop_pips", 10.0)), 1.0)
+            pip_value = 0.01 if "JPY" in symbol else 0.0001
+            # Assuming 100,000 contract size for mock
+            lot_size = round(risk_usd / (stop_pips * pip_value * 100000.0), 2)
+            if lot_size < 0.01:
+                lot_size = 0.01
+
             profit_loss = round(risk_usd * r_multiple, 2)
             slippage = self._execution_slippage(int(state["outcome_index"]))
             entry_price = round(float(payload.get("limit_price", 1.1001)) + slippage, 6)
@@ -155,6 +165,7 @@ class MockFeedbackSimulator:
                     "position_ticket": position_ticket,
                     "status": "EXECUTED",
                     "entry_price": entry_price,
+                    "lot_size": lot_size,
                     "slippage": slippage,
                     "spread_at_entry": 0.0001 + (int(state["outcome_index"]) % 3) * 0.00002,
                     "profit_loss": 0.0,

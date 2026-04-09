@@ -58,6 +58,7 @@ def validate_execution_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         "ticket",
         "status",
         "entry_price",
+        "lot_size",
         "slippage",
         "spread_at_entry",
         "profit_loss",

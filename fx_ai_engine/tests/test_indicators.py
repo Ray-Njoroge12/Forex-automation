@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.indicators import calculate_adx, calculate_atr, calculate_ema, calculate_rsi
+from core.indicators import (
+    calculate_adx,
+    calculate_atr,
+    calculate_bollinger_bands,
+    calculate_ema,
+    calculate_rsi,
+)
 
 
 def _load_fixture() -> pd.DataFrame:
@@ -49,6 +55,16 @@ def test_adx_shape_warmup_and_bounds() -> None:
     assert not pd.isna(adx.iloc[9])
     valid = adx.dropna()
     assert ((valid >= 0) & (valid <= 100)).all()
+
+
+def test_bollinger_bands_shape_and_order() -> None:
+    df = _load_fixture()
+    middle, upper, lower = calculate_bollinger_bands(df["close"], period=10)
+    assert len(middle) == len(df)
+    assert middle.iloc[:9].isna().all()
+    assert not pd.isna(middle.iloc[9])
+    assert (upper.dropna() > middle.dropna()).all()
+    assert (middle.dropna() > lower.dropna()).all()
 
 
 def test_deterministic_output_last_values() -> None:

@@ -32,6 +32,24 @@ def test_execution_feedback_requires_ticket() -> None:
                 "trade_id": "x",
                 "status": "EXECUTED",
                 "entry_price": 1.1,
+                "lot_size": 0.1,
+                "slippage": 0.0,
+                "spread_at_entry": 0.0,
+                "profit_loss": 0.0,
+                "r_multiple": 0.0,
+                "close_time": "2026-02-25T12:00:00+00:00",
+            }
+        )
+
+
+def test_execution_feedback_requires_lot_size() -> None:
+    with pytest.raises(SchemaError, match="lot_size"):
+        validate_execution_feedback(
+            {
+                "trade_id": "x",
+                "ticket": 12345,
+                "status": "EXECUTED",
+                "entry_price": 1.1,
                 "slippage": 0.0,
                 "spread_at_entry": 0.0,
                 "profit_loss": 0.0,

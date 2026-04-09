@@ -41,6 +41,8 @@ from ml.signal_ranker import SignalRanker
 from core.logging_utils import configure_logging
 
 load_runtime_env()
+from core.alerts import alert_risk_halt, alert_trade_execution, alert_trade_exit
+from core.health import start_health_api, update_health_status
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
 from core.observability import init_tracing
@@ -57,6 +59,7 @@ from database.db import (
     insert_risk_event,
     insert_account_metrics,
     insert_trade_proposal,
+    get_trade_by_identifiers,
     list_open_trades,
     mark_trade_execution_uncertain,
     migrate_add_decision_funnel_events,
@@ -64,6 +67,7 @@ from database.db import (
     migrate_add_ml_feature_columns,
     migrate_add_risk_events,
     migrate_add_restart_state_columns,
+    migrate_mark_stale_trades,
     migrate_phase8_columns,
     update_trade_execution_result,
     update_trade_exit_result,
@@ -222,6 +226,8 @@ def _insert_risk_event_with_context(
     *,
     evidence_context=None,
 ) -> None:
+    if severity in ("BLOCK", "CRITICAL"):
+        alert_risk_halt(rule_name, reason, severity)
     try:
         insert_risk_event(
             rule_name,
@@ -828,6 +834,15 @@ class Engine:
         except Exception as exc:
             logger.warning("Failed to persist funnel event stage=%s symbol=%s error=%s", stage, symbol, exc)
 
+    def _virtual_balance(self) -> float:
+        """Return the effective balance for lot-sizing, applying VIRTUAL_BALANCE_DIVISOR
+        when running Preserve-10 on a standard (non-cent) account."""
+        balance = self.account_status.balance
+        divisor = float(self.policy.get("VIRTUAL_BALANCE_DIVISOR") or 1)
+        if divisor > 1:
+            balance = balance / divisor
+        return balance
+
     def _pre_route_feasibility(self, symbol: str, risk_percent: float, stop_pips: float):
         fixed_risk_usd = self.policy.get("FIXED_RISK_USD")
         if fixed_risk_usd is None or float(fixed_risk_usd) <= 0:
@@ -836,7 +851,7 @@ class Engine:
             symbol,
             risk_percent,
             stop_pips,
-            account_balance=self.account_status.balance,
+            account_balance=self._virtual_balance(),
         )
 
     def _strategic_risk_eligibility(self, symbol: str, stop_pips: float):
@@ -847,7 +862,7 @@ class Engine:
             symbol,
             float(fixed_risk_usd),
             stop_pips,
-            account_balance=self.account_status.balance,
+            account_balance=self._virtual_balance(),
         )
 
     def _fail_closed_bridge_uncertainty(self, reason: str) -> None:
@@ -1135,6 +1150,14 @@ class Engine:
                     continue
                 self._processed_execution_feedback.add(key)
                 update_trade_execution_result(payload)
+                if str(payload.get("status", "")).upper() == "EXECUTED":
+                    alert_trade_execution(
+                        str(payload.get("trade_id", "")),
+                        str(payload.get("symbol", "")),
+                        str(payload.get("direction", "")),
+                        float(payload.get("lot_size", 0.0)),
+                        float(payload.get("entry_price", 0.0))
+                    )
                 self.router.release_lock(str(payload.get("trade_id", "")))
 
             # Consume trade exits (stops and take profits)
@@ -1155,6 +1178,19 @@ class Engine:
                 if payload.get("is_final_exit") is False or not matched_trade:
                     continue
                 pnl = float(payload.get("profit_loss", 0.0))
+                trade_row = get_trade_by_identifiers(
+                    trade_id=payload.get("trade_id"),
+                    position_ticket=payload.get("position_ticket") or payload.get("ticket"),
+                    trade_ticket=payload.get("ticket"),
+                    evidence_context=self.evidence_context,
+                )
+                trade_for_alert = trade_row or payload
+                alert_trade_exit(
+                    str(trade_for_alert.get("trade_id", "")),
+                    str(trade_for_alert.get("symbol", "")),
+                    pnl,
+                    r_multiple=_estimate_recovered_r_multiple(trade_for_alert, payload)
+                )
                 self._record_consecutive_loss_update(pnl)
                 self._record_broker_close_time(payload.get("close_time"))
 
@@ -1671,6 +1707,13 @@ class Engine:
     def run(self, mode: str, iterations: int = 0) -> None:
         count = 0
         while True:
+            update_health_status(
+                status="running",
+                account_balance=self.account_status.balance,
+                is_trading_halted=self.account_status.is_trading_halted,
+                open_positions=self.account_status.open_positions_count,
+                mode=mode
+            )
             self._consume_feedback()
             self._recover_missing_trade_closures_from_broker()
             self._update_account_state()
@@ -1738,6 +1781,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
+    args = parse_args(argv)
     load_runtime_env()
 
     initialize_schema()
@@ -1747,6 +1791,7 @@ def main(argv: list[str] | None = None) -> int:
     migrate_add_ml_feature_columns()
     migrate_add_restart_state_columns()
     migrate_add_evidence_partition_columns()
+    migrate_mark_stale_trades()
 
     use_mock = os.getenv("USE_MT5_MOCK") == "1"
     if use_mock:
@@ -1761,6 +1806,10 @@ def main(argv: list[str] | None = None) -> int:
     tracer = init_tracing(os.getenv("OTEL_SERVICE_NAME", "fx_ai_engine"))
     metrics = init_metrics()
 
+    start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
+    from core.alerts import send_telegram_message
+    send_telegram_message("🚀 <b>FX AI Engine Started</b>\nMode: " + args.mode)
+
     bridge = MT5Connection(
         creds.login if creds else 0,
         creds.password if creds else "",
@@ -1771,7 +1820,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        args = parse_args(argv)
         if args.policy_mode:
             os.environ["FX_POLICY_MODE"] = args.policy_mode
         policy = apply_runtime_experiment_config(get_policy_config(), run_mode=args.mode, env=os.environ)

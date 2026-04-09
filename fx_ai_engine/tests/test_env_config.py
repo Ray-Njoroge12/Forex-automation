@@ -47,6 +47,23 @@ def test_governed_runtime_overrides_require_explicit_non_srs_approval(monkeypatc
     assert read_predict_threshold() == -1.0
 
 
+def test_apply_policy_overrides_invalid_env_falls_back_without_crashing(monkeypatch):
+    _clear_policy_env(monkeypatch)
+    monkeypatch.setenv("FX_ALLOW_NON_SRS_POLICY", "1")
+    monkeypatch.setenv("FX_POLICY_MODE", "preserve_10")
+    monkeypatch.setenv("FIXED_RISK_USD", "invalid")
+    monkeypatch.setenv("MAX_SPREAD_PIPS", "invalid")
+    monkeypatch.setenv("ML_PREDICT_THRESHOLD", "invalid")
+
+    from config_microcapital import PRESERVE_10_CONFIG, apply_policy_overrides
+
+    merged = apply_policy_overrides(dict(PRESERVE_10_CONFIG))
+
+    assert merged["FIXED_RISK_USD"] == PRESERVE_10_CONFIG["FIXED_RISK_USD"]
+    assert merged["MAX_SPREAD_PIPS"] == PRESERVE_10_CONFIG["MAX_SPREAD_PIPS"]
+    assert merged["ML_PREDICT_THRESHOLD"] == PRESERVE_10_CONFIG["ML_PREDICT_THRESHOLD"]
+
+
 def test_policy_resolution_defaults_to_core_srs(monkeypatch):
     _clear_policy_env(monkeypatch)
     from config_microcapital import get_policy_config
@@ -80,7 +97,7 @@ def test_policy_thresholds_are_deep_copied_and_mergeable(monkeypatch):
     policy["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] = 18.0
 
     fresh = get_policy_config()
-    assert fresh["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] == 20.0
+    assert fresh["AGENT_THRESHOLDS"]["REGIME"]["adx_no_trade_below"] == 15.0
 
     merged = apply_agent_threshold_overrides(
         fresh,

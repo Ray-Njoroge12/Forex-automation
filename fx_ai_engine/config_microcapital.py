@@ -77,9 +77,9 @@ _SHARED_POLICY = {
             "atr_period": 14,
             "adx_period": 14,
             "atr_lookback": 20,
-            "trend_distance_threshold": 0.0005,
-            "adx_no_trade_below": 20.0,
-            "adx_transition_below": 25.0,
+            "trend_distance_threshold": 0.0002,
+            "adx_no_trade_below": 15.0,
+            "adx_transition_below": 20.0,
             "high_vol_atr_ratio": 1.25,
             "low_vol_atr_ratio": 0.75,
             "confidence_adx_cap": 30.0,
@@ -90,11 +90,11 @@ _SHARED_POLICY = {
             "atr_period": 14,
             "rsi_period": 14,
             "stop_atr_multiplier": 1.2,
-            "pullback_buffer_pips": 2.0,
-            "buy_rsi_min": 40.0,
-            "buy_rsi_max": 65.0,
-            "sell_rsi_min": 35.0,
-            "sell_rsi_max": 60.0,
+            "pullback_buffer_pips": 20.0,
+            "buy_rsi_min": 0.0,
+            "buy_rsi_max": 100.0,
+            "sell_rsi_min": 0.0,
+            "sell_rsi_max": 100.0,
             "structural_lookback": 20,
             "structural_ratio_min": 0.8,
             "structural_ratio_max": 1.5,
@@ -146,6 +146,17 @@ PRESERVE_10_CONFIG = {
     "MODE_ID": "preserve_10",
     "MODE_LABEL": "Preserve-$10",
     "EVIDENCE_LABEL": "Preserve-$10 doctrine",
+    # Cent-account simulation: when running on a standard account, the virtual
+    # balance used for lot-sizing is divided by this multiplier so that the
+    # resulting lot sizes are feasible on standard brokers.  On a real cent
+    # account set this to 1 (or leave unset) because the broker already quotes
+    # lots in micro-units.
+    #
+    # Example: $100k standard account → virtual balance = $100k / 100 = $1000
+    # → $0.50 risk on a 20-pip EURUSD stop produces 0.25 lots (well above 0.01 min).
+    #
+    # Override via env: FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR
+    "VIRTUAL_BALANCE_DIVISOR": 100,
 }
 
 MODE_CONFIGS = {
@@ -201,15 +212,20 @@ def resolve_policy_mode(env: Mapping[str, str] | None = None) -> str:
 def get_policy_config(
     mode_id: str | None = None,
     env: Mapping[str, str] | None = None,
+    apply_overrides: bool = True,
 ) -> dict:
     """Return a copy of the requested or active runtime policy config."""
-    resolved_mode = resolve_policy_mode(env) if mode_id is None else mode_id.strip().lower()
+    source = os.environ if env is None else env
+    resolved_mode = resolve_policy_mode(source) if mode_id is None else mode_id.strip().lower()
     if resolved_mode not in MODE_CONFIGS:
         raise ValueError(
             f"Unknown policy mode {resolved_mode!r}. "
             f"Expected one of: {', '.join(sorted(MODE_CONFIGS))}"
         )
-    return deepcopy(MODE_CONFIGS[resolved_mode])
+    base = deepcopy(MODE_CONFIGS[resolved_mode])
+    if apply_overrides:
+        return apply_policy_overrides(base, env=source)
+    return base
 
 
 def _read_bool_env(name: str, env: Mapping[str, str] | None = None) -> bool | None:
@@ -373,7 +389,14 @@ def apply_agent_threshold_overrides(
 def _mode_allows_runtime_overrides(env: Mapping[str, str] | None = None) -> bool:
     """Return whether governed runtime env overrides are enabled."""
     source = os.environ if env is None else env
-    return resolve_policy_mode(source) in OVERRIDE_ENABLED_MODE_IDS and non_srs_policy_allowed(source)
+    mode_id = resolve_policy_mode(source)
+    # Always allow if explicitly in override-enabled mode and non-SRS allowed
+    if mode_id in OVERRIDE_ENABLED_MODE_IDS and non_srs_policy_allowed(source):
+        return True
+    # Allow core_srs overrides ONLY if FX_ALLOW_NON_SRS_POLICY=1 is set (for demo/testing)
+    if mode_id == "core_srs" and non_srs_policy_allowed(source):
+        return True
+    return False
 
 
 def _read_governed_float_override(
@@ -382,11 +405,18 @@ def _read_governed_float_override(
     env: Mapping[str, str] | None = None,
     *,
     min_value: float | None = None,
+    override_default: float | None = -999.9,
 ) -> float | None:
     """Return a mode-governed float override or the labeled policy default."""
     source = os.environ if env is None else env
-    policy = get_policy_config(env=source)
-    default = policy[policy_key]
+    mode_id = resolve_policy_mode(source)
+    # Use explicit override_default if provided, otherwise fetch from RAW policy
+    if override_default != -999.9:
+        default = override_default
+    else:
+        policy_defaults = get_policy_config(env=source, apply_overrides=False)
+        default = policy_defaults[policy_key]
+    
     raw = source.get(env_name, "").strip()
     if not raw or not _mode_allows_runtime_overrides(source):
         return default
@@ -398,7 +428,7 @@ def _read_governed_float_override(
             "Invalid %s=%r for mode=%s, defaulting to labeled policy value %r",
             env_name,
             raw,
-            policy["MODE_ID"],
+            mode_id,
             default,
         )
         return default
@@ -409,7 +439,7 @@ def _read_governed_float_override(
             env_name,
             raw,
             min_value,
-            policy["MODE_ID"],
+            mode_id,
             default,
         )
         return default
@@ -417,33 +447,45 @@ def _read_governed_float_override(
     return value
 
 
-def read_fixed_risk_usd(env: Mapping[str, str] | None = None) -> float | None:
+def read_fixed_risk_usd(
+    env: Mapping[str, str] | None = None,
+    default: float | None = -999.9,
+) -> float | None:
     """Return fixed-risk USD, honoring env only for explicit non-Core modes."""
     return _read_governed_float_override(
         "FIXED_RISK_USD",
         "FIXED_RISK_USD",
         env,
         min_value=0.0000001,
+        override_default=default,
     )
 
 
-def read_max_spread_pips(env: Mapping[str, str] | None = None) -> float:
+def read_max_spread_pips(
+    env: Mapping[str, str] | None = None,
+    default: float | None = -999.9,
+) -> float:
     """Return spread ceiling, honoring env only for explicit non-Core modes."""
     value = _read_governed_float_override(
         "MAX_SPREAD_PIPS",
         "MAX_SPREAD_PIPS",
         env,
         min_value=0.0000001,
+        override_default=default,
     )
     return float(value)
 
 
-def read_predict_threshold(env: Mapping[str, str] | None = None) -> float:
+def read_predict_threshold(
+    env: Mapping[str, str] | None = None,
+    default: float | None = -999.9,
+) -> float:
     """Return ML threshold, honoring env only for explicit non-Core modes."""
     value = _read_governed_float_override(
         "ML_PREDICT_THRESHOLD",
         "ML_PREDICT_THRESHOLD",
         env,
+        override_default=default,
     )
     return float(value)
 
@@ -454,8 +496,40 @@ def default_predict_threshold(env: Mapping[str, str] | None = None) -> float:
     return float(get_policy_config(env=source)["ML_PREDICT_THRESHOLD"])
 
 
-def get_config_for_balance(balance: float) -> dict:
+def apply_policy_overrides(policy: dict, env: Mapping[str, str] | None = None) -> dict:
+    """Return a copy of the policy with environment overrides applied."""
+    merged = deepcopy(dict(policy))
+    source = os.environ if env is None else env
+    
+    # Apply float overrides, passing current values as defaults
+    merged["FIXED_RISK_USD"] = read_fixed_risk_usd(env=source, default=merged.get("FIXED_RISK_USD"))
+    merged["MAX_SPREAD_PIPS"] = read_max_spread_pips(env=source, default=merged.get("MAX_SPREAD_PIPS"))
+    merged["ML_PREDICT_THRESHOLD"] = read_predict_threshold(env=source, default=merged.get("ML_PREDICT_THRESHOLD"))
+
+    # Preserve-10 virtual-balance divisor (for simulating cent-account on standard account)
+    raw_divisor = source.get("FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR", "").strip()
+    if raw_divisor:
+        try:
+            parsed = float(raw_divisor)
+            if parsed >= 1:
+                merged["VIRTUAL_BALANCE_DIVISOR"] = parsed
+            else:
+                logger.warning("FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR=%s must be >= 1, ignored", raw_divisor)
+        except ValueError:
+            logger.warning("FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR=%s is not a valid number, ignored", raw_divisor)
+
+    return merged
+
+
+def get_config_for_balance(balance: float, env: Mapping[str, str] | None = None) -> dict:
     """Return legacy micro-capital compounding config for a balance."""
+    source = os.environ if env is None else env
+    # If explicit mode is requested via env, use that instead of balance-based auto-switching
+    mode_id = resolve_policy_mode(source)
+    if mode_id != "core_srs":
+        base = get_policy_config(mode_id=mode_id, env=source)
+        return apply_policy_overrides(base, env=source)
+
     if balance < 500:
         for threshold in sorted(COMPOUNDING_MILESTONES.keys(), reverse=True):
             if balance >= threshold:
@@ -463,9 +537,12 @@ def get_config_for_balance(balance: float) -> dict:
                 config = LEGACY_MICRO_CAPITAL_CONFIG.copy()
                 config["FIXED_RISK_USD"] = milestone["risk_usd"]
                 config["MAX_SIMULTANEOUS_TRADES"] = milestone["max_trades"]
-                return config
-        return LEGACY_MICRO_CAPITAL_CONFIG.copy()
-    return CORE_SRS_CONFIG.copy()
+                return apply_policy_overrides(config, env=source)
+        base = LEGACY_MICRO_CAPITAL_CONFIG.copy()
+        return apply_policy_overrides(base, env=source)
+    
+    base = CORE_SRS_CONFIG.copy()
+    return apply_policy_overrides(base, env=source)
 
 
 def print_config_summary(balance: float):
