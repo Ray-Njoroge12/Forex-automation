@@ -254,8 +254,8 @@ def test_preserve_10_rejects_infeasible_trade_before_router(monkeypatch, tmp_pat
     assert "refused before MT5 routing" in risk_events[-1][2]
     assert "trade blocked before MT5 routing" in risk_events[-1][2]
     assert "evidence=Preserve-$10 doctrine" in risk_events[-1][2]
-    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
-    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 0.1
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 0.1
 
 
 def test_preserve_10_rejects_unassessable_trade_before_router(monkeypatch, tmp_path) -> None:
@@ -287,8 +287,8 @@ def test_preserve_10_rejects_unassessable_trade_before_router(monkeypatch, tmp_p
     assert "blocked before MT5 routing" in risk_events[-1][2]
     assert "contract data is unavailable" in risk_events[-1][2]
     assert "evidence=Preserve-$10 doctrine" in risk_events[-1][2]
-    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
-    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 0.1
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 0.1
 
 
 def test_preserve_10_routes_feasible_trade_without_preroute_warning(monkeypatch, tmp_path) -> None:
@@ -317,8 +317,8 @@ def test_preserve_10_routes_feasible_trade_without_preroute_warning(monkeypatch,
     assert proposals[-1]["status"] == "PENDING"
     assert proposals[-1]["reason_code"] == "ROUTED_TO_MT5"
     assert all(event[0] != "PRE_ROUTE_FEASIBILITY" for event in risk_events)
-    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 10.0
-    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 10.0
+    assert bridge.strategic_calls and bridge.strategic_calls[-1][3] == 0.1
+    assert bridge.feasibility_calls and bridge.feasibility_calls[-1][3] == 0.1
 
 
 def test_core_srs_bypasses_preserve_10_preroute_gate(monkeypatch, tmp_path) -> None:

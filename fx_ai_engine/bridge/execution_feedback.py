@@ -47,6 +47,9 @@ class ExecutionFeedbackReader:
         except json.JSONDecodeError:
             logger.warning("Malformed JSON encountered path=%s", path)
             return None
+        except PermissionError:
+            logger.warning("Permission denied reading path=%s (likely locked by MT5)", path)
+            return None
 
     def _should_block_mock_payload(self, payload: dict[str, Any]) -> bool:
         if self.allow_mock_artifacts:

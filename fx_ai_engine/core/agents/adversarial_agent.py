@@ -126,16 +126,13 @@ class AdversarialAgent:
 
         # --- Bollinger Band RSI exhaustion (dynamic overbought/oversold) ---
         rsi_series = df["rsi"].dropna()
+        rsi_upper_bb, rsi_lower_bb = 101.0, -1.0  # default bypass
         if len(rsi_series) >= 20:
             rsi_ma = rsi_series.rolling(20).mean().iloc[-1]
             rsi_std = rsi_series.rolling(20).std().iloc[-1]
             if not pd.isna(rsi_ma) and not pd.isna(rsi_std) and rsi_std > 0:
                 rsi_upper_bb = rsi_ma + 2 * rsi_std
                 rsi_lower_bb = rsi_ma - 2 * rsi_std
-            else:
-                rsi_upper_bb, rsi_lower_bb = 75.0, 25.0  # fallback
-        else:
-            rsi_upper_bb, rsi_lower_bb = 75.0, 25.0  # fallback
 
         if technical_signal.direction == "BUY" and last_rsi > rsi_upper_bb:
             return AdversarialDecision(

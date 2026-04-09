@@ -107,3 +107,12 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
+
+
+def calculate_bollinger_bands(series: pd.Series, period: int = 20, std_dev: float = 2.0) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Bollinger Bands (Middle, Upper, Lower)."""
+    middle = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper = middle + (std * std_dev)
+    lower = middle - (std * std_dev)
+    return middle, upper, lower

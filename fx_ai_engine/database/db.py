@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 from core.account_status import AccountStatus
 from core.evidence import (
@@ -171,6 +174,28 @@ def migrate_add_evidence_partition_columns() -> None:
                     LEGACY_UNPARTITIONED_ACCOUNT_SCOPE,
                 ),
             )
+
+
+def migrate_mark_stale_trades() -> None:
+    """One-time cleanup: mark trades stuck in EXECUTED/PENDING with no feedback as FEEDBACK_LOST.
+
+    These are early trades (typically from initial sessions) where bridge path
+    misconfiguration prevented execution feedback from being consumed.  Idempotent.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE trades
+               SET status = 'FEEDBACK_LOST',
+                   reason_code = 'STALE_NO_FEEDBACK'
+             WHERE status IN ('EXECUTED', 'PENDING')
+               AND COALESCE(lot_size, 0) = 0
+               AND COALESCE(profit_loss, 0) = 0
+               AND COALESCE(close_time, '') = ''
+            """
+        )
+        if cur.rowcount:
+            logger.info("Marked %d stale trades as FEEDBACK_LOST", cur.rowcount)
 
 
 def migrate_add_ml_feature_columns() -> None:
@@ -414,6 +439,53 @@ def update_trade_exit_result(
         if updated == 0 and ticket is not None:
             updated = _apply_update(conn, "trade_ticket = ?", ticket)
     return updated > 0
+
+
+def get_trade_by_identifiers(
+    *,
+    trade_id: str | None = None,
+    position_ticket: int | None = None,
+    trade_ticket: int | None = None,
+    evidence_context: EvidenceContext | None = None,
+) -> dict[str, Any] | None:
+    """Fetch a single trade row using any available identifiers with optional evidence scoping."""
+
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if position_ticket is not None:
+        clauses.append("position_ticket = ?")
+        params.append(_positive_int(position_ticket))
+    if trade_ticket is not None:
+        clauses.append("trade_ticket = ?")
+        params.append(_positive_int(trade_ticket))
+    if trade_id:
+        clauses.append("trade_id = ?")
+        params.append(str(trade_id))
+
+    if evidence_context is not None:
+        clauses.append("evidence_stream = ?")
+        clauses.append("account_scope = ?")
+        params.extend([evidence_context.evidence_stream, evidence_context.account_scope])
+
+    where = f"WHERE {' OR '.join(clauses)}" if clauses else ""
+    if not clauses:
+        return None
+
+    with get_conn() as conn:
+        row = conn.execute(
+            f"""
+            SELECT trade_id, symbol, direction, stop_loss, take_profit, lot_size,
+                   entry_price, r_multiple, status
+              FROM trades
+              {where}
+          ORDER BY id DESC
+             LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+
+    return dict(row) if row is not None else None
 
 
 def insert_account_metrics(
