@@ -1,9 +1,10 @@
 MetaTrader5; platform_system == "Windows"
 mt5-wrapper; platform_system == "Windows" and python_version >= "3.13"
 MMetaTrader5; platform_system == "Windows"
-pandas
-numpy
+pandas>=2.0
+numpy<2.0
 pytest
+pyarrow>=10
 backtrader
 opentelemetry-api
 opentelemetry-sdk

@@ -64,6 +64,8 @@
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
@@ -77,6 +79,8 @@
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
@@ -85,10 +89,12 @@
 		{
 			"label": "fx: bridge test (mt5 demo)",
 			"type": "shell",
-			"command": "python test_bridge.py",
+			"command": "python check_bridge_health.py",
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
@@ -101,6 +107,8 @@
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
@@ -113,6 +121,8 @@
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
@@ -125,6 +135,8 @@
 			"options": {
 				"cwd": "${workspaceFolder}/fx_ai_engine",
 				"env": {
+					"USE_MT5_MOCK": "0",
+					"MT5_SERVER": "YWO-Trade",
 					"MT5_INIT_TIMEOUT_MS": "10000"
 				}
 			},
