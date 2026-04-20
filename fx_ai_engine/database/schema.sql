@@ -89,6 +89,34 @@ CREATE TABLE IF NOT EXISTS decision_funnel_events (
     trade_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ml_shadow_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
+    decision_time DATETIME NOT NULL,
+    symbol TEXT NOT NULL,
+    trade_id TEXT,
+    stage TEXT NOT NULL,
+    primary_gate_outcome TEXT NOT NULL,
+    shadow_outcome TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    details TEXT DEFAULT '',
+    probability REAL,
+    threshold REAL,
+    model_loaded INTEGER DEFAULT 0,
+    checkpoint_path TEXT,
+    feature_schema_version TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ml_shadow_scope_time
+    ON ml_shadow_events(evidence_stream, account_scope, decision_time);
+
+CREATE INDEX IF NOT EXISTS idx_ml_shadow_trade
+    ON ml_shadow_events(trade_id, decision_time);
+
 CREATE TABLE IF NOT EXISTS feedback_receipts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,

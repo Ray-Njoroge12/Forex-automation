@@ -38,6 +38,12 @@ from core.filters.macro_filter import load_rate_differentials
 from core.filters.session_filter import get_active_session, is_tradeable_session
 from core.sentiment.sentiment_agent import SentimentAgent
 from ml.signal_ranker import SignalRanker
+from ml.meta_labeler.shadow_runtime import (
+    MetaLabelerShadowRuntime,
+    evaluate_canary_decision,
+    preserve_primary_route_decision,
+    resolve_canary_runtime_config,
+)
 from core.logging_utils import configure_logging
 
 load_runtime_env()
@@ -67,11 +73,13 @@ from database.db import (
     migrate_add_evidence_partition_columns,
     migrate_add_feedback_receipts,
     migrate_add_ml_feature_columns,
+    migrate_add_ml_shadow_events,
     migrate_add_risk_events,
     migrate_add_restart_state_columns,
     migrate_mark_stale_trades,
     migrate_phase8_columns,
     record_feedback_receipt,
+    insert_ml_shadow_event,
     update_trade_execution_result,
     update_trade_exit_result,
 )
@@ -850,6 +858,12 @@ class Engine:
         self.hard_risk = HardRiskEngine(policy=self.policy)
         self.ranker = SignalRanker()
         self.ranker_loaded = self.ranker.load()
+        self.shadow_runtime = MetaLabelerShadowRuntime.from_policy(
+            policy=self.policy,
+            fetch_ohlc=self.bridge.fetch_ohlc_data,
+            env=os.environ,
+        )
+        self.canary_config = resolve_canary_runtime_config(self.policy, env=os.environ)
         override_audit = collect_runtime_override_audit(self.policy, env=os.environ)
         override_fields = override_audit["fields"]
         logger.info(
@@ -871,7 +885,7 @@ class Engine:
             override_fields["ML_PREDICT_THRESHOLD"]["active"],
         )
         logger.info(
-            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
+            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s shadow_enabled=%s shadow_model_loaded=%s shadow_threshold=%.3f canary_enabled=%s canary_mode=%s canary_stage=%s canary_kill_switch=%s",
             self.policy["MODE_ID"],
             self.policy["MODE_LABEL"],
             self.policy["EVIDENCE_LABEL"],
@@ -885,6 +899,13 @@ class Engine:
             float(self.policy.get("ML_PREDICT_THRESHOLD") or 0.0),
             os.getenv("USE_SENTIMENT", "0"),
             self.ranker_loaded,
+            self.shadow_runtime.enabled,
+            self.shadow_runtime.model_loaded,
+            self.shadow_runtime.config.threshold,
+            self.canary_config.enabled,
+            self.canary_config.mode,
+            self.canary_config.enforce_stage,
+            self.canary_config.kill_switch,
         )
 
         self.last_m15_candle: datetime | None = None
@@ -946,6 +967,54 @@ class Engine:
             )
         except Exception as exc:
             logger.warning("Failed to persist funnel event stage=%s symbol=%s error=%s", stage, symbol, exc)
+
+    def _insert_ml_shadow_event(
+        self,
+        *,
+        decision_time: datetime,
+        symbol: str,
+        trade_id: str | None,
+        stage: str,
+        primary_gate_outcome: str,
+        shadow_decision,
+    ) -> None:
+        try:
+            insert_ml_shadow_event(
+                decision_time=decision_time,
+                symbol=symbol,
+                trade_id=trade_id,
+                stage=stage,
+                primary_gate_outcome=primary_gate_outcome,
+                shadow_outcome=shadow_decision.outcome,
+                reason_code=shadow_decision.reason_code,
+                details=shadow_decision.details,
+                probability=shadow_decision.probability,
+                threshold=shadow_decision.threshold,
+                model_loaded=shadow_decision.model_loaded,
+                checkpoint_path=shadow_decision.checkpoint_path,
+                feature_schema_version=shadow_decision.feature_schema_version,
+                evidence_context=self.evidence_context,
+            )
+        except TypeError as exc:
+            if "evidence_context" not in str(exc):
+                raise
+            insert_ml_shadow_event(
+                decision_time=decision_time,
+                symbol=symbol,
+                trade_id=trade_id,
+                stage=stage,
+                primary_gate_outcome=primary_gate_outcome,
+                shadow_outcome=shadow_decision.outcome,
+                reason_code=shadow_decision.reason_code,
+                details=shadow_decision.details,
+                probability=shadow_decision.probability,
+                threshold=shadow_decision.threshold,
+                model_loaded=shadow_decision.model_loaded,
+                checkpoint_path=shadow_decision.checkpoint_path,
+                feature_schema_version=shadow_decision.feature_schema_version,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist ml shadow event symbol=%s error=%s", symbol, exc)
 
     def _virtual_balance(self) -> float:
         """Return the effective balance for lot-sizing, applying VIRTUAL_BALANCE_DIVISOR
@@ -1648,6 +1717,65 @@ class Engine:
             "rsi_slope": technical.rsi_slope,
         }
         ranker_prob = self.ranker.predict_proba(ranker_features)
+        primary_gate_route = not (self.ranker_loaded and ranker_prob < self.predict_threshold)
+
+        shadow_decision = None
+        if self.shadow_runtime.enabled:
+            shadow_decision = self.shadow_runtime.evaluate(
+                symbol=sym,
+                trade_id=technical.trade_id,
+                regime_label=regime.regime,
+                decision_time=decision_time,
+                technical_timestamp_utc=technical.timestamp_utc,
+            )
+            primary_gate_route = preserve_primary_route_decision(
+                primary_gate_route,
+                shadow_decision.outcome,
+            )
+            self._insert_ml_shadow_event(
+                decision_time=decision_time,
+                symbol=sym,
+                trade_id=technical.trade_id,
+                stage="POST_HARD_RISK",
+                primary_gate_outcome="ROUTE" if primary_gate_route else "REJECT",
+                shadow_decision=shadow_decision,
+            )
+
+        canary_decision = evaluate_canary_decision(
+            self.canary_config,
+            stage="POST_HARD_RISK",
+            shadow_enabled=self.shadow_runtime.enabled,
+            shadow_outcome=(shadow_decision.outcome if shadow_decision is not None else "DISABLED"),
+            primary_gate_route=primary_gate_route,
+        )
+        if self.canary_config.enabled or self.canary_config.kill_switch:
+            canary_outcome = "REJECT" if canary_decision.block_route else ("PASS" if canary_decision.enforced else "BYPASS")
+            self._insert_funnel_event(
+                decision_time=decision_time,
+                stage="ML_CANARY",
+                outcome=canary_outcome,
+                reason_code=canary_decision.reason_code,
+                symbol=sym,
+                details=canary_decision.details,
+                trade_id=technical.trade_id,
+            )
+        if canary_decision.block_route:
+            self._insert_trade_proposal(
+                technical,
+                status="REJECTED",
+                reason_code=canary_decision.reason_code,
+                risk_percent=0.0,
+                market_regime=regime.regime,
+            )
+            self._insert_risk_event(
+                "ML_CANARY",
+                "BLOCK",
+                canary_decision.details,
+                technical.trade_id,
+            )
+            self.metrics.inc("trades_rejected")
+            return
+
         if not self.ranker_loaded:
             self._insert_funnel_event(
                 decision_time=decision_time,
@@ -1664,7 +1792,7 @@ class Engine:
                 "bypass_untrained_model",
                 technical.trade_id,
             )
-        elif ranker_prob < self.predict_threshold:
+        elif not primary_gate_route:
             self._insert_funnel_event(
                 decision_time=decision_time,
                 stage="ML_RANKER",
@@ -1998,6 +2126,7 @@ def main(argv: list[str] | None = None) -> int:
     migrate_add_decision_funnel_events()
     migrate_add_feedback_receipts()
     migrate_add_ml_feature_columns()
+    migrate_add_ml_shadow_events()
     migrate_add_restart_state_columns()
     migrate_add_evidence_partition_columns()
     migrate_mark_stale_trades()

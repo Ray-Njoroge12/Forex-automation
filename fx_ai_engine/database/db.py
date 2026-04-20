@@ -185,7 +185,7 @@ def _default_evidence_context() -> EvidenceContext:
 
 def migrate_add_evidence_partition_columns() -> None:
     with get_conn() as conn:
-        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events", "ml_shadow_events"):
             if not _table_exists(conn, table):
                 continue
             _ensure_column(conn, table, "evidence_stream", "TEXT DEFAULT 'legacy_unpartitioned'")
@@ -245,6 +245,48 @@ def migrate_add_ml_feature_columns() -> None:
         _ensure_column(conn, "trades", "rate_differential", "REAL")
         _ensure_column(conn, "trades", "risk_reward", "REAL")
         _ensure_column(conn, "trades", "rsi_slope", "REAL")
+
+
+def migrate_add_ml_shadow_events() -> None:
+    """Creates observe-only ML shadow telemetry table. Idempotent."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ml_shadow_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+                policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+                execution_mode TEXT DEFAULT 'legacy',
+                account_scope TEXT DEFAULT 'legacy_unpartitioned',
+                decision_time DATETIME NOT NULL,
+                symbol TEXT NOT NULL,
+                trade_id TEXT,
+                stage TEXT NOT NULL,
+                primary_gate_outcome TEXT NOT NULL,
+                shadow_outcome TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                probability REAL,
+                threshold REAL,
+                model_loaded INTEGER DEFAULT 0,
+                checkpoint_path TEXT,
+                feature_schema_version TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ml_shadow_scope_time
+                ON ml_shadow_events(evidence_stream, account_scope, decision_time)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_ml_shadow_trade
+                ON ml_shadow_events(trade_id, decision_time)
+            """
+        )
 
 
 def insert_trade_proposal(
@@ -683,7 +725,7 @@ def _legacy_partition_where_clause() -> str:
 def count_legacy_partition_rows() -> dict[str, int]:
     table_counts: dict[str, int] = {}
     with get_conn() as conn:
-        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events", "ml_shadow_events"):
             if not _table_exists(conn, table):
                 table_counts[table] = 0
                 continue
@@ -725,7 +767,7 @@ def archive_legacy_partition_rows(*, archive_reason: str = "manual_archive") -> 
     archived_at = datetime.now(timezone.utc).isoformat()
     archived_counts: dict[str, int] = {}
     with get_conn() as conn:
-        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events"):
+        for table in ("trades", "account_metrics", "risk_events", "decision_funnel_events", "ml_shadow_events"):
             if not _table_exists(conn, table):
                 archived_counts[table] = 0
                 continue
@@ -840,6 +882,71 @@ def insert_decision_funnel_event(
                 reason_code,
                 details,
                 trade_id,
+            ),
+        )
+
+
+def insert_ml_shadow_event(
+    *,
+    decision_time: datetime,
+    symbol: str,
+    stage: str,
+    primary_gate_outcome: str,
+    shadow_outcome: str,
+    reason_code: str,
+    details: str = "",
+    trade_id: str | None = None,
+    probability: float | None = None,
+    threshold: float | None = None,
+    model_loaded: bool = False,
+    checkpoint_path: str | None = None,
+    feature_schema_version: str | None = None,
+    evidence_context: EvidenceContext | None = None,
+) -> None:
+    evidence = evidence_context or _default_evidence_context()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ml_shadow_events (
+                timestamp,
+                evidence_stream,
+                policy_mode,
+                execution_mode,
+                account_scope,
+                decision_time,
+                symbol,
+                trade_id,
+                stage,
+                primary_gate_outcome,
+                shadow_outcome,
+                reason_code,
+                details,
+                probability,
+                threshold,
+                model_loaded,
+                checkpoint_path,
+                feature_schema_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
+                decision_time.isoformat(),
+                symbol,
+                trade_id,
+                stage,
+                primary_gate_outcome,
+                shadow_outcome,
+                reason_code,
+                details,
+                probability,
+                threshold,
+                int(bool(model_loaded)),
+                checkpoint_path,
+                feature_schema_version,
             ),
         )
 

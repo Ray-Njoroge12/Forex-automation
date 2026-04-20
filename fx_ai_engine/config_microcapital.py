@@ -35,6 +35,10 @@ LIVE_TRADE_MGMT_OPTION_C_ENV = "FX_EXPERIMENT_LIVE_TRADE_MGMT_OPTION_C"
 LIVE_TRADE_MGMT_OPTION_C_TAG = "live_trade_mgmt_option_c"
 AI_TP_SCALING_ENV = "FX_EXPERIMENT_AI_TP_SCALING"
 AI_TP_SCALING_TAG = "ai_tp_scaling"
+META_LABELER_SHADOW_ENV = "FX_EXPERIMENT_META_LABELER_SHADOW"
+META_LABELER_SHADOW_TAG = "meta_labeler_shadow"
+META_LABELER_CANARY_ENV = "FX_EXPERIMENT_META_LABELER_CANARY"
+META_LABELER_CANARY_TAG = "meta_labeler_canary"
 
 _PAIR_SELECTIVE_RISING_ADX_RELAX = {
     "enabled": False,
@@ -71,6 +75,18 @@ _AI_TP_SCALING = {
     "enabled": False,
     "min_ranker_prob": 0.70,
     "multiplier": 1.5,
+}
+
+_META_LABELER_SHADOW = {
+    "enabled": False,
+    "threshold": 0.55,
+    "model_path": "",
+}
+
+_META_LABELER_CANARY = {
+    "enabled": False,
+    "mode": "soft",
+    "enforce_stage": "POST_HARD_RISK",
 }
 
 _SHARED_POLICY = {
@@ -113,6 +129,8 @@ _SHARED_POLICY = {
         "AUDUSD_PULLBACK_RELAX": _AUDUSD_PULLBACK_RELAX,
         "LIVE_TRADE_MGMT_OPTION_C": _LIVE_TRADE_MGMT_OPTION_C,
         "AI_TP_SCALING": _AI_TP_SCALING,
+        "META_LABELER_SHADOW": _META_LABELER_SHADOW,
+        "META_LABELER_CANARY": _META_LABELER_CANARY,
     },
 }
 
@@ -298,6 +316,18 @@ def apply_runtime_experiment_config(
             _AI_TP_SCALING,
             AI_TP_SCALING_ENV,
             AI_TP_SCALING_TAG,
+        ),
+        (
+            "META_LABELER_SHADOW",
+            _META_LABELER_SHADOW,
+            META_LABELER_SHADOW_ENV,
+            META_LABELER_SHADOW_TAG,
+        ),
+        (
+            "META_LABELER_CANARY",
+            _META_LABELER_CANARY,
+            META_LABELER_CANARY_ENV,
+            META_LABELER_CANARY_TAG,
         ),
     )
     active_tags: list[str] = []
