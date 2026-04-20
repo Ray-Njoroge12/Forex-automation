@@ -14,12 +14,12 @@ from config_microcapital import (
     ALLOW_NON_SRS_POLICY_ENV,
     MODE_CONFIGS,
     apply_runtime_experiment_config,
+    collect_runtime_override_audit,
     get_policy_config,
     is_non_srs_policy_mode,
     non_srs_policy_allowed,
-    read_fixed_risk_usd,
-    read_max_spread_pips,
     read_predict_threshold,
+    runtime_overrides_enabled,
 )
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.mock_feedback_simulator import MockFeedbackSimulator
@@ -52,6 +52,7 @@ from core.schemas import technical_signal_to_payload
 from core.state_sync import update_account_status_from_snapshot
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
 from database.db import (
+    feedback_receipt_exists,
     get_latest_account_metric,
     get_open_trade_ledger,
     initialize_schema,
@@ -64,11 +65,13 @@ from database.db import (
     mark_trade_execution_uncertain,
     migrate_add_decision_funnel_events,
     migrate_add_evidence_partition_columns,
+    migrate_add_feedback_receipts,
     migrate_add_ml_feature_columns,
     migrate_add_risk_events,
     migrate_add_restart_state_columns,
     migrate_mark_stale_trades,
     migrate_phase8_columns,
+    record_feedback_receipt,
     update_trade_execution_result,
     update_trade_exit_result,
 )
@@ -94,10 +97,89 @@ def _parse_timestamp_utc(value: object) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(raw)
     except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = None
+    if parsed is not None:
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    # Backward compatibility for legacy EA payloads like "YYYY-MM-DD HH:MM:SS".
+    for timestamp_format in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            parsed_legacy = datetime.strptime(raw, timestamp_format)
+            return parsed_legacy.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _execution_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
+    ticket = _safe_int(payload.get("ticket"))
+    return "|".join(
+        (
+            str(payload.get("trade_id", "") or ""),
+            str(ticket),
+            str(payload.get("status", "") or ""),
+            str(payload.get("close_time", "") or ""),
+        )
+    )
+
+
+def _exit_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
+    ticket = _safe_int(payload.get("position_ticket") or payload.get("ticket"))
+    return "|".join(
+        (
+            str(payload.get("trade_id", "") or ""),
+            str(ticket),
+            str(payload.get("status", "") or ""),
+            str(payload.get("close_time", "") or ""),
+        )
+    )
+
+
+def _apply_ai_tp_scaling(
+    signal,
+    *,
+    ranker_prob: float,
+    trend_state: str,
+    policy: Mapping[str, object],
+):
+    experiments = policy.get("EXPERIMENTS", {})
+    if not isinstance(experiments, Mapping):
+        return signal, False
+
+    config = experiments.get("AI_TP_SCALING", {})
+    if not isinstance(config, Mapping) or not bool(config.get("enabled", False)):
+        return signal, False
+
+    try:
+        min_ranker_prob = float(config.get("min_ranker_prob", 0.70))
+        multiplier = float(config.get("multiplier", 1.5))
+    except (TypeError, ValueError):
+        return signal, False
+
+    if multiplier <= 1.0:
+        return signal, False
+    if ranker_prob < min_ranker_prob:
+        return signal, False
+    if trend_state not in {"BULLISH", "BEARISH"}:
+        return signal, False
+
+    import dataclasses
+
+    scaled = dataclasses.replace(
+        signal,
+        take_profit_pips=round(float(signal.take_profit_pips) * multiplier, 2),
+    )
+    return scaled, True
+
+
+def _safe_int(value: object, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
@@ -664,6 +746,12 @@ class Engine:
             use_mock=self.use_mock,
             env=os.environ,
         )
+        logger.info(
+            "Runtime policy approval: approved=%s reason_code=%s details=%s",
+            runtime_policy_approval.approved,
+            runtime_policy_approval.reason_code,
+            runtime_policy_approval.details,
+        )
         if is_non_srs_policy_mode(self.policy["MODE_ID"]) and not runtime_policy_approval.approved:
             raise RuntimeError(
                 "Non-SRS runtime policy blocked: "
@@ -673,6 +761,12 @@ class Engine:
             bridge,
             policy=self.policy,
             env=os.environ,
+        )
+        logger.info(
+            "Preserve-10 startup approval: approved=%s reason_code=%s details=%s",
+            preserve_startup_approval.approved,
+            preserve_startup_approval.reason_code,
+            preserve_startup_approval.details,
         )
         if self.policy["MODE_ID"] == "preserve_10" and not preserve_startup_approval.approved:
             raise RuntimeError(
@@ -685,11 +779,9 @@ class Engine:
             login=getattr(bridge, "login", 0),
             server=getattr(bridge, "server", ""),
         )
-        self.predict_threshold = _predict_threshold()
+        self.predict_threshold = float(self.policy.get("ML_PREDICT_THRESHOLD") or _predict_threshold())
         self._stale_episode_active = False
         self._last_reconciliation_reason = ""
-        self._processed_execution_feedback: set[tuple[str, int, str, str]] = set()
-        self._processed_exit_feedback: set[tuple[str, int, str, str]] = set()
         self._latest_broker_close_time_utc: datetime | None = None
         self._consecutive_losses_dirty = False
         self._consecutive_losses_seeded = False
@@ -758,6 +850,26 @@ class Engine:
         self.hard_risk = HardRiskEngine(policy=self.policy)
         self.ranker = SignalRanker()
         self.ranker_loaded = self.ranker.load()
+        override_audit = collect_runtime_override_audit(self.policy, env=os.environ)
+        override_fields = override_audit["fields"]
+        logger.info(
+            "Runtime override governance: mode=%s allow_non_srs_policy=%s overrides_enabled=%s "
+            "fixed_risk={state=%s requested=%s active=%s} "
+            "max_spread={state=%s requested=%s active=%s} "
+            "ml_threshold={state=%s requested=%s active=%s}",
+            override_audit["mode_id"],
+            override_audit["allow_non_srs_policy"],
+            runtime_overrides_enabled(os.environ),
+            override_fields["FIXED_RISK_USD"]["state"],
+            override_fields["FIXED_RISK_USD"]["requested"],
+            override_fields["FIXED_RISK_USD"]["active"],
+            override_fields["MAX_SPREAD_PIPS"]["state"],
+            override_fields["MAX_SPREAD_PIPS"]["requested"],
+            override_fields["MAX_SPREAD_PIPS"]["active"],
+            override_fields["ML_PREDICT_THRESHOLD"]["state"],
+            override_fields["ML_PREDICT_THRESHOLD"]["requested"],
+            override_fields["ML_PREDICT_THRESHOLD"]["active"],
+        )
         logger.info(
             "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s",
             self.policy["MODE_ID"],
@@ -767,15 +879,16 @@ class Engine:
             self.evidence_context.account_scope,
             self.use_mock,
             self.policy.get("EXPERIMENT_TAG", "none"),
-            read_fixed_risk_usd(),
+            self.policy.get("FIXED_RISK_USD"),
             non_srs_policy_allowed(),
-            read_max_spread_pips(),
-            self.predict_threshold,
+            float(self.policy.get("MAX_SPREAD_PIPS") or 0.0),
+            float(self.policy.get("ML_PREDICT_THRESHOLD") or 0.0),
             os.getenv("USE_SENTIMENT", "0"),
             self.ranker_loaded,
         )
 
         self.last_m15_candle: datetime | None = None
+        self._last_m15_candle_by_symbol: dict[str, datetime] = {}
 
     def _insert_trade_proposal(self, technical, *, status: str, reason_code: str, risk_percent: float, market_regime: str, **kwargs) -> None:
         try:
@@ -1138,45 +1251,122 @@ class Engine:
 
     def _consume_feedback(self) -> None:
         with self.tracer.start_as_current_span("consume_feedback"):
-            # Consume new entry executions
-            for payload in self.feedback.consume_execution_feedback():
-                key = (
-                    str(payload.get("trade_id", "")),
-                    int(payload.get("ticket", 0)),
-                    str(payload.get("status", "")),
-                    str(payload.get("close_time", "")),
-                )
-                if key in self._processed_execution_feedback:
+            # Collect execution artifacts first; delete only after durable DB success.
+            for path, payload in self.feedback.collect_execution_feedback():
+                dedupe_key = _execution_feedback_dedupe_key(payload)
+                if feedback_receipt_exists(
+                    "execution",
+                    dedupe_key,
+                    evidence_context=self.evidence_context,
+                ):
+                    self.feedback.delete_artifact(path)
+                    self.router.release_lock(str(payload.get("trade_id", "")))
                     continue
-                self._processed_execution_feedback.add(key)
-                update_trade_execution_result(payload)
+
+                try:
+                    updated = update_trade_execution_result(payload)
+                except Exception:
+                    logger.exception(
+                        "Failed to apply execution feedback; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
+                if not updated:
+                    logger.warning(
+                        "Execution feedback update matched no trade row; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
+                try:
+                    record_feedback_receipt(
+                        "execution",
+                        dedupe_key,
+                        trade_id=str(payload.get("trade_id", "") or ""),
+                        ticket=_safe_int(payload.get("ticket")),
+                        status=str(payload.get("status", "") or ""),
+                        close_time=str(payload.get("close_time", "") or ""),
+                        source_file=path.name,
+                        evidence_context=self.evidence_context,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist execution feedback receipt; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
                 if str(payload.get("status", "")).upper() == "EXECUTED":
                     alert_trade_execution(
                         str(payload.get("trade_id", "")),
                         str(payload.get("symbol", "")),
                         str(payload.get("direction", "")),
                         float(payload.get("lot_size", 0.0)),
-                        float(payload.get("entry_price", 0.0))
+                        float(payload.get("entry_price", 0.0)),
                     )
                 self.router.release_lock(str(payload.get("trade_id", "")))
+                self.feedback.delete_artifact(path)
 
-            # Consume trade exits (stops and take profits)
-            for payload in self.feedback.consume_trade_exits():
-                key = (
-                    str(payload.get("trade_id", "")),
-                    int(payload.get("position_ticket") or payload.get("ticket", 0)),
-                    str(payload.get("status", "")),
-                    str(payload.get("close_time", "")),
-                )
-                if key in self._processed_exit_feedback:
-                    continue
-                self._processed_exit_feedback.add(key)
-                matched_trade = update_trade_exit_result(
-                    payload,
+            # Collect trade exit artifacts first; keep unmatched finals for later retry.
+            for path, payload in self.feedback.collect_trade_exits():
+                dedupe_key = _exit_feedback_dedupe_key(payload)
+                if feedback_receipt_exists(
+                    "exit",
+                    dedupe_key,
                     evidence_context=self.evidence_context,
-                )
-                if payload.get("is_final_exit") is False or not matched_trade:
+                ):
+                    self.feedback.delete_artifact(path)
                     continue
+
+                is_final_exit = payload.get("is_final_exit") is not False
+                try:
+                    matched_trade = update_trade_exit_result(
+                        payload,
+                        evidence_context=self.evidence_context,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to apply trade-exit feedback; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
+                if is_final_exit and not matched_trade:
+                    logger.warning(
+                        "Trade-exit feedback matched no trade row; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
+                try:
+                    record_feedback_receipt(
+                        "exit",
+                        dedupe_key,
+                        trade_id=str(payload.get("trade_id", "") or ""),
+                        ticket=_safe_int(payload.get("position_ticket") or payload.get("ticket")),
+                        status=str(payload.get("status", "") or ""),
+                        close_time=str(payload.get("close_time", "") or ""),
+                        source_file=path.name,
+                        evidence_context=self.evidence_context,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist trade-exit feedback receipt; deferring source=%s trade_id=%s",
+                        path,
+                        payload.get("trade_id", ""),
+                    )
+                    continue
+
+                if not is_final_exit:
+                    self.feedback.delete_artifact(path)
+                    continue
+
                 pnl = float(payload.get("profit_loss", 0.0))
                 trade_row = get_trade_by_identifiers(
                     trade_id=payload.get("trade_id"),
@@ -1189,20 +1379,34 @@ class Engine:
                     str(trade_for_alert.get("trade_id", "")),
                     str(trade_for_alert.get("symbol", "")),
                     pnl,
-                    r_multiple=_estimate_recovered_r_multiple(trade_for_alert, payload)
+                    r_multiple=_estimate_recovered_r_multiple(trade_for_alert, payload),
                 )
                 self._record_consecutive_loss_update(pnl)
                 self._record_broker_close_time(payload.get("close_time"))
+                self.feedback.delete_artifact(path)
 
     def _is_new_m15_candle(self) -> bool:
-        df = self.bridge.fetch_ohlc_data(SYMBOLS[0], TIMEFRAME_M15, 2)
-        if df.empty:
-            return False
-        current = df.index[-1].to_pydatetime().replace(tzinfo=timezone.utc)
-        if self.last_m15_candle is None or current > self.last_m15_candle:
-            self.last_m15_candle = current
-            return True
-        return False
+        saw_new_candle = False
+        latest_candle = self.last_m15_candle
+
+        for symbol in SYMBOLS:
+            df = self.bridge.fetch_ohlc_data(symbol, TIMEFRAME_M15, 2)
+            if df.empty:
+                continue
+
+            current = df.index[-1].to_pydatetime().replace(tzinfo=timezone.utc)
+            previous = self._last_m15_candle_by_symbol.get(symbol)
+            if previous is None or current > previous:
+                self._last_m15_candle_by_symbol[symbol] = current
+                saw_new_candle = True
+
+            if latest_candle is None or current > latest_candle:
+                latest_candle = current
+
+        if latest_candle is not None:
+            self.last_m15_candle = latest_candle
+
+        return saw_new_candle
 
     def _evaluate_symbol(self, sym: str, decision_time: datetime, session_name: str | None) -> None:
         logger.debug("Evaluating symbol %s", sym)
@@ -1495,16 +1699,20 @@ class Engine:
                 trade_id=technical.trade_id,
             )
 
-        # AI Probability TP Scaling
-        # If the ranker outputs high confidence and we are in a strong trend, stretch the TP multiplier by 1.5x
-        if ranker_prob >= 0.70 and regime.trend_state in {"BULLISH", "BEARISH"}:
-            import dataclasses
-            technical = dataclasses.replace(
-                technical,
-                take_profit_pips=round(technical.take_profit_pips * 1.5, 2)
+        technical, tp_scaling_applied = _apply_ai_tp_scaling(
+            technical,
+            ranker_prob=ranker_prob,
+            trend_state=regime.trend_state,
+            policy=self.policy,
+        )
+        if tp_scaling_applied:
+            logger.info(
+                "AI TP scaling applied for trade %s (prob=%.3f, trend=%s, tp_pips=%.2f)",
+                technical.trade_id,
+                ranker_prob,
+                regime.trend_state,
+                technical.take_profit_pips,
             )
-            logger.info("AI Probability Scaling applied: TP stretched 1.5x for trade %s (prob=%.3f, trend=%s)", 
-                        technical.trade_id, ranker_prob, regime.trend_state)
 
         # Apply loss-streak throttle from hard risk engine.
         final_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 8)
@@ -1788,6 +1996,7 @@ def main(argv: list[str] | None = None) -> int:
     migrate_phase8_columns()
     migrate_add_risk_events()
     migrate_add_decision_funnel_events()
+    migrate_add_feedback_receipts()
     migrate_add_ml_feature_columns()
     migrate_add_restart_state_columns()
     migrate_add_evidence_partition_columns()

@@ -1,0 +1,342 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "fx: install dependencies",
+			"type": "shell",
+			"command": "python -m pip install -r requirements.txt",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: initialize system",
+			"type": "shell",
+			"command": "python init_system.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: run tests (mock)",
+			"type": "shell",
+			"command": "python -m pytest -q",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"USE_MT5_MOCK": "1"
+				}
+			},
+			"group": "test",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: smoke run (mock)",
+			"type": "shell",
+			"command": "python main.py --mode smoke",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"USE_MT5_MOCK": "1"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: demo run (mock)",
+			"type": "shell",
+			"command": "python main.py --mode demo",
+			"isBackground": true,
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"USE_MT5_MOCK": "1"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: smoke run (mt5 demo)",
+			"type": "shell",
+			"command": "python main.py --mode smoke",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: demo run (mt5 demo)",
+			"type": "shell",
+			"command": "python main.py --mode demo",
+			"isBackground": true,
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: bridge test (mt5 demo)",
+			"type": "shell",
+			"command": "python test_bridge.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: check paths (mt5 demo)",
+			"type": "shell",
+			"command": "python check_paths.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: check spreads (mt5 demo)",
+			"type": "shell",
+			"command": "python check_spreads.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: diagnose market (mt5 demo)",
+			"type": "shell",
+			"command": "python diagnose_market.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine",
+				"env": {
+					"MT5_INIT_TIMEOUT_MS": "10000"
+				}
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: review trades",
+			"type": "shell",
+			"command": "python review_trades.py",
+			"options": {
+				"cwd": "${workspaceFolder}/fx_ai_engine"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: quick validation (mock)",
+			"dependsOn": [
+				"fx: run tests (mock)",
+				"fx: smoke run (mock)"
+			],
+			"dependsOrder": "sequence",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx: quick demo-account check",
+			"dependsOn": [
+				"fx: bridge test (mt5 demo)",
+				"fx: check paths (mt5 demo)",
+				"fx: check spreads (mt5 demo)"
+			],
+			"dependsOrder": "sequence",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp sanity echo",
+			"type": "shell",
+			"command": "Write-Output 'TASK_OK'",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp bridge test with timeout",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO trade account - YWO (CM) LTD'; $job = Start-Job -ScriptBlock { param($p,$login,$pwd,$server) Set-Location $p; $env:MT5_LOGIN=$login; $env:MT5_PASSWORD=$pwd; $env:MT5_SERVER=$server; python test_bridge.py } -ArgumentList $fxPath,$env:MT5_LOGIN,$env:MT5_PASSWORD,$env:MT5_SERVER; if (-not (Wait-Job $job -Timeout 120)) { Stop-Job $job; Receive-Job $job; Write-Output 'BRIDGE_TIMEOUT'; exit 124 }; Receive-Job $job; Write-Output 'BRIDGE_DONE'",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp check_paths with timeout",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $job = Start-Job -ScriptBlock { param($p) Set-Location $p; python check_paths.py } -ArgumentList $fxPath; if (-not (Wait-Job $job -Timeout 90)) { Stop-Job $job; Receive-Job $job; Write-Output 'CHECK_PATHS_TIMEOUT'; exit 124 }; Receive-Job $job; Write-Output 'CHECK_PATHS_DONE'",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp check_spreads with timeout",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO trade account - YWO (CM) LTD'; $job = Start-Job -ScriptBlock { param($p,$login,$pwd,$server) Set-Location $p; $env:MT5_LOGIN=$login; $env:MT5_PASSWORD=$pwd; $env:MT5_SERVER=$server; python check_spreads.py } -ArgumentList $fxPath,$env:MT5_LOGIN,$env:MT5_PASSWORD,$env:MT5_SERVER; if (-not (Wait-Job $job -Timeout 120)) { Stop-Job $job; Receive-Job $job; Write-Output 'CHECK_SPREADS_TIMEOUT'; exit 124 }; Receive-Job $job; Write-Output 'CHECK_SPREADS_DONE'",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp smoke mt5 with timeout",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO trade account - YWO (CM) LTD'; $job = Start-Job -ScriptBlock { param($p,$login,$pwd,$server) Set-Location $p; $env:MT5_LOGIN=$login; $env:MT5_PASSWORD=$pwd; $env:MT5_SERVER=$server; python main.py --mode smoke } -ArgumentList $fxPath,$env:MT5_LOGIN,$env:MT5_PASSWORD,$env:MT5_SERVER; if (-not (Wait-Job $job -Timeout 180)) { Stop-Job $job; Receive-Job $job; Write-Output 'SMOKE_TIMEOUT'; exit 124 }; Receive-Job $job; Write-Output 'SMOKE_DONE'",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp locate mt5 terminal",
+			"type": "shell",
+			"command": "$candidates = @('C:\\Program Files\\MetaTrader 5\\terminal64.exe','C:\\Program Files (x86)\\MetaTrader 5\\terminal64.exe'); foreach ($p in $candidates) { if (Test-Path $p) { Write-Output ('FOUND=' + $p) } }; $running = Get-Process -Name terminal64 -ErrorAction SilentlyContinue; if ($running) { Write-Output 'MT5_PROCESS_RUNNING=1' } else { Write-Output 'MT5_PROCESS_RUNNING=0' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp direct mt5 init probe",
+			"type": "shell",
+			"command": "Set-Location fx_ai_engine; python -c \"import MetaTrader5 as mt5; path=r'C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe'; ok=mt5.initialize(path=path,login=21374,password='*m8fJdIk',server='YWO trade account - YWO (CM) LTD',timeout=15000); print('INIT_OK=',ok); print('LAST_ERROR=',mt5.last_error()); ti=mt5.terminal_info(); print('TERMINAL_INFO=',bool(ti)); print('DATA_PATH=',getattr(ti,'data_path',None) if ti else None); mt5.shutdown() if ok else None\"",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp direct mt5 init probe",
+			"type": "shell",
+			"command": "Set-Location fx_ai_engine; $code = @\"\nimport MetaTrader5 as mt5\npath = r'C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe'\nok = mt5.initialize(path=path, login=21374, password='*m8fJdIk', server='YWO trade account - YWO (CM) LTD', timeout=15000)\nprint('INIT_OK=', ok)\nprint('LAST_ERROR=', mt5.last_error())\nti = mt5.terminal_info()\nprint('TERMINAL_INFO=', bool(ti))\nprint('DATA_PATH=', getattr(ti, 'data_path', None) if ti else None)\nif ok:\n    mt5.shutdown()\n\"@; python -c $code",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp check_paths after timeout hardening",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Set-Location $fxPath; python check_paths.py",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp check_spreads after timeout hardening",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO trade account - YWO (CM) LTD'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Set-Location $fxPath; python check_spreads.py",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp bridge test after timeout hardening",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO trade account - YWO (CM) LTD'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Set-Location $fxPath; python test_bridge.py",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp test mt5 bridge contracts",
+			"type": "shell",
+			"command": "Set-Location fx_ai_engine; $env:USE_MT5_MOCK='1'; python -m pytest tests/test_mt5_bridge_contracts.py -q",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp smoke mock post-connectivity-hardening",
+			"type": "shell",
+			"command": "Set-Location fx_ai_engine; $env:USE_MT5_MOCK='1'; python main.py --mode smoke",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp live demo triage (YWO server)",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; Set-Location $fxPath; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO server'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Write-Output 'STEP:test_bridge'; python test_bridge.py; $bridgeExit=$LASTEXITCODE; Write-Output ('BRIDGE_EXIT=' + $bridgeExit); Write-Output 'STEP:check_paths'; python check_paths.py; $pathsExit=$LASTEXITCODE; Write-Output ('PATHS_EXIT=' + $pathsExit); Write-Output 'STEP:check_spreads'; python check_spreads.py; $spreadsExit=$LASTEXITCODE; Write-Output ('SPREADS_EXIT=' + $spreadsExit); if ($bridgeExit -eq 0 -and $spreadsExit -eq 0) { exit 0 } else { exit 1 }",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp inspect mt5 processes",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process -Filter \"Name='terminal64.exe'\" | Select-Object ProcessId, ExecutablePath, CommandLine | Format-List",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp inspect mt5 processes",
+			"type": "shell",
+			"command": "$procs = Get-Process -Name terminal64 -ErrorAction SilentlyContinue; if (-not $procs) { Write-Output 'NO_TERMINAL64_PROCESS'; exit 0 }; foreach ($p in $procs) { $w = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.Id)\"; Write-Output ('PID=' + $p.Id); Write-Output ('PATH=' + $w.ExecutablePath); Write-Output ('CMD=' + $w.CommandLine); Write-Output '---' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp inspect mt5 processes v2",
+			"type": "shell",
+			"command": "Get-Process -Name terminal64 -ErrorAction SilentlyContinue | Select-Object Id, Path, MainWindowTitle | Format-List",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp relaunch mt5 and bridge retest",
+			"type": "shell",
+			"command": "$mt5='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; if (Test-Path $mt5) { Start-Process -FilePath $mt5 }; Set-Location c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO server'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; python test_bridge.py",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp raw mt5 python probe",
+			"type": "shell",
+			"command": "$script = @'\nimport MetaTrader5 as mt5\npath = r\"C:\\Program Files\\MetaTrader 5\\terminal64.exe\"\nok = mt5.initialize(path=path, timeout=10000)\nprint(\"INIT_OK\", ok)\nprint(\"LAST_ERROR\", mt5.last_error())\nif ok:\n    print(\"TERMINAL_INFO\", bool(mt5.terminal_info()))\n    mt5.shutdown()\n'@; $fn = Join-Path $env:TEMP 'mt5_probe.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp raw mt5 python probe v2",
+			"type": "shell",
+			"command": "$script = @'\nimport MetaTrader5 as mt5\npath = 'C:/Program Files/MetaTrader 5/terminal64.exe'\nok = mt5.initialize(path=path, timeout=10000)\nprint('INIT_OK', ok)\nprint('LAST_ERROR', mt5.last_error())\nif ok:\n    print('TERMINAL_INFO', bool(mt5.terminal_info()))\n    mt5.shutdown()\n'@; $fn = Join-Path $env:TEMP 'mt5_probe_v2.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp mt5 version probe",
+			"type": "shell",
+			"command": "Set-Location c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine; python -c \"import MetaTrader5 as mt5; print('PY_PACKAGE_VERSION', getattr(mt5, '__version__', 'unknown')); print('MT5_PY_VERSION_CALL', mt5.version())\"",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp mt5 version probe v2",
+			"type": "shell",
+			"command": "$script = @'\nimport MetaTrader5 as mt5\nprint('PY_PACKAGE_VERSION', getattr(mt5, '__version__', 'unknown'))\nprint('MT5_PY_VERSION_CALL', mt5.version())\n'@; $fn = Join-Path $env:TEMP 'mt5_version_probe.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp check shell elevation",
+			"type": "shell",
+			"command": "$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); Write-Output ('SHELL_IS_ADMIN=' + $isAdmin)",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp verify check scripts exit codes",
+			"type": "shell",
+			"command": "Set-Location c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO server'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; python check_paths.py; Write-Output ('CHECK_PATHS_EXIT=' + $LASTEXITCODE); python check_spreads.py; Write-Output ('CHECK_SPREADS_EXIT=' + $LASTEXITCODE)",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp live precheck retry",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; Set-Location $fxPath; $env:USE_MT5_MOCK='0'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO server'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Write-Output 'STEP:test_bridge'; python test_bridge.py; $bridgeExit=$LASTEXITCODE; Write-Output ('BRIDGE_EXIT=' + $bridgeExit); Write-Output 'STEP:check_paths'; python check_paths.py; $pathsExit=$LASTEXITCODE; Write-Output ('PATHS_EXIT=' + $pathsExit); Write-Output 'STEP:check_spreads'; python check_spreads.py; $spreadsExit=$LASTEXITCODE; Write-Output ('SPREADS_EXIT=' + $spreadsExit); if ($bridgeExit -eq 0 -and $pathsExit -eq 0 -and $spreadsExit -eq 0) { Write-Output 'LIVE_PRECHECK=PASS'; exit 0 } else { Write-Output 'LIVE_PRECHECK=FAIL'; exit 1 }",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp bridge retry long-timeout",
+			"type": "shell",
+			"command": "Set-Location c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine; $env:USE_MT5_MOCK='0'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO server'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='60000'; python test_bridge.py",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp single-init long-timeout probe",
+			"type": "shell",
+			"command": "$script = @'\nimport MetaTrader5 as mt5\nok = mt5.initialize(path='C:/Program Files/MetaTrader 5/terminal64.exe', login=21374, password='*m8fJdIk', server='YWO server', timeout=60000)\nprint('INIT_OK', ok)\nprint('LAST_ERROR', mt5.last_error())\nif ok:\n    ti = mt5.terminal_info()\n    print('TERMINAL_INFO', bool(ti))\n    mt5.shutdown()\n'@; $fn = Join-Path $env:TEMP 'mt5_single_init_long.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp python-mt5 environment fingerprint",
+			"type": "shell",
+			"command": "$script = @'\nimport platform\nimport struct\nimport sys\nimport MetaTrader5 as mt5\nprint('PY_EXE', sys.executable)\nprint('PY_VERSION', sys.version.replace('\\n', ' '))\nprint('PY_BITS', struct.calcsize('P') * 8)\nprint('PLATFORM', platform.platform())\nprint('MT5_MODULE_FILE', getattr(mt5, '__file__', 'unknown'))\nprint('MT5_MODULE_VERSION', getattr(mt5, '__version__', 'unknown'))\nprint('MT5_VERSION_CALL', mt5.version())\n'@; $fn = Join-Path $env:TEMP 'py_mt5_fingerprint.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp live precheck retry (YWO-trade)",
+			"type": "shell",
+			"command": "$fxPath='c:\\Users\\rayng\\Desktop\\Forex-automation\\fx_ai_engine'; Set-Location $fxPath; $env:USE_MT5_MOCK='0'; $env:MT5_LOGIN='21374'; $env:MT5_PASSWORD='*m8fJdIk'; $env:MT5_SERVER='YWO-trade'; $env:MT5_TERMINAL_PATH='C:\\Program Files\\MetaTrader 5\\terminal64.exe'; $env:MT5_INIT_TIMEOUT_MS='10000'; Write-Output 'STEP:test_bridge'; python test_bridge.py; $bridgeExit=$LASTEXITCODE; Write-Output ('BRIDGE_EXIT=' + $bridgeExit); Write-Output 'STEP:check_paths'; python check_paths.py; $pathsExit=$LASTEXITCODE; Write-Output ('PATHS_EXIT=' + $pathsExit); Write-Output 'STEP:check_spreads'; python check_spreads.py; $spreadsExit=$LASTEXITCODE; Write-Output ('SPREADS_EXIT=' + $spreadsExit); if ($bridgeExit -eq 0 -and $pathsExit -eq 0 -and $spreadsExit -eq 0) { Write-Output 'LIVE_PRECHECK=PASS'; exit 0 } else { Write-Output 'LIVE_PRECHECK=FAIL'; exit 1 }",
+			"problemMatcher": []
+		},
+		{
+			"label": "fx-temp raw init probe auto (YWO-trade)",
+			"type": "shell",
+			"command": "$script = @'\nimport MetaTrader5 as mt5\nok = mt5.initialize(login=21374, password='*m8fJdIk', server='YWO-trade', timeout=120000)\nprint('INIT_OK', ok)\nprint('LAST_ERROR', mt5.last_error())\nif ok:\n    print('TERMINAL_INFO', bool(mt5.terminal_info()))\n    mt5.shutdown()\n'@; $fn = Join-Path $env:TEMP 'mt5_init_auto_probe.py'; Set-Content -Path $fn -Value $script -Encoding UTF8; python $fn",
+			"problemMatcher": []
+		}
+	]
+}
