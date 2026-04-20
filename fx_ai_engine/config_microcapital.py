@@ -33,6 +33,8 @@ AUDUSD_PULLBACK_RELAX_ENV = "FX_EXPERIMENT_AUDUSD_PULLBACK_RELAX"
 AUDUSD_PULLBACK_RELAX_TAG = "audusd_pullback_relax"
 LIVE_TRADE_MGMT_OPTION_C_ENV = "FX_EXPERIMENT_LIVE_TRADE_MGMT_OPTION_C"
 LIVE_TRADE_MGMT_OPTION_C_TAG = "live_trade_mgmt_option_c"
+AI_TP_SCALING_ENV = "FX_EXPERIMENT_AI_TP_SCALING"
+AI_TP_SCALING_TAG = "ai_tp_scaling"
 
 _PAIR_SELECTIVE_RISING_ADX_RELAX = {
     "enabled": False,
@@ -63,6 +65,12 @@ _LIVE_TRADE_MGMT_OPTION_C = {
         "trailing_atr_mult": 2.0,
         "tp_mode": "HYBRID",
     },
+}
+
+_AI_TP_SCALING = {
+    "enabled": False,
+    "min_ranker_prob": 0.70,
+    "multiplier": 1.5,
 }
 
 _SHARED_POLICY = {
@@ -104,6 +112,7 @@ _SHARED_POLICY = {
         "PAIR_SELECTIVE_RISING_ADX_RELAX": _PAIR_SELECTIVE_RISING_ADX_RELAX,
         "AUDUSD_PULLBACK_RELAX": _AUDUSD_PULLBACK_RELAX,
         "LIVE_TRADE_MGMT_OPTION_C": _LIVE_TRADE_MGMT_OPTION_C,
+        "AI_TP_SCALING": _AI_TP_SCALING,
     },
 }
 
@@ -284,6 +293,12 @@ def apply_runtime_experiment_config(
             LIVE_TRADE_MGMT_OPTION_C_ENV,
             LIVE_TRADE_MGMT_OPTION_C_TAG,
         ),
+        (
+            "AI_TP_SCALING",
+            _AI_TP_SCALING,
+            AI_TP_SCALING_ENV,
+            AI_TP_SCALING_TAG,
+        ),
     )
     active_tags: list[str] = []
     for key, defaults, env_name, tag in runtime_experiments:
@@ -390,13 +405,51 @@ def _mode_allows_runtime_overrides(env: Mapping[str, str] | None = None) -> bool
     """Return whether governed runtime env overrides are enabled."""
     source = os.environ if env is None else env
     mode_id = resolve_policy_mode(source)
-    # Always allow if explicitly in override-enabled mode and non-SRS allowed
+    # Governed runtime overrides are allowed only in explicit non-SRS modes.
     if mode_id in OVERRIDE_ENABLED_MODE_IDS and non_srs_policy_allowed(source):
         return True
-    # Allow core_srs overrides ONLY if FX_ALLOW_NON_SRS_POLICY=1 is set (for demo/testing)
-    if mode_id == "core_srs" and non_srs_policy_allowed(source):
-        return True
     return False
+
+
+def runtime_overrides_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Public helper for startup governance reporting."""
+    return _mode_allows_runtime_overrides(env)
+
+
+def collect_runtime_override_audit(
+    policy: Mapping[str, object],
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Return structured startup audit for governed runtime float overrides."""
+    source = os.environ if env is None else env
+    mode_id = str(policy.get("MODE_ID") or resolve_policy_mode(source) or "").strip().lower()
+    overrides_enabled = runtime_overrides_enabled(source)
+    tracked = {
+        "FIXED_RISK_USD": source.get("FIXED_RISK_USD", "").strip(),
+        "MAX_SPREAD_PIPS": source.get("MAX_SPREAD_PIPS", "").strip(),
+        "ML_PREDICT_THRESHOLD": source.get("ML_PREDICT_THRESHOLD", "").strip(),
+    }
+
+    fields: dict[str, dict[str, object]] = {}
+    for key, requested in tracked.items():
+        if not requested:
+            state = "default"
+        elif overrides_enabled:
+            state = "requested"
+        else:
+            state = "blocked"
+        fields[key] = {
+            "requested": requested or None,
+            "active": policy.get(key),
+            "state": state,
+        }
+
+    return {
+        "mode_id": mode_id,
+        "allow_non_srs_policy": non_srs_policy_allowed(source),
+        "runtime_overrides_enabled": overrides_enabled,
+        "fields": fields,
+    }
 
 
 def _read_governed_float_override(
@@ -416,9 +469,18 @@ def _read_governed_float_override(
     else:
         policy_defaults = get_policy_config(env=source, apply_overrides=False)
         default = policy_defaults[policy_key]
-    
+
     raw = source.get(env_name, "").strip()
-    if not raw or not _mode_allows_runtime_overrides(source):
+    if not raw:
+        return default
+
+    if not _mode_allows_runtime_overrides(source):
+        logger.warning(
+            "Ignoring %s=%r for mode=%s because governed runtime overrides are disabled",
+            env_name,
+            raw,
+            mode_id,
+        )
         return default
 
     try:

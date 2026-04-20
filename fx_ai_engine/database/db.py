@@ -138,6 +138,42 @@ def migrate_add_decision_funnel_events() -> None:
         )
 
 
+def migrate_add_feedback_receipts() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+                policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+                execution_mode TEXT DEFAULT 'legacy',
+                account_scope TEXT DEFAULT 'legacy_unpartitioned',
+                feedback_kind TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                trade_id TEXT,
+                ticket INTEGER,
+                status TEXT,
+                close_time TEXT,
+                source_file TEXT,
+                UNIQUE(evidence_stream, account_scope, feedback_kind, dedupe_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_receipts_scope_kind_key
+                ON feedback_receipts(evidence_stream, account_scope, feedback_kind, dedupe_key)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_feedback_receipts_timestamp
+                ON feedback_receipts(timestamp)
+            """
+        )
+
+
 def _default_evidence_context() -> EvidenceContext:
     return EvidenceContext(
         evidence_stream=LEGACY_UNPARTITIONED_STREAM,
@@ -286,7 +322,7 @@ def _positive_float(value: Any) -> float | None:
     return parsed if parsed > 0 else None
 
 
-def update_trade_execution_result(payload: dict[str, Any]) -> None:
+def update_trade_execution_result(payload: dict[str, Any]) -> bool:
     raw_status = str(payload.get("status", "UNKNOWN")).upper()
     ticket = _positive_int(payload.get("ticket")) or 0
     position_ticket = _positive_int(payload.get("position_ticket"))
@@ -299,7 +335,7 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
 
     with get_conn() as conn:
         if executed_open:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE trades
                    SET trade_ticket = ?,
@@ -326,10 +362,10 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                     payload.get("trade_id"),
                 ),
             )
-            return
+            return int(cursor.rowcount or 0) > 0
 
         close_time = payload.get("close_time", datetime.now(timezone.utc).isoformat())
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE trades
                SET trade_ticket = ?,
@@ -354,6 +390,7 @@ def update_trade_execution_result(payload: dict[str, Any]) -> None:
                 payload.get("trade_id"),
             ),
         )
+        return int(cursor.rowcount or 0) > 0
 
 
 def mark_trade_execution_uncertain(
@@ -835,3 +872,100 @@ def get_recent_r_multiples(limit: int = 100) -> list[float]:
             (limit,),
         ).fetchall()
     return [float(row["r_multiple"]) for row in rows if row["r_multiple"] is not None]
+
+
+def feedback_receipt_exists(
+    feedback_kind: str,
+    dedupe_key: str,
+    *,
+    evidence_context: EvidenceContext | None = None,
+) -> bool:
+    evidence = evidence_context or _default_evidence_context()
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+              FROM feedback_receipts
+             WHERE evidence_stream = ?
+               AND account_scope = ?
+               AND feedback_kind = ?
+               AND dedupe_key = ?
+             LIMIT 1
+            """,
+            (
+                evidence.evidence_stream,
+                evidence.account_scope,
+                feedback_kind,
+                dedupe_key,
+            ),
+        ).fetchone()
+    return row is not None
+
+
+def record_feedback_receipt(
+    feedback_kind: str,
+    dedupe_key: str,
+    *,
+    trade_id: str | None = None,
+    ticket: int | None = None,
+    status: str | None = None,
+    close_time: str | None = None,
+    source_file: str | None = None,
+    evidence_context: EvidenceContext | None = None,
+) -> bool:
+    """Persist a feedback receipt. Returns True when inserted, False on duplicate."""
+    evidence = evidence_context or _default_evidence_context()
+    ticket_value = _positive_int(ticket)
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO feedback_receipts (
+                timestamp,
+                evidence_stream,
+                policy_mode,
+                execution_mode,
+                account_scope,
+                feedback_kind,
+                dedupe_key,
+                trade_id,
+                ticket,
+                status,
+                close_time,
+                source_file
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                evidence.evidence_stream,
+                evidence.policy_mode,
+                evidence.execution_mode,
+                evidence.account_scope,
+                feedback_kind,
+                dedupe_key,
+                trade_id,
+                ticket_value,
+                status,
+                close_time,
+                source_file,
+            ),
+        )
+        inserted = int(cursor.rowcount or 0) > 0
+        if not inserted:
+            conn.execute(
+                """
+                UPDATE feedback_receipts
+                   SET timestamp = ?
+                 WHERE evidence_stream = ?
+                   AND account_scope = ?
+                   AND feedback_kind = ?
+                   AND dedupe_key = ?
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    evidence.evidence_stream,
+                    evidence.account_scope,
+                    feedback_kind,
+                    dedupe_key,
+                ),
+            )
+        return inserted

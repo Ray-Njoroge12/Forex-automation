@@ -88,3 +88,20 @@ CREATE TABLE IF NOT EXISTS decision_funnel_events (
     details TEXT DEFAULT '',
     trade_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS feedback_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    evidence_stream TEXT DEFAULT 'legacy_unpartitioned',
+    policy_mode TEXT DEFAULT 'legacy_unpartitioned',
+    execution_mode TEXT DEFAULT 'legacy',
+    account_scope TEXT DEFAULT 'legacy_unpartitioned',
+    feedback_kind TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    trade_id TEXT,
+    ticket INTEGER,
+    status TEXT,
+    close_time TEXT,
+    source_file TEXT,
+    UNIQUE(evidence_stream, account_scope, feedback_kind, dedupe_key)
+);

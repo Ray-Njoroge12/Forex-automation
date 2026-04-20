@@ -18,6 +18,10 @@ def _default_mock_bridge_path() -> Path:
     return Path(__file__).resolve().parent.parent / "mock_mt5_bridge"
 
 
+def _is_mock_mode() -> bool:
+    return os.getenv("USE_MT5_MOCK") == "1"
+
+
 def _is_windows_runtime() -> bool:
     return os.name == "nt"
 
@@ -45,12 +49,17 @@ def get_mock_runtime_state_path(base_path: Path | None = None) -> Path:
 
 def get_mt5_bridge_path() -> Path:
     """Detects the MT5 MQL5/Files folder and returns the bridge path.
-    
-    If BRIDGE_BASE_PATH is set in env, uses that.
-    Otherwise, initializes MT5 and asks for data_path.
-    Fallback: current project bridge directory.
+
+    Resolution order:
+    1) Mock mode (`USE_MT5_MOCK=1`): dedicated mock bridge path.
+    2) Explicit env override (`BRIDGE_BASE_PATH`).
+    3) MT5 terminal auto-detection via `terminal_info().data_path`.
+
+    Live mode is fail-closed: when no explicit or auto-detected path is
+    available, this function raises RuntimeError instead of falling back to a
+    local project directory.
     """
-    if os.getenv("USE_MT5_MOCK") == "1":
+    if _is_mock_mode():
         mock_env_path = os.getenv("MT5_MOCK_BRIDGE_PATH")
         return _coerce_bridge_path(mock_env_path) if mock_env_path else _default_mock_bridge_path()
 
@@ -59,14 +68,22 @@ def get_mt5_bridge_path() -> Path:
         return _coerce_bridge_path(env_path)
 
     # Attempt to auto-detect from active MT5
-    if mt5 is not None and mt5.initialize():
-        terminal_info = mt5.terminal_info()
-        if terminal_info:
-            data_path = Path(terminal_info.data_path)
-            bridge_path = data_path / "MQL5" / "Files" / "bridge"
-            mt5.shutdown()
-            return bridge_path
-        mt5.shutdown()
+    if mt5 is not None:
+        initialized = False
+        try:
+            initialized = bool(mt5.initialize())
+            if initialized:
+                terminal_info = mt5.terminal_info()
+                if terminal_info and getattr(terminal_info, "data_path", None):
+                    data_path = Path(terminal_info.data_path)
+                    bridge_path = data_path / "MQL5" / "Files" / "bridge"
+                    return bridge_path
+        finally:
+            if initialized:
+                mt5.shutdown()
 
-    # Generic fallback to local project folder
-    return Path(__file__).parent.parent / "bridge"
+    raise RuntimeError(
+        "Unable to resolve live MT5 bridge path. "
+        "Set BRIDGE_BASE_PATH to your MT5 MQL5/Files/bridge directory "
+        "or ensure MT5 terminal auto-detection is available."
+    )

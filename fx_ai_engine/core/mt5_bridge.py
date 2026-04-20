@@ -269,9 +269,44 @@ class MT5Connection:
         if not self._require_mt5():
             return False
 
+        timeout_raw = os.getenv("MT5_INIT_TIMEOUT_MS", "15000").strip()
+        try:
+            timeout_ms = max(1000, int(timeout_raw))
+        except ValueError:
+            timeout_ms = 15000
+
+        terminal_path = os.getenv("MT5_TERMINAL_PATH", "").strip()
+        if terminal_path and not os.path.exists(terminal_path):
+            logger.warning("MT5_TERMINAL_PATH does not exist, ignoring override: %s", terminal_path)
+            terminal_path = ""
+
         for i in range(retry_count):
-            logger.info("Initializing MT5 connection for server=%s (attempt %d/%d)", self.server, i+1, retry_count)
-            ok = mt5.initialize(login=self.login, server=self.server, password=self.password)
+            logger.info(
+                "Initializing MT5 connection for server=%s (attempt %d/%d, timeout_ms=%d, path=%s)",
+                self.server,
+                i + 1,
+                retry_count,
+                timeout_ms,
+                terminal_path or "<auto>",
+            )
+
+            init_kwargs: dict[str, Any] = {
+                "login": self.login,
+                "server": self.server,
+                "password": self.password,
+                "timeout": timeout_ms,
+            }
+            if terminal_path:
+                init_kwargs["path"] = terminal_path
+
+            try:
+                ok = mt5.initialize(**init_kwargs)
+            except TypeError:
+                # Compatibility for wrappers that do not expose timeout/path kwargs.
+                init_kwargs.pop("timeout", None)
+                init_kwargs.pop("path", None)
+                ok = mt5.initialize(**init_kwargs)
+
             if ok:
                 self.connected = True
                 self.last_error = None

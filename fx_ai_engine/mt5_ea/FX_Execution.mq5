@@ -460,6 +460,27 @@ double PipValue(string sym)
    return 0.0001;
 }
 
+string IsoTimestampUtc(const datetime value = 0)
+{
+   datetime ts = value;
+   if(ts <= 0)
+      ts = TimeCurrent();
+
+   MqlDateTime parts;
+   if(!TimeToStruct(ts, parts))
+      return "1970-01-01T00:00:00Z";
+
+   return StringFormat(
+      "%04d-%02d-%02dT%02d:%02d:%02dZ",
+      parts.year,
+      parts.mon,
+      parts.day,
+      parts.hour,
+      parts.min,
+      parts.sec
+   );
+}
+
 double CalculateLot(string sym, const double riskPercent, const double stopPips)
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -516,7 +537,7 @@ void WriteExecutionFeedback(
    payload += "\"lot_size\":" + DoubleToString(lotSize, 2) + ",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
    payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
-   payload += "\"close_time\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\"";
+   payload += "\"close_time\":\"" + IsoTimestampUtc() + "\"";
    payload += "}";
 
    string filePath = FeedbackFolder() + "\\execution_" + tradeId + ".json";
@@ -546,7 +567,7 @@ void WriteExitFeedback(
    payload += "\"is_final_exit\":true,";
    if(hasRMultiple)
       payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
-   payload += "\"close_time\":\"" + TimeToString(closeTime, TIME_DATE | TIME_SECONDS) + "\"";
+   payload += "\"close_time\":\"" + IsoTimestampUtc(closeTime) + "\"";
    payload += "}";
 
    string filePath = ExitFilePath(ticket);
@@ -591,7 +612,7 @@ void WriteAccountSnapshot()
    string managementStateError = BuildManagementStateError();
 
    string payload = "{";
-   payload += "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\",";
+   payload += "\"timestamp\":\"" + IsoTimestampUtc() + "\",";
    payload += "\"balance\":" + DoubleToString(balance, 2) + ",";
    payload += "\"equity\":" + DoubleToString(equity, 2) + ",";
    payload += "\"margin_free\":" + DoubleToString(marginFree, 2) + ",";
@@ -859,7 +880,7 @@ bool WriteManagementStateForSlot(const int slot)
    payload += "\"initial_stop_dist\":" + DoubleToString(g_initial_stop_dist[slot], 8) + ",";
    payload += "\"initial_volume\":" + DoubleToString(g_initial_volume[slot], 2) + ",";
    payload += "\"partial_closed\":" + (g_partial_closed[slot] ? "1" : "0") + ",";
-   payload += "\"saved_at\":\"" + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS) + "\"";
+   payload += "\"saved_at\":\"" + IsoTimestampUtc() + "\"";
    payload += "}";
    return WriteTextFile(ManagementStateFilePath(ticket), payload);
 }
