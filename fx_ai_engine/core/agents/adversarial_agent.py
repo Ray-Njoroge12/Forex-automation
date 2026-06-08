@@ -115,8 +115,8 @@ class AdversarialAgent:
         atr_mean = float(df["atr"].rolling(20, min_periods=20).mean().iloc[-1])
         if atr_mean > 0 and atr_now > atr_mean * self.max_volatility_multiplier:
             return AdversarialDecision(
-                approved=True,
-                risk_modifier=0.6,
+                approved=False,
+                risk_modifier=0.0,
                 reason_code="ADV_VOLATILITY_EXTREME",
                 details=f"atr_now={atr_now:.6f} atr_mean={atr_mean:.6f}",
                 timestamp_utc=now,
@@ -127,9 +127,9 @@ class AdversarialAgent:
         # --- Bollinger Band RSI exhaustion (dynamic overbought/oversold) ---
         rsi_series = df["rsi"].dropna()
         rsi_upper_bb, rsi_lower_bb = 101.0, -1.0  # default bypass
-        if len(rsi_series) >= 20:
-            rsi_ma = rsi_series.rolling(20).mean().iloc[-1]
-            rsi_std = rsi_series.rolling(20).std().iloc[-1]
+        if len(rsi_series) >= 50:
+            rsi_ma = rsi_series.rolling(50).mean().iloc[-1]
+            rsi_std = rsi_series.rolling(50).std().iloc[-1]
             if not pd.isna(rsi_ma) and not pd.isna(rsi_std) and rsi_std > 0:
                 rsi_upper_bb = rsi_ma + 2 * rsi_std
                 rsi_lower_bb = rsi_ma - 2 * rsi_std
@@ -183,6 +183,8 @@ class AdversarialAgent:
                 modifier *= self.SENTIMENT_RISK_MODIFIER
                 soft_reason = "ADV_SENTIMENT_OPPOSED" if soft_reason == "ADV_APPROVED" else soft_reason
                 soft_details = f"sentiment_score={sent_score:.3f}"
+
+        modifier = max(modifier, 0.5)
 
         return AdversarialDecision(
             approved=True,

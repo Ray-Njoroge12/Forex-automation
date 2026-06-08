@@ -123,7 +123,9 @@ class RegimeAgent:
         recent = adx_series.dropna().tail(self.relaxation.adx_lookback_bars)
         if len(recent) < self.relaxation.adx_lookback_bars:
             return False
-        return float(recent.iloc[-1] - recent.iloc[0]) >= self.relaxation.adx_rise_min
+        # Relax when ADX is low and stable (range is small), not when aggressively rising
+        adx_range = float(recent.max() - recent.min())
+        return adx_range <= self.relaxation.adx_rise_min and float(recent.iloc[-1]) < self.thresholds.adx_no_trade_below + 5.0
 
     def evaluate(self, timeframe_h1: int) -> RegimeOutput:
         df = self.fetch_ohlc(self.symbol, timeframe_h1, 350)
@@ -175,7 +177,7 @@ class RegimeAgent:
 
         # ATR ratio: current ATR relative to 90-bar historical mean (= ~90 hours).
         # Used downstream for volatility-adjusted position sizing.
-        atr_90_mean = df["atr"].rolling(90, min_periods=30).mean().iloc[-1]
+        atr_90_mean = df["atr"].rolling(90, min_periods=60).mean().iloc[-1]
         if pd.isna(atr_90_mean) or atr_90_mean <= 0:
             atr_ratio = 1.0
         else:
