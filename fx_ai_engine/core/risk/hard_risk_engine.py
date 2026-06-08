@@ -140,7 +140,7 @@ class HardRiskEngine:
 
         # --- Combined exposure gate ---
         ceiling = self._combined_exposure_limit(account_status.balance)
-        if account_status.open_risk_percent + effective_risk > ceiling:
+        if account_status.open_risk_percent + effective_risk > ceiling + 1e-8:
             mode = (
                 f"fixed_usd=${self._fixed_risk_usd:.2f} ceiling={ceiling:.6f}"
                 if self._fixed_risk_usd is not None

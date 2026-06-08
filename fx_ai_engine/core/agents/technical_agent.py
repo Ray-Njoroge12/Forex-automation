@@ -184,8 +184,8 @@ class TechnicalAgent:
         pip_value: float,
     ) -> float:
         if direction == "BUY":
-            return max(float(m15_last["low"]) - float(m15_last["ema_fast"] + buffer_val), 0.0) / pip_value
-        return max(float(m15_last["ema_fast"] - buffer_val) - float(m15_last["high"]), 0.0) / pip_value
+            return (float(m15_last["low"]) - float(m15_last["ema_fast"] + buffer_val)) / pip_value
+        return (float(m15_last["ema_fast"] - buffer_val) - float(m15_last["high"])) / pip_value
 
     def _reject(self, reason_code: str, details: str = "") -> None:
         self.last_reason_code = reason_code
@@ -323,11 +323,13 @@ class TechnicalAgent:
         spread_pips = (live_spread / pip_value) if live_spread is not None else 1.5
         effective_stop = stop_pips + spread_pips / 2
         min_tp_for_rr = self.min_rr * effective_stop + spread_pips / 2
+        
         # Keep the configured minimum-R baseline while ensuring post-spread effective R:R still meets target.
         take_profit_pips = max(float(stop_pips * self.min_rr), min_tp_for_rr)
         effective_tp = take_profit_pips - spread_pips / 2
+        
         rr = effective_tp / effective_stop if effective_stop > 0 else 0.0
-        if rr < self.min_rr:
+        if rr < self.min_rr - 1e-5:
             self._reject("TECH_RR_BELOW_MIN", f"rr={rr:.2f} min_rr={self.min_rr:.2f}")
             return None
 
@@ -418,6 +420,9 @@ class TechnicalAgent:
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
         window = m15.tail(lookback)
 
+        if len(window) < lookback // 2:
+            return atr_stop_pips, None
+
         if direction == "BUY":
             structural_level = float(window["low"].min())
             structural_pips = (current_price - structural_level) / pip_value
@@ -425,7 +430,7 @@ class TechnicalAgent:
             structural_level = float(window["high"].max())
             structural_pips = (structural_level - current_price) / pip_value
 
-        if structural_pips <= 0 or atr_stop_pips <= 0:
+        if structural_pips <= 0 or atr_stop_pips <= 0.01:
             return atr_stop_pips, None
 
         ratio = structural_pips / atr_stop_pips
