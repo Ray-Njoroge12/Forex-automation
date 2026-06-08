@@ -103,9 +103,10 @@ class PortfolioManager:
                 if corr is not None:
                     return corr
             except Exception as exc:
-                logger.debug("Dynamic correlation failed for %s/%s: %s", sym_a, sym_b, exc)
+                logger.warning("Dynamic correlation failed for %s/%s: %s", sym_a, sym_b, exc)
 
         # Fallback to static.
+        logger.warning("Falling back to static correlation map for %s/%s. Note: static map from 2026-02 may be stale.", sym_a, sym_b)
         return self.STATIC_CORRELATED_PAIRS.get(candidate)
 
     def _compute_pair_correlation(self, sym_a: str, sym_b: str) -> float | None:
@@ -224,6 +225,8 @@ class PortfolioManager:
         # ----------------------------------------------------------------
         if self.fixed_risk_usd is not None:
             base_percent = self._fixed_risk_percent(account_status.balance)
+            if regime is not None:
+                base_percent = base_percent / max(regime.atr_ratio, 0.1)
             proposed_risk = round(base_percent * adversarial.risk_modifier, 8)
             max_exposure = self._max_exposure_for_fixed(account_status.balance)
             mode_label = f"mode={self.mode_id} fixed_usd=${self.fixed_risk_usd:.2f}"
