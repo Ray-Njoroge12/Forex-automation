@@ -90,6 +90,7 @@ SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"]
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
 PRESERVE_10_REFERENCE_BALANCE_USD = 10.0
+MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS = 30
 
 
 def _predict_threshold() -> float:
@@ -122,6 +123,17 @@ def _parse_timestamp_utc(value: object) -> datetime | None:
     return None
 
 
+def _snapshot_age_seconds(
+    snapshot: Mapping[str, object],
+    *,
+    now_utc: datetime,
+) -> float | None:
+    snapshot_time_utc = _parse_timestamp_utc(snapshot.get("timestamp"))
+    if snapshot_time_utc is None:
+        return None
+    return (now_utc - snapshot_time_utc).total_seconds()
+
+
 def _execution_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
     ticket = _safe_int(payload.get("ticket"))
     return "|".join(
@@ -144,43 +156,6 @@ def _exit_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
             str(payload.get("close_time", "") or ""),
         )
     )
-
-
-def _apply_ai_tp_scaling(
-    signal,
-    *,
-    ranker_prob: float,
-    trend_state: str,
-    policy: Mapping[str, object],
-):
-    experiments = policy.get("EXPERIMENTS", {})
-    if not isinstance(experiments, Mapping):
-        return signal, False
-
-    config = experiments.get("AI_TP_SCALING", {})
-    if not isinstance(config, Mapping) or not bool(config.get("enabled", False)):
-        return signal, False
-
-    try:
-        min_ranker_prob = float(config.get("min_ranker_prob", 0.70))
-        multiplier = float(config.get("multiplier", 1.5))
-    except (TypeError, ValueError):
-        return signal, False
-
-    if multiplier <= 1.0:
-        return signal, False
-    if ranker_prob < min_ranker_prob:
-        return signal, False
-    if trend_state not in {"BULLISH", "BEARISH"}:
-        return signal, False
-
-    import dataclasses
-
-    scaled = dataclasses.replace(
-        signal,
-        take_profit_pips=round(float(signal.take_profit_pips) * multiplier, 2),
-    )
-    return scaled, True
 
 
 def _safe_int(value: object, *, default: int = 0) -> int:
@@ -910,6 +885,7 @@ class Engine:
 
         self.last_m15_candle: datetime | None = None
         self._last_m15_candle_by_symbol: dict[str, datetime] = {}
+        self._ensure_consecutive_losses_seeded()
 
     def _insert_trade_proposal(self, technical, *, status: str, reason_code: str, risk_percent: float, market_regime: str, **kwargs) -> None:
         try:
@@ -1075,12 +1051,22 @@ class Engine:
 
     def _update_account_state(self) -> None:
         with self.tracer.start_as_current_span("update_account_state") as span:
+            now_utc = datetime.now(timezone.utc)
             snapshot = self.feedback.read_account_snapshot()
             if snapshot is not None and snapshot.get("snapshot_source") == "mock_feedback_simulator" and not self.use_mock:
                 logger.warning("Ignoring mock-generated account snapshot while running in non-mock mode")
                 snapshot = None
             if snapshot is not None:
                 snapshot = dict(snapshot)
+                snapshot_age_seconds = _snapshot_age_seconds(snapshot, now_utc=now_utc)
+                if snapshot_age_seconds is None or snapshot_age_seconds > MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS:
+                    logger.warning(
+                        "Ignoring stale feedback account snapshot timestamp=%s age_seconds=%s max_age_seconds=%s",
+                        snapshot.get("timestamp"),
+                        "n/a" if snapshot_age_seconds is None else f"{snapshot_age_seconds:.1f}",
+                        MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS,
+                    )
+                    snapshot = None
 
             if snapshot is not None and self._is_snapshot_stale_after_broker_close(snapshot):
                 latest_close = self._latest_broker_close_time_utc.isoformat() if self._latest_broker_close_time_utc else "n/a"
@@ -1123,6 +1109,7 @@ class Engine:
                 snapshot,
                 persisted_state=persisted_state,
                 trade_ledger=trade_ledger,
+                now_utc=now_utc,
             )
             if snapshot and not snapshot.get("error"):
                 self._consecutive_losses_seeded = True
@@ -1175,6 +1162,19 @@ class Engine:
             self._consecutive_losses_dirty = True
         elif pnl > 0:
             self.account_status.consecutive_losses = 0
+            self._consecutive_losses_dirty = True
+        else:
+            return
+
+        try:
+            self.account_status.updated_at = datetime.now(timezone.utc)
+            insert_account_metrics(
+                self.account_status,
+                evidence_context=self.evidence_context,
+            )
+            self._consecutive_losses_dirty = False
+        except Exception:
+            logger.exception("Failed to persist consecutive loss throttle checkpoint; retrying on next cycle")
             self._consecutive_losses_dirty = True
 
     def _record_broker_close_time(self, close_time_value: object) -> None:
@@ -1825,21 +1825,6 @@ class Engine:
                 symbol=sym,
                 details=f"prob={ranker_prob:.3f} threshold={self.predict_threshold}",
                 trade_id=technical.trade_id,
-            )
-
-        technical, tp_scaling_applied = _apply_ai_tp_scaling(
-            technical,
-            ranker_prob=ranker_prob,
-            trend_state=regime.trend_state,
-            policy=self.policy,
-        )
-        if tp_scaling_applied:
-            logger.info(
-                "AI TP scaling applied for trade %s (prob=%.3f, trend=%s, tp_pips=%.2f)",
-                technical.trade_id,
-                ranker_prob,
-                regime.trend_state,
-                technical.take_profit_pips,
             )
 
         # Apply loss-streak throttle from hard risk engine.
