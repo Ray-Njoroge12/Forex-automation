@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class SignalRouter:
         pending_dir: str | Path = "bridge/pending_signals",
         lock_dir: str | Path = "bridge/active_locks",
         registry_path: str | Path | None = None,
+        registry_log_path: str | Path | None = None,
     ):
         self.pending_dir = Path(pending_dir)
         self.lock_dir = Path(lock_dir)
@@ -44,6 +46,11 @@ class SignalRouter:
             Path(registry_path)
             if registry_path is not None
             else self.lock_dir.parent / "trade_id_registry.json"
+        )
+        self.registry_log_path = (
+            Path(registry_log_path)
+            if registry_log_path is not None
+            else self.lock_dir.parent / "trade_id_registry.log"
         )
         self.quarantine_dir = self.lock_dir.parent / "quarantine"
         self._processed_trade_ids = self._load_registry()
@@ -55,6 +62,12 @@ class SignalRouter:
         return self.pending_dir / f"{trade_id}.json"
 
     def _load_registry(self) -> set[str]:
+        processed: set[str] = set()
+        processed.update(self._load_registry_json())
+        processed.update(self._load_registry_log())
+        return processed
+
+    def _load_registry_json(self) -> set[str]:
         if not self.registry_path.exists():
             return set()
         try:
@@ -67,6 +80,23 @@ class SignalRouter:
             logger.warning("Trade registry JSON malformed path=%s", self.registry_path)
             return set()
 
+    def _load_registry_log(self) -> set[str]:
+        if not self.registry_log_path.exists():
+            return set()
+        entries: set[str] = set()
+        for line in self.registry_log_path.read_text(encoding="utf-8").splitlines():
+            trade_id = line.strip()
+            if trade_id:
+                entries.add(trade_id)
+        return entries
+
+    def _append_registry_entry(self, trade_id: str) -> None:
+        self.registry_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.registry_log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{trade_id}\n")
+            f.flush()
+            os.fsync(f.fileno())
+
     def _persist_registry(self) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.registry_path.with_suffix(".json.tmp")
@@ -74,6 +104,12 @@ class SignalRouter:
             json.dump(sorted(self._processed_trade_ids), f, separators=(",", ":"), ensure_ascii=True)
             f.flush()
         tmp.replace(self.registry_path)
+        log_tmp = self.registry_log_path.with_suffix(".log.tmp")
+        with log_tmp.open("w", encoding="utf-8") as f:
+            for trade_id in sorted(self._processed_trade_ids):
+                f.write(f"{trade_id}\n")
+            f.flush()
+        log_tmp.replace(self.registry_log_path)
 
     def _is_duplicate_trade(self, trade_id: str) -> bool:
         return (
@@ -128,7 +164,7 @@ class SignalRouter:
             tmp_path.replace(final_path)
             pending_written = True
             self._processed_trade_ids.add(trade_id)
-            self._persist_registry()
+            self._append_registry_entry(trade_id)
             logger.info("Signal written atomically trade_id=%s path=%s", trade_id, final_path)
             return final_path
         except Exception as exc:
