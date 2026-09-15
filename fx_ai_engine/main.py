@@ -24,6 +24,7 @@ from config_microcapital import (
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.mock_feedback_simulator import MockFeedbackSimulator
 from bridge.signal_router import SignalRouteError, SignalRouter
+from application.routing_service import ReservationRejected, RoutingService
 from core.account_status import AccountStatus
 from core.bridge_utils import get_mt5_bridge_path
 from core.agents.adversarial_agent import AdversarialAgent
@@ -34,8 +35,9 @@ from core.credentials import CredentialsError, load_mt5_credentials_from_env
 from core.evidence import build_runtime_evidence_context
 from core.env_loader import load_runtime_env
 from core.filters.calendar_filter import CalendarEvent, is_news_blackout, load_calendar
-from core.filters.macro_filter import load_rate_differentials
+from core.filters.macro_filter import load_rate_differential_metadata, load_rate_differentials
 from core.filters.session_filter import get_active_session, is_tradeable_session
+from core.data_quality.freshness import evaluate_calendar_freshness, evaluate_rate_differential_freshness
 from core.sentiment.sentiment_agent import SentimentAgent
 from ml.signal_ranker import SignalRanker
 from ml.meta_labeler.shadow_runtime import (
@@ -76,12 +78,16 @@ from database.db import (
     migrate_add_ml_shadow_events,
     migrate_add_risk_events,
     migrate_add_restart_state_columns,
+    migrate_add_trade_reservations,
+    migrate_add_trade_lifecycle_events,
     migrate_mark_stale_trades,
     migrate_phase8_columns,
     record_feedback_receipt,
+    run_all_migrations,
     insert_ml_shadow_event,
     update_trade_execution_result,
     update_trade_exit_result,
+    transition_trade_reservation_by_trade_id,
 )
 
 logger = logging.getLogger("fx_ai_engine.main")
@@ -776,8 +782,10 @@ class Engine:
 
         self.router = SignalRouter(
             pending_dir=self.bridge_path / "pending_signals",
-            lock_dir=self.bridge_path / "active_locks"
+            lock_dir=self.bridge_path / "active_locks",
+            require_database_dedup=True,
         )
+        self.routing_service = RoutingService(self.router, self.policy)
         self.feedback = ExecutionFeedbackReader(
             feedback_dir=self.bridge_path / "feedback",
             exits_dir=self.bridge_path / "exits",
@@ -802,9 +810,18 @@ class Engine:
         self._calendar_events: list[CalendarEvent] = load_calendar(
             os.path.join(_data_dir, "economic_calendar.json")
         )
-        self._rate_diffs = load_rate_differentials(
-            os.path.join(_data_dir, "rate_differentials.json")
+        self._calendar_quality = evaluate_calendar_freshness(self._calendar_events)
+        rate_path = os.path.join(_data_dir, "rate_differentials.json")
+        self._rate_quality = evaluate_rate_differential_freshness(
+            load_rate_differential_metadata(rate_path)
         )
+        self._rate_diffs = load_rate_differentials(rate_path) if self._rate_quality.approved else {}
+        if not self._rate_quality.approved:
+            logger.warning(
+                "Macro modifier disabled: %s %s",
+                self._rate_quality.reason_code,
+                self._rate_quality.details,
+            )
 
         # Shared sentiment agent (lazy model load, 15-min cache per symbol).
         # Only active when USE_SENTIMENT=1.
@@ -1350,6 +1367,13 @@ class Engine:
                     )
                     continue
 
+                execution_status = str(payload.get("status", "")).upper()
+                transition_trade_reservation_by_trade_id(
+                    str(payload.get("trade_id", "")),
+                    "EXECUTED" if execution_status == "EXECUTED" else "REJECTED",
+                    execution_status or "EXECUTION_FEEDBACK",
+                )
+
                 try:
                     record_feedback_receipt(
                         "execution",
@@ -1435,6 +1459,12 @@ class Engine:
                 if not is_final_exit:
                     self.feedback.delete_artifact(path)
                     continue
+
+                transition_trade_reservation_by_trade_id(
+                    str(payload.get("trade_id", "")),
+                    "CLOSED",
+                    str(payload.get("status", "CLOSED")),
+                )
 
                 pnl = float(payload.get("profit_loss", 0.0))
                 trade_row = get_trade_by_identifiers(
@@ -1873,7 +1903,27 @@ class Engine:
 
         payload = technical_signal_to_payload(technical, final_risk)
         try:
-            self.router.send(payload)
+            self.routing_service.reserve_and_route(payload, account_status=self.account_status)
+        except ReservationRejected as exc:
+            self._insert_funnel_event(
+                decision_time=decision_time,
+                stage="RESERVATION",
+                outcome="REJECT",
+                reason_code=str(exc),
+                symbol=sym,
+                details="portfolio capacity unavailable after counting pending reservations",
+                trade_id=technical.trade_id,
+            )
+            self._insert_trade_proposal(
+                technical,
+                status="REJECTED",
+                reason_code=str(exc),
+                risk_percent=0.0,
+                market_regime=regime.regime,
+            )
+            self._insert_risk_event("PORTFOLIO_RESERVATION", "BLOCK", str(exc), technical.trade_id)
+            self.metrics.inc("trades_rejected")
+            return
         except SignalRouteError as exc:
             self._insert_funnel_event(
                 decision_time=decision_time,
@@ -1954,6 +2004,17 @@ class Engine:
         logger.info("Starting decision cycle for %d symbols", len(SYMBOLS))
         with self.tracer.start_as_current_span("decision_cycle"):
             now_utc = datetime.now(timezone.utc)
+            self._calendar_quality = evaluate_calendar_freshness(
+                self._calendar_events,
+                now_utc=now_utc,
+            )
+            if not self._calendar_quality.approved:
+                self._insert_risk_event(
+                    self._calendar_quality.reason_code,
+                    "BLOCK",
+                    self._calendar_quality.details,
+                )
+                return
             if not is_tradeable_session(now_utc):
                 for sym in SYMBOLS:
                     self._insert_funnel_event(
@@ -2105,16 +2166,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_runtime_env()
 
-    initialize_schema()
-    migrate_phase8_columns()
-    migrate_add_risk_events()
-    migrate_add_decision_funnel_events()
-    migrate_add_feedback_receipts()
-    migrate_add_ml_feature_columns()
-    migrate_add_ml_shadow_events()
-    migrate_add_restart_state_columns()
-    migrate_add_evidence_partition_columns()
-    migrate_mark_stale_trades()
+    run_all_migrations()
 
     use_mock = os.getenv("USE_MT5_MOCK") == "1"
     if use_mock:

@@ -1,0 +1,6 @@
+{
+  "installed_at": "2026-08-31T15:13:05.202538+00:00",
+  "source_file": "market_context_2026-08-31_calendar.json",
+  "source_sha256": "8520e545b2a6c4f0913a9575011c7ee08c363e9f2e152b79aed7906abbd3eaac",
+  "quality": "coverage_end=2026-09-29T04:30:00+00:00 valid_events=10"
+}

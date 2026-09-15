@@ -1,0 +1,4 @@
+# Optional/offline sentiment research. This is not required by live routing.
+-r research.txt
+transformers>=4.35,<6.0
+feedparser>=6.0,<7.0

@@ -3,8 +3,10 @@
 #include <Trade/Trade.mqh>
 
 input string RootFolder = "bridge";
-input double MaxSpreadPips = 5.0; 
+input double MaxSpreadPips = 2.0;
 input int PollIntervalSeconds = 1;
+input string ExpectedPolicyHash = ""; // Required when RequirePolicyHashPin is true.
+input bool RequirePolicyHashPin = true; // Fail closed until the deployed policy hash is pinned.
 
 // --- Trade Management Inputs ---
 input double BreakEvenTriggerR = 1.0;     // Move SL to entry when profit reaches this R-multiple
@@ -412,6 +414,14 @@ bool ExtractJsonDouble(const string json, const string key, double &out)
       return false;
    out = StringToDouble(value);
    return true;
+}
+
+datetime ParseIsoUtc(string value)
+{
+   StringReplace(value, "T", " ");
+   StringReplace(value, "Z", "");
+   StringReplace(value, "-", ".");
+   return StringToTime(value);
 }
 
 bool ReadTextFile(const string filePath, string &content)
@@ -1039,6 +1049,12 @@ void ProcessPendingSignal()
    double requestedLot = -1.0;
    string orderType = "MARKET";
    double limitPrice = 0.0;
+   double schemaVersion = 0.0;
+   double signalMaxSpreadPips = 0.0;
+   double maxPositions = 0.0;
+   string policyHash = "";
+   string reservationId = "";
+   string expiresAt = "";
 
    if(!ExtractJsonString(content, "trade_id", tradeId)) { LogDebug("JSON fail: tid"); return; }
    if(IsProcessed(tradeId))
@@ -1052,6 +1068,28 @@ void ProcessPendingSignal()
    if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) { LogDebug("JSON fail: risk"); return; }
    if(!ExtractJsonDouble(content, "stop_pips", stopPips)) { LogDebug("JSON fail: stop"); return; }
    if(!ExtractJsonDouble(content, "take_profit_pips", takeProfitPips)) { LogDebug("JSON fail: tp"); return; }
+   if(!ExtractJsonDouble(content, "schema_version", schemaVersion) || schemaVersion != 2.0) { LogDebug("Envelope fail: schema_version"); FileDelete(filePath); return; }
+   if(!ExtractJsonString(content, "policy_hash", policyHash) || policyHash == "") { LogDebug("Envelope fail: policy_hash"); FileDelete(filePath); return; }
+   if(!ExtractJsonString(content, "reservation_id", reservationId) || reservationId == "") { LogDebug("Envelope fail: reservation_id"); FileDelete(filePath); return; }
+   if(!ExtractJsonString(content, "expires_at", expiresAt)) { LogDebug("Envelope fail: expires_at"); FileDelete(filePath); return; }
+   if(!ExtractJsonDouble(content, "max_spread_pips", signalMaxSpreadPips) || signalMaxSpreadPips <= 0.0) { LogDebug("Envelope fail: max_spread_pips"); FileDelete(filePath); return; }
+   if(!ExtractJsonDouble(content, "max_positions", maxPositions) || maxPositions <= 0.0) { LogDebug("Envelope fail: max_positions"); FileDelete(filePath); return; }
+   if(RequirePolicyHashPin && ExpectedPolicyHash == "")
+   {
+      LogDebug("Envelope fail: ExpectedPolicyHash is not configured");
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_POLICY_CONFIGURATION", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   if(ExpectedPolicyHash != "" && policyHash != ExpectedPolicyHash)
+   {
+      LogDebug("Envelope fail: policy_hash mismatch");
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_POLICY_HASH", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   datetime expiryTime = ParseIsoUtc(expiresAt);
+   if(expiryTime <= 0 || TimeGMT() > expiryTime) { LogDebug("Envelope fail: expired"); FileDelete(filePath); return; }
    ExtractJsonDouble(content, "lot", requestedLot);
    ExtractJsonString(content, "order_type", orderType);
    ExtractJsonDouble(content, "limit_price", limitPrice);
@@ -1099,10 +1137,19 @@ void ProcessPendingSignal()
 
    double spread = tick.ask - tick.bid;
    double spreadPips = spread / PipValue(symbol);
-   if(spreadPips > MaxSpreadPips)
+   double effectiveSpreadLimit = MathMin(MaxSpreadPips, signalMaxSpreadPips);
+   if(spreadPips > effectiveSpreadLimit)
    {
       LogDebug("Spread too wide: " + (string)spreadPips);
       WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SPREAD", 0.0, 0.0, spread, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   if((PositionsTotal() + OrdersTotal()) >= (int)maxPositions)
+   {
+      LogDebug("Position limit reached: " + IntegerToString(PositionsTotal() + OrdersTotal()));
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_POSITION_LIMIT", 0.0, 0.0, spread, 0.0, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }

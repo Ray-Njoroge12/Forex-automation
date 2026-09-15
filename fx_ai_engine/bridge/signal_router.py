@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.schemas import validate_signal_payload
+from core.policy.envelope import validate_execution_envelope
 
 logger = logging.getLogger("fx_ai_engine.signal_router")
 
@@ -35,6 +36,7 @@ class SignalRouter:
         pending_dir: str | Path = "bridge/pending_signals",
         lock_dir: str | Path = "bridge/active_locks",
         registry_path: str | Path | None = None,
+        require_database_dedup: bool = False,
     ):
         self.pending_dir = Path(pending_dir)
         self.lock_dir = Path(lock_dir)
@@ -46,6 +48,7 @@ class SignalRouter:
             else self.lock_dir.parent / "trade_id_registry.json"
         )
         self.quarantine_dir = self.lock_dir.parent / "quarantine"
+        self.require_database_dedup = require_database_dedup
         self._processed_trade_ids = self._load_registry()
 
     def _lock_path(self, trade_id: str) -> Path:
@@ -76,11 +79,24 @@ class SignalRouter:
         tmp.replace(self.registry_path)
 
     def _is_duplicate_trade(self, trade_id: str) -> bool:
-        return (
+        if (
             trade_id in self._processed_trade_ids
             or self._lock_path(trade_id).exists()
             or self._pending_path(trade_id).exists()
-        )
+        ):
+            return True
+        try:
+            from database.db import trade_exists
+            if trade_exists(trade_id):
+                self._processed_trade_ids.add(trade_id)
+                return True
+        except Exception as exc:
+            if self.require_database_dedup:
+                raise RuntimeError(
+                    f"Database duplicate check unavailable for trade_id={trade_id}; routing blocked"
+                ) from exc
+            logger.warning("Database duplicate check unavailable for trade_id=%s: %s", trade_id, exc)
+        return False
 
     def create_lock(self, trade_id: str) -> bool:
         lock_path = self._lock_path(trade_id)
@@ -109,6 +125,7 @@ class SignalRouter:
 
     def send(self, payload: dict) -> Path:
         payload = validate_signal_payload(payload)
+        validate_execution_envelope(payload)
         trade_id = payload["trade_id"]
 
         if self._is_duplicate_trade(trade_id):

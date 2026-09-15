@@ -1,10 +1,8 @@
 """Walk-forward optimization for the FX AI Engine backtester.
 
-Slices a historical OHLC CSV into rolling train/test windows, runs a full
-backtest on each slice, and reports per-window performance metrics alongside
-a param_stability_score (Pearson correlation of train_wr vs test_wr across
-all windows).  A stability score > 0.6 suggests the strategy edge is real
-and not overfit to the training period.
+Slices a historical OHLC CSV into rolling train/test windows and reports
+out-of-sample metrics. It does not tune parameters or infer an "edge" from a
+single aggregate score.
 
 Usage:
     python -m backtesting.walk_forward \\
@@ -28,6 +26,8 @@ from config_microcapital import MODE_CONFIGS
 SRS_MIN_WIN_RATE = 0.45
 SRS_MIN_AVG_R = 2.0
 SRS_MAX_DRAWDOWN_PCT = 15.0
+MIN_TRAIN_BARS = 250  # EMA-200 plus a small warmup margin.
+MIN_TEST_BARS = 50
 
 
 def _run_on_df(df: pd.DataFrame, symbol: str, *, mode_id: str | None = None):
@@ -89,13 +89,12 @@ def run_walk_forward(
     test_months: int = 1,
     mode_id: str | None = None,
 ) -> pd.DataFrame:
-    """Run walk-forward optimisation on a historical CSV.
+    """Run walk-forward validation on a historical CSV.
 
     Rolls a window of ``train_months`` followed by ``test_months`` across the
-    full dataset, advancing by ``test_months`` on each iteration.  Returns a
-    DataFrame with one row per window.  ``param_stability_score`` is the
-    Pearson correlation of ``train_wr`` and ``test_wr`` across windows
-    (NaN when fewer than 2 windows are available).
+    full dataset, advancing by ``test_months`` on each iteration. Returns one
+    row per window plus transparent train/test gaps and an out-of-sample pass
+    rate; it does not run a parameter search.
     """
     df = load_ohlc_csv(csv_path)
     if df.empty:
@@ -117,8 +116,9 @@ def run_walk_forward(
         train_df = df[(df.index >= window_start) & (df.index < train_end)]
         test_df = df[(df.index >= train_end) & (df.index < test_end)]
 
-        # Need enough bars for indicator warmup (EMA 200 needs ≥200 bars).
-        if len(train_df) < 10 or len(test_df) < 5:
+        # The strategy needs at least EMA-200 plus warmup; short windows make
+        # the apparent performance an artifact of indicator initialization.
+        if len(train_df) < MIN_TRAIN_BARS or len(test_df) < MIN_TEST_BARS:
             window_start += pd.DateOffset(months=test_months)
             continue
 
@@ -161,12 +161,11 @@ def run_walk_forward(
 
     results = pd.DataFrame(windows)
 
-    # Stability score: Pearson r of train_wr and test_wr across all windows.
-    if len(results) >= 2:
-        corr = results["train_wr"].corr(results["test_wr"])
-        results["param_stability_score"] = round(float(corr) if not pd.isna(corr) else 0.0, 4)
-    else:
-        results["param_stability_score"] = float("nan")
+    # Report observed train-to-test gaps rather than mislabelling correlation
+    # of win rates as parameter stability (no parameter search occurs here).
+    results["win_rate_gap"] = (results["train_wr"] - results["test_wr"]).abs().round(4)
+    results["avg_r_gap"] = (results["train_avg_r"] - results["test_avg_r"]).abs().round(4)
+    results["test_window_pass_rate"] = round(float(results["srs_criteria_met"].mean()), 4)
 
     return results
 
@@ -199,9 +198,10 @@ def _print_walk_forward_report(results: pd.DataFrame) -> None:
             f"test_avg_r={row['test_avg_r']:.2f}  test_dd={row['test_max_dd']:.1f}%  "
             f"rejects={int(row['test_rejections'])}  {criteria_token}={srs_flag}"
         )
-    stability = results["param_stability_score"].iloc[0]
     print("-" * 64)
-    print(f"Param stability score: {stability:.3f}  (>0.6 = stable)")
+    print(f"Out-of-sample pass rate: {results['test_window_pass_rate'].iloc[0]:.1%}")
+    print(f"Mean absolute win-rate gap: {results['win_rate_gap'].mean():.1%}")
+    print(f"Mean absolute avg-R gap: {results['avg_r_gap'].mean():.3f}")
     print("=" * 64)
 
 

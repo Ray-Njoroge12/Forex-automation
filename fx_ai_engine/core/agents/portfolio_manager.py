@@ -48,8 +48,11 @@ class PortfolioManager:
     }
     CORRELATION_THRESHOLD = 0.75
 
-    # How many D1 candles to use for rolling correlation (5 days).
-    CORRELATION_LOOKBACK = 5
+    # Daily *returns* need a meaningful sample before they can be used as a
+    # portfolio-risk control. Static mappings remain a documented fallback when
+    # the broker cannot supply enough completed history.
+    CORRELATION_LOOKBACK = 60
+    MIN_CORRELATION_OBSERVATIONS = 30
 
     def __init__(
         self,
@@ -91,7 +94,7 @@ class PortfolioManager:
     def _get_pair_correlation(self, sym_a: str, sym_b: str) -> float | None:
         """Return live Pearson correlation between two symbols.
 
-        Uses a 5-day D1 close-price correlation if OHLC data is available.
+        Uses 60 completed D1 return observations if OHLC data is available.
         Falls back to the static map otherwise.
         """
         candidate = frozenset([sym_a, sym_b])
@@ -109,26 +112,30 @@ class PortfolioManager:
         return self.STATIC_CORRELATED_PAIRS.get(candidate)
 
     def _compute_pair_correlation(self, sym_a: str, sym_b: str) -> float | None:
-        """Compute Pearson correlation from D1 close prices."""
+        """Compute Pearson correlation from aligned D1 percentage returns."""
         if self._fetch_ohlc is None:
             return None
 
         TIMEFRAME_D1 = 16408  # MT5 TIMEFRAME_D1 constant
 
-        df_a = self._fetch_ohlc(sym_a, TIMEFRAME_D1, self.CORRELATION_LOOKBACK + 5)
-        df_b = self._fetch_ohlc(sym_b, TIMEFRAME_D1, self.CORRELATION_LOOKBACK + 5)
+        required_bars = self.CORRELATION_LOOKBACK + 1
+        df_a = self._fetch_ohlc(sym_a, TIMEFRAME_D1, required_bars + 5)
+        df_b = self._fetch_ohlc(sym_b, TIMEFRAME_D1, required_bars + 5)
 
         if df_a.empty or df_b.empty:
             return None
 
-        # Align by index (dates) and take last N bars.
-        close_a = df_a["close"].tail(self.CORRELATION_LOOKBACK)
-        close_b = df_b["close"].tail(self.CORRELATION_LOOKBACK)
-
-        if len(close_a) < 3 or len(close_b) < 3:
+        returns = pd.concat(
+            [
+                df_a["close"].astype(float).pct_change().rename(sym_a),
+                df_b["close"].astype(float).pct_change().rename(sym_b),
+            ],
+            axis=1,
+            join="inner",
+        ).dropna().tail(self.CORRELATION_LOOKBACK)
+        if len(returns) < self.MIN_CORRELATION_OBSERVATIONS:
             return None
-
-        corr = close_a.reset_index(drop=True).corr(close_b.reset_index(drop=True))
+        corr = returns[sym_a].corr(returns[sym_b])
         return abs(round(float(corr), 4)) if pd.notna(corr) else None
 
     # ------------------------------------------------------------------

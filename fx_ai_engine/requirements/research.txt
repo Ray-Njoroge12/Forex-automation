@@ -1,0 +1,8 @@
+# Offline replay, reporting, and walk-forward research.
+-r runtime.txt
+pytest>=8.0,<9.0
+pyarrow>=10,<20
+backtrader>=1.9.78.123
+streamlit>=1.30,<2.0
+scikit-learn>=1.3,<2.0
+joblib>=1.3,<2.0

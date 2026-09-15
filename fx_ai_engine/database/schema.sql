@@ -133,3 +133,32 @@ CREATE TABLE IF NOT EXISTS feedback_receipts (
     source_file TEXT,
     UNIQUE(evidence_stream, account_scope, feedback_kind, dedupe_key)
 );
+
+CREATE TABLE IF NOT EXISTS trade_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    trade_id TEXT NOT NULL UNIQUE,
+    symbol TEXT NOT NULL,
+    risk_percent REAL NOT NULL,
+    policy_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_reservations_state_expiry
+    ON trade_reservations(state, expires_at);
+
+CREATE TABLE IF NOT EXISTS trade_lifecycle_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    payload_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_lifecycle_trade_time
+    ON trade_lifecycle_events(trade_id, created_at);

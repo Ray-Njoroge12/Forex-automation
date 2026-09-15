@@ -21,7 +21,8 @@ def _summarize_symbol(symbol: str, results: pd.DataFrame) -> dict[str, object]:
             "avg_test_avg_r": 0.0,
             "worst_test_dd": 0.0,
             "pass_windows": 0,
-            "stability": float("nan"),
+            "test_window_pass_rate": 0.0,
+            "mean_abs_win_rate_gap": 0.0,
         }
     return {
         "symbol": symbol,
@@ -32,7 +33,8 @@ def _summarize_symbol(symbol: str, results: pd.DataFrame) -> dict[str, object]:
         "avg_test_avg_r": float(results["test_avg_r"].mean()),
         "worst_test_dd": float(results["test_max_dd"].max()),
         "pass_windows": int(results["srs_criteria_met"].sum()),
-        "stability": float(results["param_stability_score"].iloc[0]),
+        "test_window_pass_rate": float(results["test_window_pass_rate"].iloc[0]),
+        "mean_abs_win_rate_gap": float(results["win_rate_gap"].mean()),
     }
 
 
@@ -59,7 +61,8 @@ def run_walk_forward_suite(
                     "avg_test_avg_r": 0.0,
                     "worst_test_dd": 0.0,
                     "pass_windows": 0,
-                    "stability": float("nan"),
+                    "test_window_pass_rate": 0.0,
+                    "mean_abs_win_rate_gap": 0.0,
                     "csv_path": str(csv_path),
                 }
             )
@@ -88,15 +91,14 @@ def _print_suite_report(summary: pd.DataFrame) -> None:
     print("=" * 88)
     print(
         f"{'symbol':<8} {'status':<12} {'windows':>7} {'test_trades':>11} "
-        f"{'avg_test_wr':>11} {'avg_test_avg_r':>15} {'worst_dd':>10} {'pass_windows':>13} {'stability':>10}"
+        f"{'avg_test_wr':>11} {'avg_test_avg_r':>15} {'worst_dd':>10} {'pass_windows':>13} {'pass_rate':>10} {'wr_gap':>10}"
     )
     for _, row in summary.iterrows():
-        stability = row["stability"]
-        stability_text = "nan" if pd.isna(stability) else f"{float(stability):.3f}"
         print(
             f"{row['symbol']:<8} {row['status']:<12} {int(row['windows']):>7} {int(row['test_trades']):>11} "
             f"{float(row['avg_test_wr']):>11.2%} {float(row['avg_test_avg_r']):>15.3f} "
-            f"{float(row['worst_test_dd']):>10.2f} {int(row['pass_windows']):>13} {stability_text:>10}"
+            f"{float(row['worst_test_dd']):>10.2f} {int(row['pass_windows']):>13} "
+            f"{float(row['test_window_pass_rate']):>10.1%} {float(row['mean_abs_win_rate_gap']):>10.1%}"
         )
 
 

@@ -37,6 +37,9 @@ class CalendarEvent(TypedDict):
     currency: str
     impact: str
     event: str
+    source_url: str
+    blackout_before_minutes: int
+    blackout_after_minutes: int
 
 
 def load_calendar(path: str | Path) -> list[CalendarEvent]:
@@ -68,9 +71,6 @@ def is_news_blackout(
     if currencies is None:
         return False
 
-    blackout_before = timedelta(minutes=BLACKOUT_BEFORE_MINUTES)
-    blackout_after = timedelta(minutes=BLACKOUT_AFTER_MINUTES)
-
     for evt in events:
         if evt.get("impact", "").lower() != "high":
             continue
@@ -80,6 +80,21 @@ def is_news_blackout(
             evt_dt = datetime.fromisoformat(evt["datetime_utc"].replace("Z", "+00:00"))
         except (KeyError, ValueError):
             continue
+
+        # A dated official schedule occasionally has no confirmed release time.
+        # Such records are deliberately represented as an all-day blackout,
+        # rather than fabricating an intraday time and leaving the real release
+        # unprotected.
+        try:
+            blackout_before = timedelta(
+                minutes=max(0, int(evt.get("blackout_before_minutes", BLACKOUT_BEFORE_MINUTES)))
+            )
+            blackout_after = timedelta(
+                minutes=max(0, int(evt.get("blackout_after_minutes", BLACKOUT_AFTER_MINUTES)))
+            )
+        except (TypeError, ValueError):
+            blackout_before = timedelta(minutes=BLACKOUT_BEFORE_MINUTES)
+            blackout_after = timedelta(minutes=BLACKOUT_AFTER_MINUTES)
 
         if (evt_dt - blackout_before) <= now_utc <= (evt_dt + blackout_after):
             logger.info(

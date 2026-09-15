@@ -31,6 +31,8 @@ tmp_pnl.py
 
 # SQLite runtime
 fx_ai_engine/database/trading_state.db
+fx_ai_engine/database/trading_state.db-wal
+fx_ai_engine/database/trading_state.db-shm
 fx_ai_engine/database/trading_state.pre_archive_*.db
 fx_ai_engine/trading_state.db
 /trading_state.db

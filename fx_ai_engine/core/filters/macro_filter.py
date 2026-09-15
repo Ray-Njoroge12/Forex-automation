@@ -13,13 +13,27 @@ def load_rate_differentials(path: str) -> dict[str, float]:
     """Load rate differential JSON.  Returns empty dict on any failure."""
     try:
         with open(path, encoding="utf-8") as fh:
-            raw: dict = json.load(fh)
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise ValueError("rate differentials JSON must be an object")
         return {k: float(v) for k, v in raw.items() if not k.startswith("_")}
     except FileNotFoundError:
         logger.warning("rate_differentials.json not found at %s — macro filter inactive", path)
         return {}
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to parse rate_differentials.json: %s — macro filter inactive", exc)
+        return {}
+
+
+def load_rate_differential_metadata(path: str) -> dict[str, object]:
+    """Load underscore-prefixed provenance fields without activating stale values."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): value for key, value in raw.items() if str(key).startswith("_")}
+    except (OSError, json.JSONDecodeError):
         return {}
 
 

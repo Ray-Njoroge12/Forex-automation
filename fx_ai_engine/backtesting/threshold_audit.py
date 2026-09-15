@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from backtesting.bt_runner import run_backtest
+from backtesting.experiment_guard import assess_optimization_readiness
 from config_microcapital import MODE_CONFIGS
 
 
@@ -62,6 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", default="EURUSD")
     parser.add_argument("--policy-mode", choices=sorted(MODE_CONFIGS), default=None)
     parser.add_argument("--label", default="candidate")
+    parser.add_argument(
+        "--dataset-manifest",
+        help="Hash manifest from validation.prepare_replay_dataset; required for candidate threshold experiments",
+    )
     parser.add_argument("--regime-adx-no-trade-below", type=float)
     parser.add_argument("--regime-adx-transition-below", type=float)
     parser.add_argument("--tech-pullback-buffer-pips", type=float)
@@ -81,6 +86,16 @@ def main() -> int:
     summaries = [_summarize("baseline", baseline)]
     overrides = _build_candidate_overrides(args)
     if overrides:
+        readiness = assess_optimization_readiness(
+            csv_path=args.csv,
+            manifest_path=args.dataset_manifest,
+            symbol=args.symbol,
+            mode_id=args.policy_mode,
+        )
+        if not readiness.approved:
+            raise SystemExit(
+                "Optimization blocked: " + ",".join(readiness.reason_codes) + " " + readiness.details
+            )
         candidate = run_backtest(
             args.csv,
             args.symbol,

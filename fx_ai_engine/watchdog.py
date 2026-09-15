@@ -32,7 +32,7 @@ CREATE_NO_WINDOW = 0x08000000
 
 import json
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 import psutil
 
 # ---------------------------------------------------------------------------
@@ -44,8 +44,8 @@ def _get_health() -> dict | None:
         with urllib.request.urlopen(HEALTH_URL, timeout=5) as response:
             if response.status == 200:
                 return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        pass
+    except (OSError, ValueError, json.JSONDecodeError):
+        logger.debug("Health endpoint unavailable", exc_info=True)
     return None
 
 def _is_health_stale(health: dict) -> bool:
@@ -54,10 +54,12 @@ def _is_health_stale(health: dict) -> bool:
         return True
     try:
         hb_time = datetime.fromisoformat(hb_str)
-        # If heartbeat is older than 10 minutes, it's stale
-        diff = datetime.now() - hb_time
+        if hb_time.tzinfo is None:
+            hb_time = hb_time.replace(tzinfo=timezone.utc)
+        # If heartbeat is older than 10 minutes, it's stale.
+        diff = datetime.now(timezone.utc) - hb_time.astimezone(timezone.utc)
         return diff.total_seconds() > 600
-    except:
+    except (TypeError, ValueError):
         return True
 
 def _get_mt5_path() -> str | None:
@@ -70,19 +72,20 @@ def _ensure_mt5_running() -> None:
     path = _get_mt5_path()
     if path:
         # It's running, good. We could save this path for later.
-        with open(".mt5_path", "w") as f:
+        with (Path(__file__).parent / ".mt5_path").open("w", encoding="utf-8") as f:
             f.write(path)
         return
     
     # Not running. Check if we have a saved path.
-    if os.path.exists(".mt5_path"):
-        with open(".mt5_path", "r") as f:
+    saved_path_file = Path(__file__).parent / ".mt5_path"
+    if saved_path_file.exists():
+        with saved_path_file.open("r", encoding="utf-8") as f:
             saved_path = f.read().strip()
         if os.path.exists(saved_path):
             logger.warning("MT5 terminal not detected — attempting to restart from %s", saved_path)
             try:
                 subprocess.Popen([saved_path], creationflags=CREATE_NO_WINDOW)
-            except Exception as e:
+            except OSError as e:
                 logger.error("Failed to restart MT5: %s", e)
     else:
         logger.error("MT5 terminal not detected and no saved path found.")
@@ -173,8 +176,8 @@ def main() -> None:
                         if any(str(ENGINE_SCRIPT.resolve()) in arg for arg in cmdline):
                             proc.kill()
                             logger.info("Killed stale engine process (PID %d)", proc.pid)
-                    except:
-                        pass
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
                 _start_engine()
             else:
                 logger.info("Engine healthy and running — OK")

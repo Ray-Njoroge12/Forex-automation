@@ -1,0 +1,80 @@
+[
+  {
+    "datetime_utc": "2026-09-01T00:00:00Z",
+    "currency": "EUR",
+    "impact": "high",
+    "event": "Euro area flash inflation estimate (August 2026)",
+    "blackout_before_minutes": 0,
+    "blackout_after_minutes": 1439,
+    "source_url": "https://ec.europa.eu/eurostat/web/products-euro-indicators/w/2-19082026-ap"
+  },
+  {
+    "datetime_utc": "2026-09-01T14:00:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "event": "JOLTS (July 2026)",
+    "source_url": "https://www.bls.gov/schedule/news_release/jolts.htm"
+  },
+  {
+    "datetime_utc": "2026-09-02T13:45:00Z",
+    "currency": "CAD",
+    "impact": "high",
+    "event": "Bank of Canada interest rate announcement",
+    "source_url": "https://www.bankofcanada.ca/press/upcoming-events/"
+  },
+  {
+    "datetime_utc": "2026-09-04T12:30:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "event": "US Employment Situation (August 2026)",
+    "source_url": "https://www.bls.gov/schedule/news_release/empsit.htm"
+  },
+  {
+    "datetime_utc": "2026-09-04T00:00:00Z",
+    "currency": "CAD",
+    "impact": "high",
+    "event": "Canada Labour Force Survey (August 2026)",
+    "blackout_before_minutes": 0,
+    "blackout_after_minutes": 1439,
+    "source_url": "https://www150.statcan.gc.ca/n1/dai-quo/cal2-eng.htm"
+  },
+  {
+    "datetime_utc": "2026-09-16T18:00:00Z",
+    "currency": "USD",
+    "impact": "high",
+    "event": "FOMC policy decision and press conference",
+    "source_url": "https://www.federalreserve.gov/newsevents/2026-september.htm"
+  },
+  {
+    "datetime_utc": "2026-09-17T00:00:00Z",
+    "currency": "GBP",
+    "impact": "high",
+    "event": "Bank of England MPC policy decision",
+    "blackout_before_minutes": 0,
+    "blackout_after_minutes": 1439,
+    "source_url": "https://www.bankofengland.co.uk/monetary-policy/upcoming-mpc-dates"
+  },
+  {
+    "datetime_utc": "2026-09-18T00:00:00Z",
+    "currency": "JPY",
+    "impact": "high",
+    "event": "Bank of Japan monetary policy statement",
+    "blackout_before_minutes": 0,
+    "blackout_after_minutes": 1439,
+    "source_url": "https://www.boj.or.jp/en/about/calendar/index.htm"
+  },
+  {
+    "datetime_utc": "2026-09-24T07:30:00Z",
+    "currency": "CHF",
+    "impact": "high",
+    "event": "Swiss National Bank monetary policy assessment",
+    "source_url": "https://www.snb.ch/en/services-events/digital-services/event-schedule"
+  },
+  {
+    "datetime_utc": "2026-09-29T04:30:00Z",
+    "currency": "AUD",
+    "impact": "high",
+    "event": "Reserve Bank of Australia monetary policy decision",
+    "source_url": "https://www.rba.gov.au/coming-up/"
+  }
+]

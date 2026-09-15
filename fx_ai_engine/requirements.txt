@@ -1,17 +1,4 @@
-MetaTrader5; platform_system == "Windows"
-mt5-wrapper; platform_system == "Windows" and python_version >= "3.13"
-MMetaTrader5; platform_system == "Windows"
-pandas>=2.0
-numpy<2.0
-pytest
-pyarrow>=10
-backtrader
-opentelemetry-api
-opentelemetry-sdk
-prometheus-client
-streamlit>=1.30.0
-transformers>=4.35.0
-feedparser>=6.0.0
-psutil>=5.9.0
-scikit-learn>=1.3.0
-joblib>=1.3.0
+# Compatibility install for the original all-in-one development environment.
+# Production deployments should install requirements/runtime.txt instead.
+-r requirements/research.txt
+-r requirements/optional-sentiment.txt

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -22,9 +23,13 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 @contextmanager
-def get_conn(db_path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(db_path)
+def get_conn(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Open a SQLite connection with the runtime safety settings applied."""
+    resolved_path = DB_PATH if db_path is None else Path(db_path)
+    conn = sqlite3.connect(resolved_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
     try:
         yield conn
         conn.commit()
@@ -36,6 +41,10 @@ def initialize_schema() -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     with get_conn() as conn:
         conn.executescript(schema)
+        # WAL lets the Streamlit/read-only tooling inspect evidence without
+        # needlessly blocking the engine's short write transactions.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -54,6 +63,239 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
     if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def trade_exists(trade_id: str) -> bool:
+    """Check if a trade_id already exists in the database (indexed lookup)."""
+    if not trade_id:
+        return False
+    with get_conn() as conn:
+        row = conn.execute("SELECT 1 FROM trades WHERE trade_id = ? LIMIT 1", (trade_id,)).fetchone()
+        return row is not None
+
+
+def run_all_migrations() -> None:
+    """Execute all schema migrations in correct order idempotently."""
+    initialize_schema()
+    migrate_phase8_columns()
+    migrate_add_restart_state_columns()
+    migrate_add_risk_events()
+    migrate_add_decision_funnel_events()
+    migrate_add_feedback_receipts()
+    migrate_add_evidence_partition_columns()
+    migrate_mark_stale_trades()
+    migrate_add_ml_feature_columns()
+    migrate_add_ml_shadow_events()
+    migrate_add_trade_reservations()
+    migrate_add_trade_lifecycle_events()
+
+
+def migrate_add_trade_lifecycle_events() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trade_lifecycle_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                payload_json TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_lifecycle_trade_time ON trade_lifecycle_events(trade_id, created_at)"
+        )
+
+
+def record_trade_lifecycle_event(
+    trade_id: str,
+    event_type: str,
+    status: str,
+    reason_code: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    values = (
+        trade_id,
+        event_type,
+        status,
+        reason_code,
+        json.dumps(payload or {}, sort_keys=True, separators=(",", ":"), default=str),
+        datetime.now(timezone.utc).isoformat(),
+    )
+    sql = """
+        INSERT INTO trade_lifecycle_events (
+            trade_id, event_type, status, reason_code, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    """
+    if conn is not None:
+        conn.execute(sql, values)
+        return
+    with get_conn() as owned_conn:
+        owned_conn.execute(sql, values)
+
+
+def migrate_add_trade_reservations() -> None:
+    """Create the transactional pending-risk reservation ledger."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trade_reservations (
+                reservation_id TEXT PRIMARY KEY,
+                trade_id TEXT NOT NULL UNIQUE,
+                symbol TEXT NOT NULL,
+                risk_percent REAL NOT NULL,
+                policy_hash TEXT NOT NULL,
+                state TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_trade_reservations_state_expiry
+                ON trade_reservations(state, expires_at)
+            """
+        )
+
+
+_ACTIVE_RESERVATION_STATES = ("RESERVED", "ROUTED", "EXECUTION_UNCERTAIN")
+
+
+def try_create_trade_reservation(
+    *,
+    reservation_id: str,
+    trade_id: str,
+    symbol: str,
+    risk_percent: float,
+    policy_hash: str,
+    expires_at: str,
+    max_positions: int,
+    max_combined_exposure: float,
+    broker_open_positions: int,
+    broker_open_risk: float,
+) -> dict[str, Any]:
+    """Atomically reserve pending portfolio capacity.
+
+    Broker-open exposure is supplied by the reconciled account snapshot; active
+    reservations cover the gap between approval and broker acknowledgement.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    if not reservation_id or not trade_id or risk_percent <= 0:
+        return {"approved": False, "reason_code": "RESERVATION_INPUT_INVALID"}
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """
+            UPDATE trade_reservations
+               SET state='EXPIRED', reason_code='RESERVATION_EXPIRED', updated_at=?
+             WHERE state IN ('RESERVED', 'ROUTED', 'EXECUTION_UNCERTAIN')
+               AND expires_at <= ?
+            """,
+            (now, now),
+        )
+        duplicate = conn.execute(
+            "SELECT state FROM trade_reservations WHERE trade_id=? OR reservation_id=? LIMIT 1",
+            (trade_id, reservation_id),
+        ).fetchone()
+        if duplicate is not None:
+            return {"approved": False, "reason_code": "RESERVATION_DUPLICATE"}
+        placeholders = ",".join("?" for _ in _ACTIVE_RESERVATION_STATES)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS reservation_count,
+                   COALESCE(SUM(risk_percent), 0.0) AS reserved_risk
+              FROM trade_reservations
+             WHERE state IN ({placeholders})
+            """,
+            _ACTIVE_RESERVATION_STATES,
+        ).fetchone()
+        reserved_count = int(row["reservation_count"] or 0)
+        reserved_risk = float(row["reserved_risk"] or 0.0)
+        if int(broker_open_positions) + reserved_count >= int(max_positions):
+            return {"approved": False, "reason_code": "RESERVATION_MAX_POSITIONS"}
+        projected_risk = float(broker_open_risk) + reserved_risk + float(risk_percent)
+        if projected_risk > float(max_combined_exposure) + 1e-12:
+            return {"approved": False, "reason_code": "RESERVATION_MAX_EXPOSURE"}
+        conn.execute(
+            """
+            INSERT INTO trade_reservations (
+                reservation_id, trade_id, symbol, risk_percent, policy_hash,
+                state, reason_code, created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, 'RESERVED', 'RESERVATION_APPROVED', ?, ?, ?)
+            """,
+            (
+                reservation_id,
+                trade_id,
+                symbol,
+                float(risk_percent),
+                policy_hash,
+                now,
+                now,
+                expires_at,
+            ),
+        )
+    return {
+        "approved": True,
+        "reason_code": "RESERVATION_APPROVED",
+        "reservation_id": reservation_id,
+        "projected_risk": projected_risk,
+    }
+
+
+def transition_trade_reservation(
+    reservation_id: str,
+    state: str,
+    reason_code: str,
+) -> bool:
+    allowed = {
+        "ROUTED",
+        "EXECUTION_UNCERTAIN",
+        "EXECUTED",
+        "REJECTED",
+        "RELEASED",
+        "EXPIRED",
+        "CLOSED",
+    }
+    normalized = str(state).upper()
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported reservation state={state!r}")
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE trade_reservations
+               SET state=?, reason_code=?, updated_at=?
+             WHERE reservation_id=?
+            """,
+            (normalized, reason_code, now, reservation_id),
+        )
+        return int(cursor.rowcount or 0) > 0
+
+
+def transition_trade_reservation_by_trade_id(
+    trade_id: str,
+    state: str,
+    reason_code: str,
+) -> bool:
+    allowed = {"EXECUTION_UNCERTAIN", "EXECUTED", "REJECTED", "RELEASED", "EXPIRED", "CLOSED"}
+    normalized = str(state).upper()
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported reservation state={state!r}")
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE trade_reservations SET state=?, reason_code=?, updated_at=? WHERE trade_id=?",
+            (normalized, reason_code, now, trade_id),
+        )
+        return int(cursor.rowcount or 0) > 0
 
 
 def migrate_phase8_columns() -> None:
@@ -307,7 +549,7 @@ def insert_trade_proposal(
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO trades (
+            INSERT INTO trades (
                 trade_id, evidence_stream, policy_mode, execution_mode, account_scope,
                 symbol, direction, order_type, lot_size, 
                 stop_loss, take_profit,
@@ -316,6 +558,30 @@ def insert_trade_proposal(
                 is_london_session, is_newyork_session, rate_differential, risk_reward, rsi_slope,
                 spread_entry, spread_signal_pips
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_id) DO UPDATE SET
+                evidence_stream=excluded.evidence_stream,
+                policy_mode=excluded.policy_mode,
+                execution_mode=excluded.execution_mode,
+                account_scope=excluded.account_scope,
+                symbol=excluded.symbol,
+                direction=excluded.direction,
+                order_type=excluded.order_type,
+                stop_loss=excluded.stop_loss,
+                take_profit=excluded.take_profit,
+                risk_percent=excluded.risk_percent,
+                market_regime=excluded.market_regime,
+                status=excluded.status,
+                reason_code=excluded.reason_code,
+                regime_confidence=excluded.regime_confidence,
+                rsi_at_entry=excluded.rsi_at_entry,
+                atr_ratio=excluded.atr_ratio,
+                is_london_session=excluded.is_london_session,
+                is_newyork_session=excluded.is_newyork_session,
+                rate_differential=excluded.rate_differential,
+                risk_reward=excluded.risk_reward,
+                rsi_slope=excluded.rsi_slope,
+                spread_entry=excluded.spread_entry,
+                spread_signal_pips=excluded.spread_signal_pips
             """,
             (
                 signal.trade_id,
@@ -345,6 +611,14 @@ def insert_trade_proposal(
                 signal.spread_entry,
                 signal.spread_entry,
             ),
+        )
+        record_trade_lifecycle_event(
+            signal.trade_id,
+            "PROPOSAL",
+            status,
+            reason_code,
+            {"symbol": signal.symbol, "risk_percent": risk_percent, "market_regime": market_regime},
+            conn=conn,
         )
 
 
@@ -404,7 +678,17 @@ def update_trade_execution_result(payload: dict[str, Any]) -> bool:
                     payload.get("trade_id"),
                 ),
             )
-            return int(cursor.rowcount or 0) > 0
+            updated = int(cursor.rowcount or 0) > 0
+            if updated:
+                record_trade_lifecycle_event(
+                    str(payload.get("trade_id", "")),
+                    "EXECUTION",
+                    status,
+                    reason_code,
+                    payload,
+                    conn=conn,
+                )
+            return updated
 
         close_time = payload.get("close_time", datetime.now(timezone.utc).isoformat())
         cursor = conn.execute(
@@ -432,7 +716,17 @@ def update_trade_execution_result(payload: dict[str, Any]) -> bool:
                 payload.get("trade_id"),
             ),
         )
-        return int(cursor.rowcount or 0) > 0
+        updated = int(cursor.rowcount or 0) > 0
+        if updated:
+            record_trade_lifecycle_event(
+                str(payload.get("trade_id", "")),
+                "EXECUTION",
+                status,
+                reason_code,
+                payload,
+                conn=conn,
+            )
+        return updated
 
 
 def mark_trade_execution_uncertain(
@@ -440,7 +734,7 @@ def mark_trade_execution_uncertain(
     reason_code: str = "PRESERVE_10_EXECUTION_UNCERTAIN",
 ) -> None:
     with get_conn() as conn:
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE trades
                SET status = ?,
@@ -450,6 +744,14 @@ def mark_trade_execution_uncertain(
             """,
             ("EXECUTION_UNCERTAIN", reason_code, trade_id),
         )
+        if int(cursor.rowcount or 0) > 0:
+            record_trade_lifecycle_event(
+                trade_id,
+                "EXECUTION_UNCERTAIN",
+                "EXECUTION_UNCERTAIN",
+                reason_code,
+                conn=conn,
+            )
 
 
 def update_trade_exit_result(
@@ -517,6 +819,15 @@ def update_trade_exit_result(
             updated = _apply_update(conn, "trade_id = ?", trade_id)
         if updated == 0 and ticket is not None:
             updated = _apply_update(conn, "trade_ticket = ?", ticket)
+        if updated > 0 and trade_id:
+            record_trade_lifecycle_event(
+                trade_id,
+                "EXIT",
+                status,
+                raw_status,
+                payload,
+                conn=conn,
+            )
     return updated > 0
 
 

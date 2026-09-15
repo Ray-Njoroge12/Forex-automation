@@ -1,0 +1,20 @@
+{
+  "_comment": "Rate differential = base-currency policy rate minus quote-currency policy rate (percentage points). Fed uses target-range midpoint (3.625%).",
+  "_last_updated": "2026-08-31T00:00:00Z",
+  "_rate_definition": "EUR ECB deposit facility; GBP Bank Rate; USD federal-funds target-range midpoint; JPY BOJ policy rate; AUD RBA cash-rate target; CAD target for overnight rate; CHF SNB policy rate.",
+  "_sources": {
+    "EUR": "https://www.ecb.europa.eu/press/pr/date/2026/html/ecb.mp260723~29f24d99bc.en.html",
+    "GBP": "https://www.bankofengland.co.uk/monetary-policy-summary-and-minutes/2026/july-2026",
+    "USD": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260729a.htm",
+    "JPY": "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/g260616.pdf",
+    "AUD": "https://www.rba.gov.au/cash-rate-target-overview.html",
+    "CAD": "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/",
+    "CHF": "https://www.snb.ch/en/publications/communication/press-releases-restricted/pre_20260618"
+  },
+  "EURUSD": -1.375,
+  "GBPUSD": 0.125,
+  "USDJPY": 2.875,
+  "AUDUSD": 0.725,
+  "USDCAD": 1.375,
+  "USDCHF": 3.625
+}

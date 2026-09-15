@@ -568,7 +568,9 @@ class MT5Connection:
             df.attrs["error"] = err.__dict__
             return df
 
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_candles) if mt5 else None
+        # Position zero is the currently forming broker bar. Strategy decisions
+        # must only see completed bars, so start at position one.
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, num_candles) if mt5 else None
         if rates is None:
             err = self._make_error(
                 "OHLC_FETCH_FAILED",
