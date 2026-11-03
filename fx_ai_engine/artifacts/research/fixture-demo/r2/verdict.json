@@ -1,0 +1,191 @@
+{
+  "tool": "r2_authenticity_gate",
+  "verdict": "FAIL",
+  "evidence_status": "NOT_EVIDENCE",
+  "reasons": [
+    "R4_COST_STRESS: FAIL"
+  ],
+  "warnings": [
+    "R1C_WARMUP_DEVIATION: INCONCLUSIVE"
+  ],
+  "checks": [
+    {
+      "id": "R1A_TRUNCATION",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [
+        {
+          "symbol": "GBPUSD",
+          "checked": 60,
+          "mismatches": 0
+        },
+        {
+          "symbol": "AUDUSD",
+          "checked": 60,
+          "mismatches": 0
+        }
+      ]
+    },
+    {
+      "id": "R1B_FUTURE_CORRUPTION",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [
+        {
+          "mode": "random",
+          "checked": 120,
+          "mismatches": 0
+        },
+        {
+          "mode": "nan",
+          "checked": 120,
+          "mismatches": 0
+        }
+      ]
+    },
+    {
+      "id": "R1C_WARMUP_PARITY",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [
+        {
+          "symbol": "GBPUSD",
+          "status": "PASS",
+          "reasons": []
+        },
+        {
+          "symbol": "AUDUSD",
+          "status": "PASS",
+          "reasons": []
+        }
+      ],
+      "live_fetch_bars": {
+        "H1": 350,
+        "H4": 350,
+        "M15": 350
+      }
+    },
+    {
+      "id": "R1C_WARMUP_DEVIATION",
+      "status": "INCONCLUSIVE",
+      "blocking": false,
+      "detail": [
+        {
+          "symbol": "GBPUSD",
+          "tf": "H1",
+          "status": "INCONCLUSIVE"
+        },
+        {
+          "symbol": "GBPUSD",
+          "tf": "H4",
+          "status": "INCONCLUSIVE"
+        },
+        {
+          "symbol": "GBPUSD",
+          "tf": "M15",
+          "status": "INCONCLUSIVE"
+        },
+        {
+          "symbol": "AUDUSD",
+          "tf": "H1",
+          "status": "INCONCLUSIVE"
+        },
+        {
+          "symbol": "AUDUSD",
+          "tf": "H4",
+          "status": "INCONCLUSIVE"
+        },
+        {
+          "symbol": "AUDUSD",
+          "tf": "M15",
+          "status": "INCONCLUSIVE"
+        }
+      ],
+      "note": "indicator warm-up is shared by live and replay; reported, not blocking"
+    },
+    {
+      "id": "R2_NO_SAME_BAR_FILL",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [],
+      "checked": 19,
+      "offenders": 0
+    },
+    {
+      "id": "R2_FILLS_WITHIN_BID_ASK",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [],
+      "checked": 19,
+      "offenders": 0
+    },
+    {
+      "id": "R2_NO_FILL_IN_GAP_OR_CLOSED_MARKET",
+      "status": "PASS",
+      "blocking": true,
+      "detail": [],
+      "checked": 19,
+      "offenders": 0,
+      "entries_after_data_gap": 0,
+      "gap_minutes": 60
+    },
+    {
+      "id": "R4_COST_STRESS",
+      "status": "FAIL",
+      "blocking": true,
+      "detail": [
+        {
+          "expectancy_r_at_1x": -0.4937,
+          "expectancy_r_at_2x": -0.6748,
+          "breakeven_multiple": "<=1.0"
+        }
+      ],
+      "recost": {
+        "model": "fixed_trade_set_linear",
+        "scale_commission": false,
+        "trades": 19,
+        "breakeven_multiple": null,
+        "breakeven_label": "<=1.0",
+        "negative_at_base": true,
+        "rows": [
+          {
+            "multiple": 1.0,
+            "trades": 19,
+            "expectancy_r": -0.4937
+          },
+          {
+            "multiple": 2.0,
+            "trades": 19,
+            "expectancy_r": -0.6748
+          }
+        ],
+        "mean_r_base": -0.4937,
+        "mean_cost_r_per_multiple": 0.1811,
+        "no_trades": false
+      },
+      "min_breakeven_multiple": 2.0
+    }
+  ],
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "exit_mode": "policy",
+  "cost": "base",
+  "trades": 19,
+  "r1_verdict": "INCONCLUSIVE",
+  "variant": "baseline",
+  "source": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave1/fx_ai_engine/tests/fixtures/live_bars_2026-11-03",
+  "dataset_sha256_16": {
+    "bars_AUDUSD_D1.json": "7e0084f84d5a3123",
+    "bars_AUDUSD_H1.json": "e1b2176447e2ff30",
+    "bars_AUDUSD_H4.json": "b52a352c6c5dea3d",
+    "bars_AUDUSD_M15.json": "527c2e059cb25164",
+    "bars_GBPUSD_D1.json": "eebb56ba6462a62f",
+    "bars_GBPUSD_H1.json": "fb1b31649a9a4de6",
+    "bars_GBPUSD_H4.json": "5b4f1add42007c8c",
+    "bars_GBPUSD_M15.json": "a1b992bdc5184ded",
+    "status.json": "bd5f28d6d94a42f0"
+  },
+  "symbols": [
+    "GBPUSD",
+    "AUDUSD"
+  ]
+}
