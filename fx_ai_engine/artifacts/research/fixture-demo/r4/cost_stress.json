@@ -1,0 +1,108 @@
+{
+  "tool": "r4_cost_stress",
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "exit_mode": "policy",
+  "base_cost": "base",
+  "multiples": [
+    1.0,
+    1.5,
+    2.0,
+    3.0
+  ],
+  "scale_commission": false,
+  "recost": {
+    "model": "fixed_trade_set_linear",
+    "scale_commission": false,
+    "trades": 19,
+    "breakeven_multiple": null,
+    "breakeven_label": "<=1.0",
+    "negative_at_base": true,
+    "rows": [
+      {
+        "multiple": 1.0,
+        "trades": 19,
+        "expectancy_r": -0.4937
+      },
+      {
+        "multiple": 1.5,
+        "trades": 19,
+        "expectancy_r": -0.5843
+      },
+      {
+        "multiple": 2.0,
+        "trades": 19,
+        "expectancy_r": -0.6748
+      },
+      {
+        "multiple": 3.0,
+        "trades": 19,
+        "expectancy_r": -0.8559
+      }
+    ],
+    "mean_r_base": -0.4937,
+    "mean_cost_r_per_multiple": 0.1811,
+    "no_trades": false
+  },
+  "rerun": [
+    {
+      "multiple": 1.0,
+      "trades": 19,
+      "expectancy_r": -0.4937,
+      "expectancy_r_ci95": [
+        -0.847,
+        -0.1133
+      ],
+      "profit_factor": 0.1654,
+      "net_usd": -21652.27
+    },
+    {
+      "multiple": 1.5,
+      "trades": 16,
+      "expectancy_r": -0.5293,
+      "expectancy_r_ci95": [
+        -0.9188,
+        -0.0775
+      ],
+      "profit_factor": 0.1625,
+      "net_usd": -20110.67
+    },
+    {
+      "multiple": 2.0,
+      "trades": 3,
+      "expectancy_r": -1.0924,
+      "expectancy_r_ci95": [
+        -1.126,
+        -1.0743
+      ],
+      "profit_factor": 0.0,
+      "net_usd": -6593.11
+    },
+    {
+      "multiple": 3.0,
+      "trades": 0,
+      "expectancy_r": null,
+      "expectancy_r_ci95": null,
+      "profit_factor": null,
+      "net_usd": null
+    }
+  ],
+  "notes": [
+    "run_replay already provides cost profiles base (1.0x), stress_1_5x (1.5x) and stress_2x (2.0x) through unified_replay.COST_SCENARIOS; each scales spread, slippage and commission together and re-runs stage 2 with candidates generated once at base cost, one report per profile.",
+    "Built here because it was missing: a 3x multiple; a stress of spread plus slippage with commission held at 1x; a fixed-trade-set re-cost that separates the cost effect from the selection effect (the adversarial spread filter drops entries as spreads widen); the cost multiple at which expectancy reaches zero; and one table across multiples.",
+    "Re-cost model: R(m) = r - (m-1) * (spread_1x + 2 * slippage_1x) / stop_pips, spread taken from the entry bar for BUY (ask paid at entry) and from the exit bar for SELL (ask paid at exit). Exact under this linear model; approximate for trades with a partial close, where part of the position exits at a different bar.",
+    "--scale-commission additionally subtracts (m-1) * commission_usd / risk_usd, matching run_replay's convention."
+  ],
+  "variant": "baseline",
+  "source": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave1/fx_ai_engine/tests/fixtures/live_bars_2026-11-03",
+  "dataset_sha256_16": {
+    "bars_AUDUSD_D1.json": "7e0084f84d5a3123",
+    "bars_AUDUSD_H1.json": "e1b2176447e2ff30",
+    "bars_AUDUSD_H4.json": "b52a352c6c5dea3d",
+    "bars_AUDUSD_M15.json": "527c2e059cb25164",
+    "bars_GBPUSD_D1.json": "eebb56ba6462a62f",
+    "bars_GBPUSD_H1.json": "fb1b31649a9a4de6",
+    "bars_GBPUSD_H4.json": "5b4f1add42007c8c",
+    "bars_GBPUSD_M15.json": "a1b992bdc5184ded",
+    "status.json": "bd5f28d6d94a42f0"
+  }
+}
