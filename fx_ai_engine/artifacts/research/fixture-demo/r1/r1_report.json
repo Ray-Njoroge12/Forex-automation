@@ -942,5 +942,5 @@
   "seed": 7,
   "cost": "base",
   "variant": "baseline",
-  "source": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave1/fx_ai_engine/tests/fixtures/live_bars_2026-11-03"
+  "source": "tests/fixtures/live_bars_2026-11-03"
 }

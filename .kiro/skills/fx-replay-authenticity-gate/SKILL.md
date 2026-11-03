@@ -35,7 +35,7 @@ Exit code 0 means PASS, 1 means FAIL. In code, `research.authenticity_gate.audit
   5. `R2_NO_SAME_BAR_FILL`: the entry is the open of the first M15 bar at or after the decision, priced BUY `bid_open + spread + slippage`, SELL `bid_open - slippage`;
   6. `R2_FILLS_WITHIN_BID_ASK`: entry, partial and exit prices lie in the bar's modelled bid or ask range (ask = bid + spread); a conservative fill outside the range is still a failure;
   7. `R2_NO_FILL_IN_GAP_OR_CLOSED_MARKET`: the fill bars exist and are outside Friday 17:00 to Sunday 17:00 New York; `entries_after_data_gap` is reported;
-  8. `R4_COST_STRESS`: fixed-trade-set expectancy above 0 at 2× spread+slippage.
+  8. `R4_COST_STRESS`: fixed-trade-set expectancy above 0 at 2× base spread+slippage (commission at 1×). The multiple is absolute: with `--cost stress_1_5x` the trades are re-costed from 1.5× to 2×, not from 1× to 2×; `detail[0].replay_cost_multiplier` records the starting point.
 - `policy_hash`, `dataset_sha256_16`, `variant`, `exit_mode`, `cost` bind the verdict to one replay.
 
 `gate_report.md` starts with `# Replay authenticity gate: PASS` or `# NOT EVIDENCE: replay failed the authenticity gate`.

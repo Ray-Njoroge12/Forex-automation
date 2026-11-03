@@ -19,7 +19,7 @@ R1 (`research.bias_audit.run_bias_audit`) depends only on the policy, the data a
 
 (c) **Registry.** Add `"gate_verdict": gate["verdict"]` and `"evidence_status": gate["evidence_status"]` to the registry row in `artifacts/experiments/registry.jsonl`.
 
-(d) **3x cost.** Either add `"stress_3x": CostModel("stress_3x", 3.0)` to `unified_replay.COST_SCENARIOS`, or call `research.cost_stress.recost_trades(section_trades, frames, cost, (1.0, 1.5, 2.0, 3.0))` per dev/holdout section to get the fixed-trade-set expectancy and break-even multiple. `run_replay`'s profiles scale commission too; pass `scale_commission=True` to match them.
+(d) **3x cost.** Either add `"stress_3x": CostModel("stress_3x", 3.0)` to `unified_replay.COST_SCENARIOS`, or call `research.cost_stress.recost_trades(section_trades, frames, cost, (1.0, 1.5, 2.0, 3.0))` per dev/holdout section to get the fixed-trade-set expectancy and break-even multiple. Pass the `cost` the section was replayed with: multiples are absolute and the re-cost starts from `cost.multiplier`, so a `stress_1_5x` section gives the same 2× row as a `base` section with the same trades. `run_replay`'s profiles scale commission too; pass `scale_commission=True` to match them.
 
 (e) **Monte Carlo.** Replace or augment `_section`'s `monte_carlo` (i.i.d., `replay_report.monte_carlo_drawdown`) with `research.monte_carlo.risk_sweep([t["r_multiple"] for t in sorted(trades, key=lambda t: t["exit_time"])], exit_times=[...])`, which adds the block bootstrap, percentile bands, SRS halt probabilities and the risk sweep. Trades must be sorted by `exit_time` for the block bootstrap to keep streaks.
 

@@ -129,6 +129,27 @@ def test_exit_without_bar_fails_gap_check():
     assert result["status"] == "FAIL" and result["detail"][0]["reason"] == "no M15 bar for the fill"
 
 
+def test_r4_check_on_stress_replay_tests_the_true_stress_multiple():
+    frames = {"EURUSD": {"M15": _frame("2026-01-05 07:00", 40, "15min", np.full(40, 1.1))}}
+
+    def trade(r: float) -> dict:
+        return dict(trade_id=f"T{r}", symbol="EURUSD", direction="BUY", entry_time="2026-01-05T08:00:00+00:00",
+                    exit_time="2026-01-05T09:00:00+00:00", stop_pips=10.0, r_multiple=r, commission_usd=0.0,
+                    risk_usd=1000.0)
+
+    # Per 1x the cost is 1 pip of spread on a 10 pip stop = 0.1 R. Mean R is 0.13 at 1x, 0.03 at 2x.
+    base_trades = [trade(0.36), trade(-0.10)]
+    stress_trades = [dict(t, r_multiple=t["r_multiple"] - 0.05) for t in base_trades]  # replayed at 1.5x
+    stress_cost = CostModel("stress_1_5x", 1.5, slippage_pips=0.0, commission_per_lot_usd=0.0,
+                            spread_floor_pips={"EURUSD": 1.0})
+    base = gate._r4_check(base_trades, frames, COST, 2.0)
+    stress = gate._r4_check(stress_trades, frames, stress_cost, 2.0)
+    assert base["status"] == stress["status"] == "PASS"
+    assert stress["detail"][0]["expectancy_r_at_2x"] == pytest.approx(base["detail"][0]["expectancy_r_at_2x"])
+    assert stress["detail"][0]["expectancy_r_at_2x"] == pytest.approx(0.03)
+    assert stress["detail"][0]["replay_cost_multiplier"] == 1.5
+
+
 def test_fixture_end_to_end_is_not_evidence():
     frames = load_frames(bridge_dir=FIXTURE)
     policy = policy_for_variant("baseline")[0]

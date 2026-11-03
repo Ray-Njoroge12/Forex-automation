@@ -135,6 +135,7 @@
       "blocking": true,
       "detail": [
         {
+          "replay_cost_multiplier": 1.0,
           "expectancy_r_at_1x": -0.4937,
           "expectancy_r_at_2x": -0.6748,
           "breakeven_multiple": "<=1.0"
@@ -144,6 +145,9 @@
         "model": "fixed_trade_set_linear",
         "scale_commission": false,
         "trades": 19,
+        "replay_cost": "base",
+        "replay_cost_multiplier": 1.0,
+        "replay_commission_multiplier": 1.0,
         "breakeven_multiple": null,
         "breakeven_label": "<=1.0",
         "negative_at_base": true,
@@ -151,15 +155,18 @@
           {
             "multiple": 1.0,
             "trades": 19,
-            "expectancy_r": -0.4937
+            "expectancy_r": -0.4937,
+            "below_replay_cost": false
           },
           {
             "multiple": 2.0,
             "trades": 19,
-            "expectancy_r": -0.6748
+            "expectancy_r": -0.6748,
+            "below_replay_cost": false
           }
         ],
-        "mean_r_base": -0.4937,
+        "mean_r_realised": -0.4937,
+        "negative_at_replay_cost": true,
         "mean_cost_r_per_multiple": 0.1811,
         "no_trades": false
       },
@@ -172,7 +179,7 @@
   "trades": 19,
   "r1_verdict": "INCONCLUSIVE",
   "variant": "baseline",
-  "source": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave1/fx_ai_engine/tests/fixtures/live_bars_2026-11-03",
+  "source": "tests/fixtures/live_bars_2026-11-03",
   "dataset_sha256_16": {
     "bars_AUDUSD_D1.json": "7e0084f84d5a3123",
     "bars_AUDUSD_H1.json": "e1b2176447e2ff30",

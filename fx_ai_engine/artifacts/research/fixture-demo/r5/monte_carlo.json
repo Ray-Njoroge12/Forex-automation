@@ -656,5 +656,5 @@
       "p_final_below_start": 1.0
     }
   },
-  "trades_csv": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave1/fx_ai_engine/artifacts/research/fixture-demo/r4/trades_1x.csv"
+  "trades_csv": "artifacts/research/fixture-demo/r4/trades_1x.csv"
 }
