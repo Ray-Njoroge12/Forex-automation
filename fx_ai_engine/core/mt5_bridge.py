@@ -69,17 +69,24 @@ def _closed_history_summary_from_deals(
     *,
     trade_id_hint: str | None = None,
     position_ticket_hint: int | None = None,
+    constants: Any = None,
 ) -> dict[str, Any] | None:
-    if not matched or mt5 is None:
+    """Summarise a closed position from its deals.
+
+    ``constants`` supplies MT5 enum values (DEAL_ENTRY_*, ORDER_TYPE_*) when the
+    MetaTrader5 module is unavailable, e.g. for the file bridge on macOS.
+    """
+    const = constants if constants is not None else mt5
+    if not matched or const is None:
         return None
 
     matched.sort(key=_deal_sort_key)
-    entry_in = int(getattr(mt5, "DEAL_ENTRY_IN", 0))
-    entry_out = int(getattr(mt5, "DEAL_ENTRY_OUT", 1))
-    entry_inout = int(getattr(mt5, "DEAL_ENTRY_INOUT", -1))
-    entry_out_by = int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3))
-    order_type_buy = int(getattr(mt5, "ORDER_TYPE_BUY", 0))
-    order_type_sell = int(getattr(mt5, "ORDER_TYPE_SELL", 1))
+    entry_in = int(getattr(const, "DEAL_ENTRY_IN", 0))
+    entry_out = int(getattr(const, "DEAL_ENTRY_OUT", 1))
+    entry_inout = int(getattr(const, "DEAL_ENTRY_INOUT", -1))
+    entry_out_by = int(getattr(const, "DEAL_ENTRY_OUT_BY", 3))
+    order_type_buy = int(getattr(const, "ORDER_TYPE_BUY", 0))
+    order_type_sell = int(getattr(const, "ORDER_TYPE_SELL", 1))
 
     open_deals = [deal for deal in matched if int(getattr(deal, "entry", -1)) == entry_in]
     close_entries = {entry_out, entry_out_by}

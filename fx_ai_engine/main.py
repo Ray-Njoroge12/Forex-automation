@@ -53,6 +53,7 @@ from core.alerts import alert_risk_halt, alert_trade_execution, alert_trade_exit
 from core.health import start_health_api, update_health_status
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
+from core.file_bridge_connection import FileBridgeConnection
 from core.observability import init_tracing
 from core.risk.hard_risk_engine import HardRiskEngine
 from core.risk.reset_scheduler import ResetScheduler
@@ -2174,7 +2175,10 @@ def main(argv: list[str] | None = None) -> int:
     run_all_migrations()
 
     use_mock = os.getenv("USE_MT5_MOCK") == "1"
-    if use_mock:
+    # MT5_CONNECTION=file_bridge reads EA exports from the bridge folder instead
+    # of the Windows-only MetaTrader5 package (ADR 0001, D4). Mock mode wins.
+    use_file_bridge = (not use_mock) and os.getenv("MT5_CONNECTION", "").strip().lower() == "file_bridge"
+    if use_mock or use_file_bridge:
         creds = None
     else:
         try:
@@ -2186,11 +2190,18 @@ def main(argv: list[str] | None = None) -> int:
     tracer = init_tracing(os.getenv("OTEL_SERVICE_NAME", "fx_ai_engine"))
     metrics = init_metrics()
 
-    bridge = MT5Connection(
-        creds.login if creds else 0,
-        creds.password if creds else "",
-        creds.server if creds else "",
-    )
+    if use_file_bridge:
+        try:
+            bridge = FileBridgeConnection(get_mt5_bridge_path())
+        except RuntimeError as exc:
+            logger.error("File bridge path unavailable: %s", exc)
+            return 2
+    else:
+        bridge = MT5Connection(
+            creds.login if creds else 0,
+            creds.password if creds else "",
+            creds.server if creds else "",
+        )
     if not bridge.connect():
         logger.error("MT5 connection failed: %s", bridge.last_error)
         return 2

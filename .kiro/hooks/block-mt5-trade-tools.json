@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Block MT5 trading tools",
+      "trigger": "PreToolUse",
+      "description": "Blocks MetaTrader 5 MCP order tools so only the EA places trades (AGENTS.md invariant 1).",
+      "matcher": "trade_(send|modify|close|delete)",
+      "action": {
+        "type": "command",
+        "command": "python3 scripts/hooks/block_mt5_trade_tools.py",
+        "timeout": 10
+      }
+    }
+  ]
+}

@@ -73,8 +73,8 @@ def build_demo_matrix(mode_id: str = "core_srs") -> tuple[dict[str, str], list[D
         ),
         DemoCase(
             "expired",
-            "No order; EA log reports expired envelope.",
-            "Copy after its expiry time; do not rely on a feedback file for this parser-level rejection.",
+            "REJECTED_EXPIRED feedback; no order; EA log reports expired envelope.",
+            "Copy after its expiry time.",
             expired,
         ),
         DemoCase(

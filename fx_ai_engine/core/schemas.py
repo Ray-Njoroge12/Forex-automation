@@ -73,6 +73,9 @@ def validate_execution_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         "EXECUTED", "REJECTED_POLICY_CONFIGURATION", "REJECTED_POLICY_HASH",
         "REJECTED_SPREAD", "REJECTED_POSITION_LIMIT", "REJECTED_LOT",
         "REJECTED_ORDER_SEND", "EXECUTION_UNCERTAIN",
+        # EA pre-send broker-rule checks (no request reached the trade server).
+        "REJECTED_TRADE_MODE", "REJECTED_STOPS_LEVEL", "REJECTED_ORDER_CHECK",
+        "REJECTED_EXPIRED",
     }
     if not isinstance(payload["trade_id"], str) or not payload["trade_id"].strip():
         raise SchemaError("ExecutionFeedback trade_id must be nonempty")

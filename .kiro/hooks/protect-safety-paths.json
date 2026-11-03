@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Ask before editing protected paths",
+      "trigger": "PreToolUse",
+      "description": "Asks the owner to confirm agent edits to risk, config, EA, bridge and SRS files (AGENTS.md protected paths).",
+      "matcher": "^(fs_write|str_replace|fs_append|delete_file|smart_relocate)$",
+      "action": {
+        "type": "command",
+        "command": "python3 scripts/hooks/protect_paths.py",
+        "timeout": 10
+      }
+    }
+  ]
+}

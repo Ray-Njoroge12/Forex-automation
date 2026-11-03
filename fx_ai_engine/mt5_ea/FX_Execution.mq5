@@ -5,7 +5,9 @@
 input string RootFolder = "bridge";
 input double MaxSpreadPips = 2.0;
 input int PollIntervalSeconds = 1;
-input string ExpectedPolicyHash = ""; // Required when RequirePolicyHashPin is true.
+// Pinned to `python -m validation.print_policy_hash --mode core_srs` (2026-11-03).
+// A policy change produces a new hash; signals then fail closed until this is updated.
+input string ExpectedPolicyHash = "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8";
 input bool RequirePolicyHashPin = true; // Fail closed until the deployed policy hash is pinned.
 input bool RequireDemoAccount = true; // Demo is the default; do not send orders to other account types.
 
@@ -16,7 +18,24 @@ input double PartialCloseR = 1.5;         // Close 50% at this R-multiple (0 = d
 input double TrailingATRMultiplier = 2.0; // Trail SL using N * ATR (0 = disabled)
 input int    TrailingATRPeriod = 14;       // ATR period for trailing calculation
 
+// --- Broker contract and market-data export inputs ---
+input long   MagicNumber = 20261103;       // Identifies orders placed by this EA
+input int    MaxDeviationPoints = 10;      // Maximum price deviation for market orders (points)
+input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
+input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
+
+#define EA_VERSION "2026.11.03-1"
+
 CTrade trade;
+
+// Market-data export universe (must match the Python engine's SYMBOLS).
+string          g_symbols[] = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"};
+ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+#define EXPORT_SYMBOLS 6
+#define EXPORT_TFS 4
+datetime g_last_bar_export[EXPORT_SYMBOLS][EXPORT_TFS];
+string   g_calendar_generated_at = "";
+int      g_calendar_event_count = -1;
 
 // Per-position trade management parameters (indexed by slot 0..MAX_POS-1)
 #define MAX_POS 10
@@ -98,6 +117,7 @@ string PendingFolder() { return RootFolder + "\\pending_signals"; }
 string LockFolder() { return RootFolder + "\\active_locks"; }
 string FeedbackFolder() { return RootFolder + "\\feedback"; }
 string ExitsFolder() { return RootFolder + "\\exits"; }
+string MarketFolder() { return RootFolder + "\\market"; }
 string ManagementStateFilePath(const ulong ticket) { return FeedbackFolder() + "\\management_state_" + StringFormat("%I64u", ticket) + ".json"; }
 string ExitFilePath(const ulong ticket) { return ExitsFolder() + "\\exit_" + StringFormat("%I64u", ticket) + ".json"; }
 
@@ -127,10 +147,18 @@ void SweepClosedManagedPositions();
 int OnInit()
 {
    InitPositionArrays();
+   for(int s = 0; s < EXPORT_SYMBOLS; s++)
+      for(int t = 0; t < EXPORT_TFS; t++)
+         g_last_bar_export[s][t] = 0;
+   trade.SetExpertMagicNumber((ulong)MagicNumber);
+   trade.SetDeviationInPoints((ulong)MaxDeviationPoints);
+   if(!FolderCreate(MarketFolder()))
+      LogDebug("Market folder unavailable: " + MarketFolder() + " err=" + (string)GetLastError());
    RestoreManagementState();
    EventSetTimer(PollIntervalSeconds);
-   LogDebug("OnInit: FX_Execution Started");
+   LogDebug("OnInit: FX_Execution Started version=" + EA_VERSION + " magic=" + IntegerToString(MagicNumber));
    WriteAccountSnapshot();
+   ExportMarketData(true);
    return(INIT_SUCCEEDED);
 }
 
@@ -179,10 +207,317 @@ void OnTimer()
    ManageOpenPositions();
    SweepClosedManagedPositions();
    
-   if(TimeCurrent() - lastSnapshot >= 5) { // Update every 5s
+   // TimeLocal keeps advancing when the market is closed, so heartbeats
+   // continue on weekends; TimeCurrent freezes at the last tick.
+   if(TimeLocal() - lastSnapshot >= 5) { // Update every 5s
       WriteAccountSnapshot();
       WriteMarketQuoteSnapshot();
-      lastSnapshot = TimeCurrent();
+      lastSnapshot = TimeLocal();
+   }
+   ExportMarketData(false);
+}
+
+//+------------------------------------------------------------------+
+//| Market-data export for the Python engine (read-only observations) |
+//+------------------------------------------------------------------+
+string JsonEscape(const string value)
+{
+   string out = "";
+   int n = StringLen(value);
+   for(int i = 0; i < n; i++)
+   {
+      ushort c = StringGetCharacter(value, i);
+      if(c == '"') out += "\\\"";
+      else if(c == '\\') out += "\\\\";
+      else if(c < 32) out += " ";
+      else if(c > 126) out += "?";
+      else out += ShortToString(c);
+   }
+   return out;
+}
+
+bool PublishAtomic(const string path, const string content)
+{
+   string tmp = path + ".tmp";
+   if(!WriteTextFile(tmp, content))
+      return false;
+   return FileMove(tmp, 0, path, FILE_REWRITE);
+}
+
+// Server time minus UTC, rounded to 15 minutes. Returns false when the
+// terminal cannot estimate server time yet.
+bool ServerUtcOffsetSeconds(long &offset)
+{
+   datetime server = TimeTradeServer();
+   datetime gmt = TimeGMT();
+   offset = 0;
+   if(server <= 0 || gmt <= 0)
+      return false;
+   offset = (long)(MathRound((double)(server - gmt) / 900.0) * 900.0);
+   return true;
+}
+
+string TfName(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M15: return "M15";
+      case PERIOD_H1:  return "H1";
+      case PERIOD_H4:  return "H4";
+      case PERIOD_D1:  return "D1";
+      default:         return "";
+   }
+}
+
+bool IsExportSymbol(const string sym)
+{
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+      if(g_symbols[i] == sym) return true;
+   return false;
+}
+
+// Writes closed bars (shift >= 1, oldest first) when a new bar has closed.
+bool ExportBars(const int si, const int ti, const long offset)
+{
+   string sym = g_symbols[si];
+   ENUM_TIMEFRAMES tf = g_tfs[ti];
+   datetime lastClosed = iTime(sym, tf, 1);
+   if(lastClosed <= 0)
+      return false;
+   if(lastClosed == g_last_bar_export[si][ti])
+      return true;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, false);
+   int n = CopyRates(sym, tf, 1, MarketBarsExport, rates);
+   if(n <= 0 || rates[n - 1].time != lastClosed)
+      return false; // history still synchronising; retry on the next timer tick
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   string payload = "{\"schema_version\":1,\"symbol\":\"" + sym + "\",\"timeframe\":\"" + TfName(tf) + "\",";
+   payload += "\"generated_at\":\"" + IsoTimestampUtc() + "\",\"server_utc_offset_seconds\":" + IntegerToString(offset) + ",";
+   payload += "\"columns\":[\"time_utc\",\"open\",\"high\",\"low\",\"close\",\"tick_volume\",\"spread_points\"],\"bars\":[";
+   for(int i = 0; i < n; i++)
+   {
+      if(i > 0) payload += ",";
+      payload += "[" + IntegerToString((long)rates[i].time - offset) + ",";
+      payload += DoubleToString(rates[i].open, digits) + "," + DoubleToString(rates[i].high, digits) + ",";
+      payload += DoubleToString(rates[i].low, digits) + "," + DoubleToString(rates[i].close, digits) + ",";
+      payload += IntegerToString(rates[i].tick_volume) + "," + IntegerToString(rates[i].spread) + "]";
+   }
+   payload += "]}";
+
+   string path = MarketFolder() + "\\bars_" + sym + "_" + TfName(tf) + ".json";
+   if(!PublishAtomic(path, payload))
+   {
+      LogDebug("Bar export failed: " + sym + " " + TfName(tf));
+      return false;
+   }
+   g_last_bar_export[si][ti] = lastClosed;
+   return true;
+}
+
+void WriteMarketStatus(const long offset, const bool offsetValid)
+{
+   string payload = "{\"schema_version\":1,\"generated_at\":\"" + IsoTimestampUtc() + "\",";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\",\"magic\":" + IntegerToString(MagicNumber) + ",";
+   payload += "\"server_utc_offset_seconds\":" + IntegerToString(offset) + ",";
+   payload += "\"server_offset_valid\":" + (offsetValid ? "true" : "false") + ",";
+   payload += "\"terminal_connected\":" + (TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false") + ",";
+   payload += "\"account_is_demo\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "true" : "false") + ",";
+   payload += "\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ",";
+   payload += "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\",";
+   payload += "\"calendar_generated_at\":\"" + g_calendar_generated_at + "\",";
+   payload += "\"calendar_high_impact_events\":" + IntegerToString(g_calendar_event_count) + ",";
+   payload += "\"latest_closed_bars\":{";
+   for(int s = 0; s < EXPORT_SYMBOLS; s++)
+   {
+      if(s > 0) payload += ",";
+      payload += "\"" + g_symbols[s] + "\":{";
+      for(int t = 0; t < EXPORT_TFS; t++)
+      {
+         if(t > 0) payload += ",";
+         datetime closed = iTime(g_symbols[s], g_tfs[t], 1);
+         long closedUtc = (closed > 0) ? (long)closed - offset : 0;
+         payload += "\"" + TfName(g_tfs[t]) + "\":" + IntegerToString(closedUtc);
+      }
+      payload += "}";
+   }
+   payload += "}}";
+   if(!PublishAtomic(MarketFolder() + "\\status.json", payload))
+      LogDebug("Market status publish failed");
+}
+
+void WriteSymbolSpecs()
+{
+   string payload = "{\"schema_version\":1,\"generated_at\":\"" + IsoTimestampUtc() + "\",\"symbols\":{";
+   bool first = true;
+   for(int s = 0; s < EXPORT_SYMBOLS; s++)
+   {
+      string sym = g_symbols[s];
+      if(!SymbolSelect(sym, true))
+         continue;
+      if(!first) payload += ",";
+      first = false;
+      payload += "\"" + sym + "\":{";
+      payload += "\"digits\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_DIGITS)) + ",";
+      payload += "\"point\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_POINT), 10) + ",";
+      payload += "\"tick_size\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 10) + ",";
+      payload += "\"tick_value\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 10) + ",";
+      payload += "\"contract_size\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE), 2) + ",";
+      payload += "\"volume_min\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 8) + ",";
+      payload += "\"volume_step\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 8) + ",";
+      payload += "\"volume_max\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), 8) + ",";
+      payload += "\"stops_level\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL)) + ",";
+      payload += "\"freeze_level\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL)) + ",";
+      payload += "\"filling_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_FILLING_MODE)) + ",";
+      payload += "\"trade_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE)) + ",";
+      payload += "\"swap_long\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4) + ",";
+      payload += "\"swap_short\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4);
+      payload += "}";
+   }
+   payload += "}}";
+   if(!PublishAtomic(MarketFolder() + "\\symbols.json", payload))
+      LogDebug("Symbol spec publish failed");
+}
+
+// Deals for the traded symbols over the last 30 days, newest first. Lets the
+// Python engine reconcile closures without the Windows-only MT5 package.
+void WriteDealHistory(const long offset)
+{
+   datetime to = TimeCurrent() + 86400;
+   datetime from = to - 31 * 86400;
+   if(!HistorySelect(from, to))
+   {
+      LogDebug("HistorySelect failed for deal export err=" + (string)GetLastError());
+      return;
+   }
+   int total = HistoryDealsTotal();
+   string payload = "{\"schema_version\":1,\"generated_at\":\"" + IsoTimestampUtc() + "\",";
+   payload += "\"server_utc_offset_seconds\":" + IntegerToString(offset) + ",\"lookback_days\":30,\"deals\":[";
+   int written = 0;
+   for(int i = total - 1; i >= 0 && written < 1000; i--)
+   {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0) continue;
+      string sym = HistoryDealGetString(d, DEAL_SYMBOL);
+      if(!IsExportSymbol(sym)) continue;
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      long timeMscUtc = HistoryDealGetInteger(d, DEAL_TIME_MSC) - offset * 1000;
+      if(written > 0) payload += ",";
+      payload += "{\"ticket\":" + StringFormat("%I64u", d);
+      payload += ",\"order\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_ORDER));
+      payload += ",\"position_id\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_POSITION_ID));
+      payload += ",\"time_msc\":" + IntegerToString(timeMscUtc);
+      payload += ",\"type\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_TYPE));
+      payload += ",\"entry\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_ENTRY));
+      payload += ",\"symbol\":\"" + sym + "\"";
+      payload += ",\"volume\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_VOLUME), 8);
+      payload += ",\"price\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PRICE), digits);
+      payload += ",\"profit\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PROFIT), 2);
+      payload += ",\"commission\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_COMMISSION), 2);
+      payload += ",\"swap\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_SWAP), 2);
+      payload += ",\"fee\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_FEE), 2);
+      payload += ",\"magic\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_MAGIC));
+      payload += ",\"comment\":\"" + JsonEscape(HistoryDealGetString(d, DEAL_COMMENT)) + "\"}";
+      written++;
+   }
+   payload += "]}";
+   if(!PublishAtomic(MarketFolder() + "\\deals.json", payload))
+      LogDebug("Deal history publish failed");
+}
+
+// High-impact events from the MT5 economic calendar in the format that
+// validation.update_market_context installs. The operator reviews and installs it.
+void WriteCalendarExport(const long offset)
+{
+   string currencies[] = {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF"};
+   datetime serverNow = TimeTradeServer();
+   if(serverNow <= 0)
+      return;
+   datetime from = serverNow - 86400;
+   datetime to = serverNow + CalendarDaysAhead * 86400;
+   string payload = "[";
+   int count = 0;
+   bool failed = false;
+   for(int c = 0; c < ArraySize(currencies); c++)
+   {
+      MqlCalendarValue values[];
+      if(!CalendarValueHistory(values, from, to, NULL, currencies[c]))
+      {
+         failed = true;
+         LogDebug("CalendarValueHistory failed for " + currencies[c] + " err=" + (string)GetLastError());
+         continue;
+      }
+      for(int j = 0; j < ArraySize(values); j++)
+      {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(values[j].event_id, ev))
+            continue;
+         if(ev.importance != CALENDAR_IMPORTANCE_HIGH)
+            continue;
+         bool exactTime = (ev.time_mode == CALENDAR_TIMEMODE_DATETIME);
+         datetime eventUtc = (datetime)((long)values[j].time - offset);
+         string sourceUrl = (ev.source_url != "") ? JsonEscape(ev.source_url) : "mt5-calendar://event/" + IntegerToString((long)ev.id);
+         if(count > 0) payload += ",";
+         payload += "{\"datetime_utc\":\"" + IsoTimestampUtc(eventUtc) + "\"";
+         payload += ",\"currency\":\"" + currencies[c] + "\",\"impact\":\"high\"";
+         payload += ",\"event\":\"" + JsonEscape(ev.name) + "\"";
+         payload += ",\"source_url\":\"" + sourceUrl + "\"";
+         payload += ",\"mt5_event_id\":" + IntegerToString((long)ev.id);
+         payload += ",\"mt5_value_id\":" + IntegerToString((long)values[j].id);
+         payload += ",\"time_exact\":" + (exactTime ? "true" : "false");
+         if(!exactTime)
+            payload += ",\"blackout_before_minutes\":720,\"blackout_after_minutes\":720";
+         payload += "}";
+         count++;
+      }
+   }
+   payload += "]";
+   if(failed && count == 0)
+      return; // keep the previous export rather than publishing an empty calendar
+   if(PublishAtomic(MarketFolder() + "\\calendar.json", payload))
+   {
+      g_calendar_generated_at = IsoTimestampUtc();
+      g_calendar_event_count = count;
+   }
+}
+
+void ExportMarketData(const bool force)
+{
+   static datetime lastStatus = 0;
+   static datetime lastSpecs = 0;
+   static datetime lastDeals = 0;
+   static datetime lastCalendar = 0;
+   datetime now = TimeLocal();
+   long offset = 0;
+   bool offsetValid = ServerUtcOffsetSeconds(offset);
+
+   if(offsetValid)
+   {
+      for(int s = 0; s < EXPORT_SYMBOLS; s++)
+         for(int t = 0; t < EXPORT_TFS; t++)
+            ExportBars(s, t, offset);
+   }
+   if(force || now - lastSpecs >= 60)
+   {
+      WriteSymbolSpecs();
+      lastSpecs = now;
+   }
+   if(offsetValid && (force || now - lastDeals >= 30))
+   {
+      WriteDealHistory(offset);
+      lastDeals = now;
+   }
+   if(offsetValid && (force || now - lastCalendar >= 3600))
+   {
+      WriteCalendarExport(offset);
+      lastCalendar = now;
+   }
+   if(force || now - lastStatus >= 5)
+   {
+      WriteMarketStatus(offset, offsetValid);
+      lastStatus = now;
    }
 }
 
@@ -288,7 +623,7 @@ void ManageOpenPositions()
 
          if(halfVol >= minLot && volume > minLot)
          {
-            halfVol = NormalizeDouble(halfVol, 2);
+            halfVol = NormalizeDouble(halfVol, VolumeDigits(sym));
             if(trade.PositionClosePartial(ticket, halfVol))
             {
                LogDebug("Partial close: ticket=" + (string)ticket + " closed=" + DoubleToString(halfVol, 2) + " at R=" + DoubleToString(currentR, 2));
@@ -418,12 +753,30 @@ bool ExtractJsonDouble(const string json, const string key, double &out)
    return true;
 }
 
+// Parses "YYYY-MM-DDTHH:MM:SS" followed by optional fractional seconds and a
+// UTC designator ("Z" or "+00:00"), as written by Python isoformat(). Any
+// other offset is rejected (returns 0) so the caller fails closed.
 datetime ParseIsoUtc(string value)
 {
-   StringReplace(value, "T", " ");
-   StringReplace(value, "Z", "");
-   StringReplace(value, "-", ".");
-   return StringToTime(value);
+   if(StringLen(value) < 19)
+      return 0;
+   string rest = StringSubstr(value, 19);
+   int pos = 0;
+   if(StringLen(rest) > 0 && StringGetCharacter(rest, 0) == '.')
+   {
+      pos = 1;
+      while(pos < StringLen(rest) && StringGetCharacter(rest, pos) >= '0' && StringGetCharacter(rest, pos) <= '9')
+         pos++;
+   }
+   string zone = StringSubstr(rest, pos);
+   if(zone != "" && zone != "Z" && zone != "+00:00")
+      return 0;
+   string core = StringSubstr(value, 0, 19);
+   if(StringGetCharacter(core, 10) != 'T' && StringGetCharacter(core, 10) != ' ')
+      return 0;
+   StringSetCharacter(core, 10, ' ');
+   StringReplace(core, "-", ".");
+   return StringToTime(core);
 }
 
 bool ReadTextFile(const string filePath, string &content)
@@ -555,9 +908,99 @@ double CalculateLot(string sym, const double riskPercent, const double stopPips)
 
    double lot = MathFloor(rawLimit / lotStep) * lotStep;
    if(lot > maxLot)
-      lot = maxLot;
+      lot = MathFloor(maxLot / lotStep) * lotStep;
 
-   return NormalizeDouble(lot, 2);
+   return NormalizeDouble(lot, VolumeDigits(sym));
+}
+
+// Decimal places implied by the broker's volume step (0.01 -> 2, 0.1 -> 1, 1 -> 0).
+int VolumeDigits(const string sym)
+{
+   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   if(step <= 0.0)
+      return 2;
+   int digits = 0;
+   double scaled = step;
+   while(digits < 8 && MathAbs(scaled - MathRound(scaled)) > 1e-9)
+   {
+      scaled *= 10.0;
+      digits++;
+   }
+   return digits;
+}
+
+// Choose a filling policy the symbol supports: FOK, then IOC, then RETURN.
+ENUM_ORDER_TYPE_FILLING ResolveFilling(const string sym)
+{
+   long modes = SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   if((modes & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+   if((modes & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
+// Pre-send broker-rule checks. Nothing here contacts the trade server, so a
+// failure is a definitive rejection (no order can exist).
+bool PreflightMarketOrder(
+   const string sym,
+   const string direction,
+   const double volume,
+   const double price,
+   const double sl,
+   const double tp,
+   const string tradeId,
+   string &rejectStatus,
+   string &rejectDetail)
+{
+   long tradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   bool allowed = (tradeMode == SYMBOL_TRADE_MODE_FULL) ||
+                  (direction == "BUY" && tradeMode == SYMBOL_TRADE_MODE_LONGONLY) ||
+                  (direction == "SELL" && tradeMode == SYMBOL_TRADE_MODE_SHORTONLY);
+   if(!allowed)
+   {
+      rejectStatus = "REJECTED_TRADE_MODE";
+      rejectDetail = "trade_mode=" + IntegerToString(tradeMode);
+      return false;
+   }
+
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   long stopsLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+   long freezeLevel = SymbolInfoInteger(sym, SYMBOL_TRADE_FREEZE_LEVEL);
+   double minDist = (double)MathMax(stopsLevel, freezeLevel) * point;
+   double slDist = MathAbs(price - sl);
+   double tpDist = (tp > 0.0) ? MathAbs(tp - price) : DBL_MAX;
+   if(sl <= 0.0 || slDist <= minDist || tpDist <= minDist)
+   {
+      rejectStatus = "REJECTED_STOPS_LEVEL";
+      rejectDetail = "sl_dist=" + DoubleToString(slDist, 6) + " tp_dist=" + DoubleToString(tpDist, 6) +
+                     " min_dist=" + DoubleToString(minDist, 6);
+      return false;
+   }
+
+   MqlTradeRequest request;
+   MqlTradeCheckResult check;
+   ZeroMemory(request);
+   ZeroMemory(check);
+   request.action = TRADE_ACTION_DEAL;
+   request.symbol = sym;
+   request.volume = volume;
+   request.type = (direction == "BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   request.price = price;
+   request.sl = sl;
+   request.tp = tp;
+   request.deviation = (ulong)MaxDeviationPoints;
+   request.magic = (ulong)MagicNumber;
+   request.type_filling = ResolveFilling(sym);
+   request.comment = tradeId;
+   if(!OrderCheck(request, check))
+   {
+      rejectStatus = "REJECTED_ORDER_CHECK";
+      rejectDetail = "retcode=" + IntegerToString((int)check.retcode) + " " + check.comment +
+                     " margin_free_after=" + DoubleToString(check.margin_free, 2);
+      return false;
+   }
+   return true;
 }
 
 void WriteExecutionFeedback(
@@ -583,7 +1026,7 @@ void WriteExecutionFeedback(
    payload += "\"entry_price\":" + DoubleToString(entryPrice, 5) + ",";
    payload += "\"slippage\":" + DoubleToString(slippage, 6) + ",";
    payload += "\"spread_at_entry\":" + DoubleToString(spreadAtEntry, 6) + ",";
-   payload += "\"lot_size\":" + DoubleToString(lotSize, 2) + ",";
+   payload += "\"lot_size\":" + DoubleToString(lotSize, 8) + ",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
    payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
    payload += "\"server_retcode\":" + IntegerToString((int)serverRetcode) + ",";
@@ -668,6 +1111,10 @@ void WriteAccountSnapshot()
    payload += "\"account_is_demo\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "true" : "false") + ",";
    payload += "\"account_authenticated\":" + (AccountInfoInteger(ACCOUNT_LOGIN) > 0 ? "true" : "false") + ",";
    payload += "\"terminal_connected\":" + (TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false") + ",";
+   payload += "\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ",";
+   payload += "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\",";
+   payload += "\"currency\":\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\",";
+   payload += "\"ea_version\":\"" + EA_VERSION + "\",";
    payload += "\"balance\":" + DoubleToString(balance, 2) + ",";
    payload += "\"equity\":" + DoubleToString(equity, 2) + ",";
    payload += "\"margin_free\":" + DoubleToString(marginFree, 2) + ",";
@@ -683,7 +1130,9 @@ void WriteAccountSnapshot()
       payload += ",\"management_state_error\":\"" + managementStateError + "\"";
    payload += "}";
 
-   WriteTextFile(FeedbackFolder() + "\\account_snapshot.json", payload);
+   // Publish atomically so the Python reader never sees a partial snapshot.
+   if(!PublishAtomic(FeedbackFolder() + "\\account_snapshot.json", payload))
+      LogDebug("Account snapshot publish failed");
 }
 
 string GetTradeIdForPosition(ulong ticket)
@@ -1151,7 +1600,14 @@ void ProcessPendingSignal()
       return;
    }
    datetime expiryTime = ParseIsoUtc(expiresAt);
-   if(expiryTime <= 0 || TimeGMT() > expiryTime) { LogDebug("Envelope fail: expired"); FileDelete(filePath); return; }
+   if(expiryTime <= 0 || TimeGMT() > expiryTime)
+   {
+      // No request was sent, so the reservation can be released definitively.
+      LogDebug("Envelope fail: expired or unparseable expires_at=" + expiresAt);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_EXPIRED", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
    ExtractJsonDouble(content, "lot", requestedLot);
    ExtractJsonString(content, "order_type", orderType);
    ExtractJsonDouble(content, "limit_price", limitPrice);
@@ -1227,7 +1683,44 @@ void ProcessPendingSignal()
 
    double finalLot = recalculateLot;
    if(requestedLot > 0.0 && requestedLot < recalculateLot)
-      finalLot = requestedLot;
+      finalLot = NormalizeDouble(MathFloor(requestedLot / SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP)) *
+                                 SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP), VolumeDigits(symbol));
+   if(finalLot < SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN))
+   {
+      LogDebug("Requested lot below broker minimum: " + DoubleToString(finalLot, 8));
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LOT", 0.0, 0.0, spread, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   trade.SetTypeFilling(ResolveFilling(symbol));
+   if(orderType != "LIMIT")
+   {
+      // Broker-rule preflight happens before the submission marker: a failure
+      // here proves no request reached the trade server.
+      double preEntry = (direction == "BUY") ? tick.ask : tick.bid;
+      int preDigits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      double preSl = NormalizeDouble((direction == "BUY") ? (preEntry - stopPips * PipValue(symbol)) : (preEntry + stopPips * PipValue(symbol)), preDigits);
+      double preTp = 0.0;
+      if(hardTpMode)
+         preTp = NormalizeDouble((direction == "BUY") ? (preEntry + takeProfitPips * PipValue(symbol)) : (preEntry - takeProfitPips * PipValue(symbol)), preDigits);
+      string rejectStatus = "";
+      string rejectDetail = "";
+      if(direction != "BUY" && direction != "SELL")
+      {
+         rejectStatus = "REJECTED_ORDER_CHECK";
+         rejectDetail = "unsupported direction=" + direction;
+      }
+      if(rejectStatus != "" ||
+         !PreflightMarketOrder(symbol, direction, finalLot, preEntry, preSl, preTp, tradeId, rejectStatus, rejectDetail))
+      {
+         LogDebug("Preflight reject " + rejectStatus + ": " + rejectDetail);
+         MarkProcessed(tradeId);
+         WriteExecutionFeedback(tradeId, 0, 0, rejectStatus, 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+         FileDelete(filePath);
+         return;
+      }
+   }
 
    // Persist intent before sending. If a restart occurs at any subsequent
    // point the same signal is held for reconciliation, not submitted again.
@@ -1276,8 +1769,12 @@ void ProcessPendingSignal()
       double tp = 0.0;
       if(hardTpMode)
          tp = (direction == "BUY") ? (entry + takeProfitPips * PipValue(symbol)) : (entry - takeProfitPips * PipValue(symbol));
+      int priceDigits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      sl = NormalizeDouble(sl, priceDigits);
+      tp = NormalizeDouble(tp, priceDigits);
       
-      LogDebug("Sending MARKET Order: " + symbol + " " + direction + " lot: " + (string)finalLot);
+      LogDebug("Sending MARKET Order: " + symbol + " " + direction + " lot: " + (string)finalLot +
+               " filling=" + EnumToString(ResolveFilling(symbol)) + " magic=" + IntegerToString(MagicNumber));
       
       if(direction == "BUY")
          placed = trade.Buy(finalLot, symbol, entry, sl, tp, tradeId);
