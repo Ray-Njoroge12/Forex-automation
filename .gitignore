@@ -51,3 +51,6 @@ NUL
 
 # MT5 build outputs (rebuild from source; keep compile logs as evidence elsewhere)
 *.ex5
+
+# Per-agent git worktrees
+.worktrees/
