@@ -1,0 +1,50 @@
+{
+  "EURUSD": {
+    "samples": 300,
+    "signals": 23,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 0,
+    "warmup_difference_rate": 0.0,
+    "lookahead_examples": []
+  },
+  "GBPUSD": {
+    "samples": 300,
+    "signals": 26,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 0,
+    "warmup_difference_rate": 0.0,
+    "lookahead_examples": []
+  },
+  "USDJPY": {
+    "samples": 300,
+    "signals": 32,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 1,
+    "warmup_difference_rate": 0.0033,
+    "lookahead_examples": []
+  },
+  "AUDUSD": {
+    "samples": 300,
+    "signals": 23,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 0,
+    "warmup_difference_rate": 0.0,
+    "lookahead_examples": []
+  },
+  "USDCAD": {
+    "samples": 300,
+    "signals": 27,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 1,
+    "warmup_difference_rate": 0.0033,
+    "lookahead_examples": []
+  },
+  "USDCHF": {
+    "samples": 300,
+    "signals": 28,
+    "lookahead_differences": 0,
+    "warmup_350_vs_2000_differences": 1,
+    "warmup_difference_rate": 0.0033,
+    "lookahead_examples": []
+  }
+}

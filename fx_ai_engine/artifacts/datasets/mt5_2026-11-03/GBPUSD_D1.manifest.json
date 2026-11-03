@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "GBPUSD",
+  "source_file": "GBPUSD_D1.csv",
+  "sha256": "b117cfe9036bfcbafeb95401a9dcb9ec0280beebe7fd1795e54e075e984974ca",
+  "rows": 1298,
+  "start_utc": "2021-11-04T21:00:00+00:00",
+  "end_utc": "2026-11-01T22:00:00+00:00",
+  "median_bar_seconds": 86400.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

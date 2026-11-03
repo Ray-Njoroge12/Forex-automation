@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "USDCHF",
+  "source_file": "USDCHF_M15.csv",
+  "sha256": "7a5a6eaaab507b6c028531179a939c06b5a9a2b4e46d1e1ad60d799c49d60657",
+  "rows": 100594,
+  "start_utc": "2022-10-16T21:00:00+00:00",
+  "end_utc": "2026-11-03T17:00:00+00:00",
+  "median_bar_seconds": 900.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

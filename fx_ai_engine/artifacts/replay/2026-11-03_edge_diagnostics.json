@@ -1,0 +1,126 @@
+{
+  "period": [
+    "2022-12-24T00:00:00+00:00",
+    "2026-05-03T16:45:00+00:00"
+  ],
+  "candidates": 39567,
+  "stop_pips_quartiles": [
+    6.14,
+    8.49,
+    12.0
+  ],
+  "rows": [
+    {
+      "label": "strategy | zero cost | fixed 2.2R",
+      "trades": 3642,
+      "win_rate": 0.2787,
+      "expectancy_r": -0.0502,
+      "expectancy_r_ci95": [
+        -0.1014,
+        -0.0001
+      ],
+      "profit_factor": 0.9367,
+      "avg_winner_r": 2.4481,
+      "avg_loser_r": -1.0154,
+      "mean_cost_r": 0.0
+    },
+    {
+      "label": "strategy | zero cost | live exits",
+      "trades": 5074,
+      "win_rate": 0.4594,
+      "expectancy_r": -0.0185,
+      "expectancy_r_ci95": [
+        -0.0501,
+        0.0135
+      ],
+      "profit_factor": 0.9683,
+      "avg_winner_r": 1.0003,
+      "avg_loser_r": -0.9969,
+      "mean_cost_r": 0.0
+    },
+    {
+      "label": "RANDOM direction | zero cost | fixed 2.2R",
+      "trades": 3788,
+      "win_rate": 0.2959,
+      "expectancy_r": 0.0075,
+      "expectancy_r_ci95": [
+        -0.0413,
+        0.0591
+      ],
+      "profit_factor": 1.0046,
+      "avg_winner_r": 2.4423,
+      "avg_loser_r": -1.0159,
+      "mean_cost_r": 0.0
+    },
+    {
+      "label": "INVERTED direction | zero cost | fixed 2.2R",
+      "trades": 3933,
+      "win_rate": 0.3069,
+      "expectancy_r": 0.052,
+      "expectancy_r_ci95": [
+        0.0038,
+        0.1001
+      ],
+      "profit_factor": 1.0502,
+      "avg_winner_r": 2.4427,
+      "avg_loser_r": -1.0065,
+      "mean_cost_r": 0.0
+    },
+    {
+      "label": "strategy | base cost | fixed 2.2R",
+      "trades": 4039,
+      "win_rate": 0.2253,
+      "expectancy_r": -0.3612,
+      "expectancy_r_ci95": [
+        -0.4066,
+        -0.3168
+      ],
+      "profit_factor": 0.588,
+      "avg_winner_r": 2.3415,
+      "avg_loser_r": -1.1472,
+      "mean_cost_r": 0.1049
+    },
+    {
+      "label": "strategy | base cost | live exits",
+      "trades": 5622,
+      "win_rate": 0.2963,
+      "expectancy_r": -0.3466,
+      "expectancy_r_ci95": [
+        -0.3745,
+        -0.3191
+      ],
+      "profit_factor": 0.4731,
+      "avg_winner_r": 1.0763,
+      "avg_loser_r": -1.1298,
+      "mean_cost_r": 0.1071
+    },
+    {
+      "label": "strategy | base cost | live exits | stop>=15 pips",
+      "trades": 1175,
+      "win_rate": 0.3762,
+      "expectancy_r": -0.1657,
+      "expectancy_r_ci95": [
+        -0.2287,
+        -0.1038
+      ],
+      "profit_factor": 0.7131,
+      "avg_winner_r": 1.0416,
+      "avg_loser_r": -1.057,
+      "mean_cost_r": 0.0441
+    },
+    {
+      "label": "strategy | base cost | live exits | stop>=20 pips",
+      "trades": 564,
+      "win_rate": 0.3777,
+      "expectancy_r": -0.1614,
+      "expectancy_r_ci95": [
+        -0.2494,
+        -0.0702
+      ],
+      "profit_factor": 0.7353,
+      "avg_winner_r": 1.073,
+      "avg_loser_r": -1.0447,
+      "mean_cost_r": 0.0348
+    }
+  ]
+}

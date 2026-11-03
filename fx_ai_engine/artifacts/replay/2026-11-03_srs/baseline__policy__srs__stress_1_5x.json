@@ -1,0 +1,339 @@
+{
+  "variant": "baseline__policy__srs",
+  "cost": "stress_1_5x",
+  "generated_at": "20261103T174558Z",
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "datasets": [
+    "AUDUSD_D1.csv",
+    "AUDUSD_H1.csv",
+    "AUDUSD_H4.csv",
+    "AUDUSD_M15.csv",
+    "EURUSD_D1.csv",
+    "EURUSD_H1.csv",
+    "EURUSD_H4.csv",
+    "EURUSD_M15.csv",
+    "GBPUSD_D1.csv",
+    "GBPUSD_H1.csv",
+    "GBPUSD_H4.csv",
+    "GBPUSD_M15.csv",
+    "USDCAD_D1.csv",
+    "USDCAD_H1.csv",
+    "USDCAD_H4.csv",
+    "USDCAD_M15.csv",
+    "USDCHF_D1.csv",
+    "USDCHF_H1.csv",
+    "USDCHF_H4.csv",
+    "USDCHF_M15.csv",
+    "USDJPY_D1.csv",
+    "USDJPY_H1.csv",
+    "USDJPY_H4.csv",
+    "USDJPY_M15.csv"
+  ],
+  "dataset_sha256_16": {
+    "AUDUSD_D1.csv": "592994b15dcc2a2a",
+    "AUDUSD_H1.csv": "498f2ac02179686c",
+    "AUDUSD_H4.csv": "61d58f282ff8a539",
+    "AUDUSD_M15.csv": "6497fe08d6936396",
+    "EURUSD_D1.csv": "8150a180c05389d5",
+    "EURUSD_H1.csv": "c33e262df088653c",
+    "EURUSD_H4.csv": "de602be0342e0757",
+    "EURUSD_M15.csv": "450196a31a5f5496",
+    "GBPUSD_D1.csv": "b117cfe9036bfcba",
+    "GBPUSD_H1.csv": "bc899405d98a4d93",
+    "GBPUSD_H4.csv": "5105b50a27ec413c",
+    "GBPUSD_M15.csv": "aab979b89b736172",
+    "USDCAD_D1.csv": "10ec9f465ae1b59c",
+    "USDCAD_H1.csv": "0f5467a9bde6337e",
+    "USDCAD_H4.csv": "216417eb98987d69",
+    "USDCAD_M15.csv": "35b07739b82adeca",
+    "USDCHF_D1.csv": "4b2a86dc5ff26404",
+    "USDCHF_H1.csv": "66c3bca424e2535d",
+    "USDCHF_H4.csv": "7ca6f8781b71efd2",
+    "USDCHF_M15.csv": "7a5a6eaaab507b6c",
+    "USDJPY_D1.csv": "802a8ff3279e5f70",
+    "USDJPY_H1.csv": "7f987270bc0af18d",
+    "USDJPY_H4.csv": "e0b4d7b9a6548466",
+    "USDJPY_M15.csv": "5229f613548670a5"
+  },
+  "assumptions": "completed bars only; next-M15-open market fills; BID bars with ask = bid + max(recorded, floor) spread x cost multiplier; slippage 0.2 pips and $7/lot round-trip commission x multiplier; stop assumed before target within a bar; EA break-even/partial/trail applied from bar extremes, effective next bar; no calendar blackout, swap, or partial fills; loss-streak halt cleared at the next ISO week (operator review); candidates generated once with base costs.",
+  "holdout_start": "2026-05-03T17:00:00+00:00",
+  "development": {
+    "range": "2022-12-24 to 2026-05-03",
+    "trades": {
+      "trades": 17,
+      "win_rate": 0.2941,
+      "loss_rate": 0.6471,
+      "breakeven_rate": 0.0588,
+      "win_rate_srs_r_gt_0": 0.2941,
+      "expectancy_r": -0.5386,
+      "expectancy_r_ci95": [
+        -0.8599,
+        -0.177
+      ],
+      "median_r": -1.0657,
+      "avg_winner_r": 0.5251,
+      "avg_loser_r": -1.0663,
+      "profit_factor": 0.1659,
+      "net_usd": -21217.83,
+      "max_consecutive_losses": 2,
+      "partial_close_rate": 0.1765,
+      "break_even_rate": 0.4118,
+      "exit_reasons": {
+        "STOP": 17
+      }
+    },
+    "equity": {
+      "start": "2022-12-26T07:15:00+00:00",
+      "end": "2026-05-01T21:00:00+00:00",
+      "final_balance": 78782.17,
+      "total_return": -0.2122,
+      "cagr": -0.0688,
+      "max_drawdown": 0.2165,
+      "max_drawdown_at": "2023-01-06T13:30:00+00:00"
+    },
+    "by_symbol": {
+      "AUDUSD": {
+        "trades": 5,
+        "win_rate": 0.6,
+        "expectancy_r": -0.0591,
+        "profit_factor": 0.7417,
+        "net_usd": -1155.66
+      },
+      "EURUSD": {
+        "trades": 4,
+        "win_rate": 0.0,
+        "expectancy_r": -0.8999,
+        "profit_factor": 0.0,
+        "net_usd": -8331.72
+      },
+      "GBPUSD": {
+        "trades": 2,
+        "win_rate": 0.0,
+        "expectancy_r": -1.0787,
+        "profit_factor": 0.0,
+        "net_usd": -5034.83
+      },
+      "USDCAD": {
+        "trades": 2,
+        "win_rate": 0.5,
+        "expectancy_r": -0.295,
+        "profit_factor": 0.2289,
+        "net_usd": -1314.32
+      },
+      "USDJPY": {
+        "trades": 4,
+        "win_rate": 0.25,
+        "expectancy_r": -0.6286,
+        "profit_factor": 0.087,
+        "net_usd": -5381.3
+      }
+    },
+    "by_hour": {
+      "10": {
+        "trades": 2,
+        "win_rate": 0.5,
+        "expectancy_r": -0.2321,
+        "profit_factor": 0.3956,
+        "net_usd": -1260.57
+      },
+      "13": {
+        "trades": 1,
+        "win_rate": 0.0,
+        "expectancy_r": -1.082,
+        "profit_factor": 0.0,
+        "net_usd": -2949.21
+      },
+      "15": {
+        "trades": 2,
+        "win_rate": 0.0,
+        "expectancy_r": -0.8483,
+        "profit_factor": 0.0,
+        "net_usd": -3346.89
+      },
+      "16": {
+        "trades": 2,
+        "win_rate": 1.0,
+        "expectancy_r": 0.3695,
+        "profit_factor": Infinity,
+        "net_usd": 902.96
+      },
+      "20": {
+        "trades": 1,
+        "win_rate": 0.0,
+        "expectancy_r": -1.0934,
+        "profit_factor": 0.0,
+        "net_usd": -1704.46
+      },
+      "7": {
+        "trades": 6,
+        "win_rate": 0.1667,
+        "expectancy_r": -0.6433,
+        "profit_factor": 0.1478,
+        "net_usd": -9162.97
+      },
+      "8": {
+        "trades": 2,
+        "win_rate": 0.5,
+        "expectancy_r": -0.2975,
+        "profit_factor": 0.5519,
+        "net_usd": -734.11
+      },
+      "9": {
+        "trades": 1,
+        "win_rate": 0.0,
+        "expectancy_r": -1.1047,
+        "profit_factor": 0.0,
+        "net_usd": -2962.57
+      }
+    },
+    "windows": [
+      {
+        "window": "2022H2",
+        "trades": 3,
+        "win_rate": 0.0,
+        "expectancy_r": -0.8189,
+        "profit_factor": 0.0,
+        "net_usd": -5846.64
+      },
+      {
+        "window": "2023H1",
+        "trades": 14,
+        "win_rate": 0.3571,
+        "expectancy_r": -0.4786,
+        "profit_factor": 0.2155,
+        "net_usd": -15371.19
+      }
+    ],
+    "monte_carlo": {
+      "risk_per_trade": 0.032,
+      "trades_per_run": 30,
+      "runs": 20000,
+      "p_max_dd_gt_15pct": 0.998,
+      "p_max_dd_gt_20pct": 0.9881,
+      "median_max_dd": 0.3619,
+      "median_final_equity": 0.6475,
+      "p_final_below_start": 0.9999
+    }
+  },
+  "holdout": {
+    "range": "2026-05-03 to 2026-11-03",
+    "trades": {
+      "trades": 0
+    },
+    "equity": {
+      "start": "2026-05-03T21:15:00+00:00",
+      "end": "2026-11-03T17:15:00+00:00",
+      "final_balance": 78782.17,
+      "total_return": 0.0,
+      "cagr": 0.0,
+      "max_drawdown": 0.0,
+      "max_drawdown_at": "2026-05-03T21:15:00+00:00"
+    },
+    "by_symbol": {},
+    "by_hour": {},
+    "windows": [],
+    "monte_carlo": {}
+  },
+  "decisions": {
+    "APPROVED": 17,
+    "EXECUTED": 17,
+    "PORTFOLIO:PM_SYMBOL_ALREADY_OPEN": 43,
+    "HARD_RISK:RISK_LOSS_STREAK": 241,
+    "ADVERSARIAL:ADV_RSI_EXHAUSTION_BUY": 966,
+    "ADVERSARIAL:ADV_RSI_EXHAUSTION_SELL": 840,
+    "ADVERSARIAL:ADV_SPREAD_TOO_WIDE": 3088,
+    "PORTFOLIO:PM_CORRELATION_BLOCK": 8,
+    "PORTFOLIO:PM_EXPOSURE_LIMIT": 11,
+    "HARD_RISK:RISK_DRAWDOWN_STOP": 40981
+  },
+  "risk_events": [
+    {
+      "time": "2022-12-27T08:00:00+00:00",
+      "rule": "RISK_LOSS_STREAK"
+    },
+    {
+      "time": "2023-01-02T05:00:00+00:00",
+      "rule": "LOSS_STREAK_OPERATOR_RESET",
+      "consecutive_losses": 3
+    },
+    {
+      "time": "2023-01-09T10:45:00+00:00",
+      "rule": "RISK_DRAWDOWN_STOP"
+    }
+  ],
+  "candidate_funnel": {
+    "EURUSD": {
+      "REGIME:REGIME_NO_TRADE": 5419,
+      "REGIME:REGIME_RANGE_LOW_VOL": 2816,
+      "SESSION_INACTIVE": 40140,
+      "CANDIDATE": 8232,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 5571,
+      "REGIME:REGIME_TRANSITION": 22139,
+      "REGIME:REGIME_RANGE_HIGH_VOL": 964,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 2513,
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 7909,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 92
+    },
+    "GBPUSD": {
+      "REGIME:REGIME_TRANSITION": 23156,
+      "REGIME:REGIME_NO_TRADE": 4747,
+      "REGIME:REGIME_RANGE_LOW_VOL": 2820,
+      "SESSION_INACTIVE": 40143,
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 8306,
+      "REGIME:REGIME_RANGE_HIGH_VOL": 1080,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 3407,
+      "CANDIDATE": 6881,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 5166,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 88
+    },
+    "USDJPY": {
+      "REGIME:REGIME_TRANSITION": 24346,
+      "SESSION_INACTIVE": 40143,
+      "REGIME:REGIME_NO_TRADE": 5682,
+      "REGIME:REGIME_RANGE_HIGH_VOL": 396,
+      "CANDIDATE": 6517,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 4974,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 4735,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 103,
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 7448,
+      "REGIME:REGIME_RANGE_LOW_VOL": 1455
+    },
+    "AUDUSD": {
+      "REGIME:REGIME_TRANSITION": 22419,
+      "SESSION_INACTIVE": 40143,
+      "REGIME:REGIME_RANGE_HIGH_VOL": 748,
+      "CANDIDATE": 8294,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 4819,
+      "REGIME:REGIME_NO_TRADE": 8503,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 1374,
+      "REGIME:REGIME_RANGE_LOW_VOL": 1004,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 141,
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 8352
+    },
+    "USDCAD": {
+      "REGIME:REGIME_RANGE_HIGH_VOL": 623,
+      "REGIME:REGIME_NO_TRADE": 6184,
+      "REGIME:REGIME_TRANSITION": 21790,
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 8666,
+      "SESSION_INACTIVE": 40141,
+      "REGIME:REGIME_RANGE_LOW_VOL": 2996,
+      "CANDIDATE": 7993,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 2152,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 5115,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 137
+    },
+    "USDCHF": {
+      "TECHNICAL:TECH_HIGHER_TIMEFRAME_MISALIGNED": 6746,
+      "REGIME:REGIME_TRANSITION": 22566,
+      "SESSION_INACTIVE": 40143,
+      "REGIME:REGIME_NO_TRADE": 7375,
+      "REGIME:REGIME_RANGE_HIGH_VOL": 856,
+      "REGIME:REGIME_RANGE_LOW_VOL": 2404,
+      "TECHNICAL:TECH_PULLBACK_OR_RSI_INVALID": 2071,
+      "CANDIDATE": 8278,
+      "TECHNICAL:TECH_CANDLE_CONFIRMATION_FAILED": 5234,
+      "TECHNICAL:TECH_RR_BELOW_MIN": 124
+    }
+  },
+  "overrides": {}
+}

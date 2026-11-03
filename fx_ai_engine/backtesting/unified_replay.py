@@ -343,6 +343,7 @@ class SimulationConfig:
     starting_balance: float = 100_000.0
     exit_mode: str = "policy"
     streak_reset: str = "week"  # "week": operator review clears a loss-streak halt each new ISO week
+    fixed_sizing: bool = False  # size every trade on starting_balance (edge measurement without compounding)
     start: pd.Timestamp | None = None
     end: pd.Timestamp | None = None
 
@@ -472,7 +473,8 @@ def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[st
             entry = b.open[i] - cost.slippage * pip
             stop = entry + signal.stop_pips * pip
             target = entry - signal.take_profit_pips * pip
-        lots = ea_lot_size(symbol, account.balance, risk_pct, signal.stop_pips, entry)
+        sizing_balance = config.starting_balance if config.fixed_sizing else account.balance
+        lots = ea_lot_size(symbol, sizing_balance, risk_pct, signal.stop_pips, entry)
         if lots <= 0:
             decisions["EA:REJECTED_LOT"] += 1
             return
