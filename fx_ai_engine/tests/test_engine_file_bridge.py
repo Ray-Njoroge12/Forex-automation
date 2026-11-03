@@ -54,3 +54,18 @@ def test_engine_runs_one_loop_on_file_bridge(tmp_path, monkeypatch, isolated_db)
     assert status.open_positions_count == 0
     assert status.state_reconciled, status.state_reconciliation_reason
     assert list((bridge_dir / "pending_signals").iterdir()) == []
+
+
+def test_future_broker_close_time_is_clamped_to_now():
+    """EA builds before 2026.11.03-3 wrote server time labelled as UTC (2-3 h ahead)."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    import main
+
+    holder = SimpleNamespace(_latest_broker_close_time_utc=None)
+    future = datetime.now(timezone.utc) + timedelta(hours=2)
+    main.Engine._record_broker_close_time(holder, future.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert holder._latest_broker_close_time_utc <= datetime.now(timezone.utc)
+    fresh_snapshot = {"timestamp": datetime.now(timezone.utc).isoformat()}
+    assert not main.Engine._is_snapshot_stale_after_broker_close(holder, fresh_snapshot)

@@ -1,0 +1,14 @@
+{
+  "case": "duplicate",
+  "trade_id": "DEMO_MATRIX_VALID",
+  "outcome": "HELD_FOR_RECONCILIATION",
+  "feedback": null,
+  "positions_before": 1,
+  "positions_after": 1,
+  "signal_file_remaining": false,
+  "observed_at_utc": "2026-11-03T16:08:04.567277+00:00",
+  "artifacts": [
+    "execution_DEMO_MATRIX_VALID.json",
+    "submission_DEMO_MATRIX_VALID.lock"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "trade_id": "DEMO_MATRIX_POSITION_LIMIT",
+  "symbol": "EURUSD",
+  "direction": "BUY",
+  "risk_percent": 0.001,
+  "stop_pips": 3.0,
+  "take_profit_pips": 6.6,
+  "timestamp_utc": "2026-11-03T16:07:58.547763+00:00",
+  "order_type": "MARKET",
+  "tp_mode": "FIXED",
+  "schema_version": 2,
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "policy_mode": "core_srs",
+  "reservation_id": "RSV_DEMO_POSITION_LIMIT_160754",
+  "issued_at": "2026-11-03T16:07:58.547741+00:00",
+  "expires_at": "2026-11-03T16:09:58.547741+00:00",
+  "max_spread_pips": 2.0,
+  "max_positions": 1,
+  "max_combined_exposure": 0.05
+}

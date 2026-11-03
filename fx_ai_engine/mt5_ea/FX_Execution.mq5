@@ -24,7 +24,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.03-2"
+#define EA_VERSION "2026.11.03-3"
 
 CTrade trade;
 
@@ -1067,7 +1067,15 @@ void WriteExitFeedback(
    payload += "\"is_final_exit\":true,";
    if(hasRMultiple)
       payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
-   payload += "\"close_time\":\"" + IsoTimestampUtc(closeTime) + "\"";
+   // Deal times are broker server time; convert to UTC before labelling "Z".
+   long offset = 0;
+   datetime closeUtc = closeTime;
+   if(ServerUtcOffsetSeconds(offset))
+      closeUtc = (datetime)((long)closeTime - offset);
+   else
+      closeUtc = TimeGMT(); // offset unknown: the close was just observed, so "now" is the safer bound
+   payload += "\"close_time\":\"" + IsoTimestampUtc(closeUtc) + "\"";
+   payload += ",\"close_time_server\":\"" + TimeToString(closeTime, TIME_DATE | TIME_SECONDS) + "\"";
    payload += "}";
 
    string filePath = ExitFilePath(ticket);

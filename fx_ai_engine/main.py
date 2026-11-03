@@ -6,7 +6,7 @@ import os
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -1223,6 +1223,15 @@ class Engine:
         close_time_utc = _parse_timestamp_utc(close_time_value)
         if close_time_utc is None:
             return
+        now_utc = datetime.now(timezone.utc)
+        if close_time_utc > now_utc + timedelta(seconds=60):
+            # EA builds before 2026.11.03-3 labelled broker server time as UTC.
+            # A future close time would make every fresh snapshot look stale.
+            logger.warning(
+                "Broker close_time %s is in the future; clamping to now (server-time label?)",
+                close_time_utc.isoformat(),
+            )
+            close_time_utc = now_utc
         if self._latest_broker_close_time_utc is None or close_time_utc > self._latest_broker_close_time_utc:
             self._latest_broker_close_time_utc = close_time_utc
 
