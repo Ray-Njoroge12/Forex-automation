@@ -1,25 +1,5 @@
 [
   {
-    "datetime_utc": "2026-11-02T15:00:00Z",
-    "currency": "USD",
-    "impact": "high",
-    "event": "ISM Manufacturing PMI",
-    "source_url": "https://www.ismworld.org/",
-    "mt5_event_id": 840040001,
-    "mt5_value_id": 299127,
-    "time_exact": true
-  },
-  {
-    "datetime_utc": "2026-11-02T15:00:00Z",
-    "currency": "USD",
-    "impact": "high",
-    "event": "ISM Manufacturing Prices Paid",
-    "source_url": "https://www.ismworld.org/",
-    "mt5_event_id": 840040002,
-    "mt5_value_id": 299128,
-    "time_exact": true
-  },
-  {
     "datetime_utc": "2026-11-03T15:00:00Z",
     "currency": "USD",
     "impact": "high",

@@ -1,6 +1,6 @@
 {
-  "installed_at": "2026-11-03T14:28:52.456000+00:00",
+  "installed_at": "2026-11-03T16:30:58.495440+00:00",
   "source_file": "market_context_2026-11-03_mt5_calendar.json",
-  "source_sha256": "a48dde6d5d68262ce20d83381fcb366903b99b6ad0aa1b50a5e3a2dbf4bac34a",
-  "quality": "coverage_end=2026-11-17T13:30:00+00:00 valid_events=33"
+  "source_sha256": "5caaffbbbd3b4b4332f9b480330afd5771aed0fbb1c481de84a3710d325e4364",
+  "quality": "coverage_end=2026-11-17T13:30:00+00:00 valid_events=31"
 }
