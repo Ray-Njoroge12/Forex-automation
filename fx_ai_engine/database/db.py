@@ -740,6 +740,41 @@ def apply_execution_feedback(payload: dict[str, Any], *, dedupe_key: str, source
     return "applied"
 
 
+def list_unresolved_execution_feedback_conflicts() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""SELECT id, evidence_stream, account_scope, dedupe_key, trade_id, reason,
+            payload_json, created_at FROM execution_feedback_conflicts WHERE resolved_at IS NULL ORDER BY id""").fetchall()
+    return [dict(row) for row in rows]
+
+
+def resolve_execution_feedback_conflict(conflict_id: int, *, operator_note: str, now_utc: str | None = None) -> bool:
+    """Mark one conflict resolved and record the operator's broker evidence as a risk event.
+
+    The note must describe the evidence checked (orders, deals, positions, EA log);
+    resolution never changes trades or reservations.
+    """
+    note = str(operator_note or "").strip()
+    if len(note) < 20:
+        raise ValueError("operator_note must describe the broker evidence checked (at least 20 characters)")
+    now = now_utc or datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        row = conn.execute("""SELECT trade_id, reason, evidence_stream, account_scope FROM execution_feedback_conflicts
+            WHERE id=? AND resolved_at IS NULL""", (int(conflict_id),)).fetchone()
+        if row is None:
+            return False
+        stream = str(row[2] or "")
+        # Evidence streams are "runtime_<execution_mode>_<policy_mode>[__<experiment>]".
+        execution_mode, _, policy_part = stream.removeprefix("runtime_").partition("_")
+        policy_mode = policy_part.split("__")[0] or "unknown"
+        conn.execute("UPDATE execution_feedback_conflicts SET resolved_at=? WHERE id=?", (now, int(conflict_id)))
+        conn.execute("""INSERT INTO risk_events (timestamp, rule_name, severity, reason, trade_id, evidence_stream,
+            policy_mode, execution_mode, account_scope) VALUES (?, 'FEEDBACK_CONFLICT_RESOLVED', 'INFO', ?, ?, ?, ?, ?, ?)""",
+            (now, f"conflict_id={conflict_id} reason={row[1]} operator_note={note}", row[0], stream,
+             policy_mode, execution_mode or "unknown", row[3]))
+    return True
+
+
 def has_unresolved_execution_feedback(evidence_context: EvidenceContext) -> bool:
     with get_conn() as conn:
         conflict = conn.execute("SELECT 1 FROM execution_feedback_conflicts WHERE evidence_stream=? AND account_scope=? AND resolved_at IS NULL LIMIT 1",

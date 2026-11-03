@@ -1,0 +1,28 @@
+{
+  "case": "expired",
+  "trade_id": "DEMO_MATRIX_EXPIRED",
+  "outcome": "REJECTED_EXPIRED",
+  "feedback": {
+    "trade_id": "DEMO_MATRIX_EXPIRED",
+    "ticket": 0,
+    "position_ticket": 0,
+    "status": "REJECTED_EXPIRED",
+    "entry_price": 0.0,
+    "slippage": 0.0,
+    "spread_at_entry": 0.0,
+    "lot_size": 0.0,
+    "profit_loss": 0.0,
+    "r_multiple": 0.0,
+    "server_retcode": 0,
+    "broker_order": 0,
+    "broker_deal": 0,
+    "close_time": "2026-11-03T14:31:04Z"
+  },
+  "positions_before": 0,
+  "positions_after": 0,
+  "signal_file_remaining": false,
+  "observed_at_utc": "2026-11-03T14:31:07.335107+00:00",
+  "artifacts": [
+    "execution_DEMO_MATRIX_EXPIRED.json"
+  ]
+}

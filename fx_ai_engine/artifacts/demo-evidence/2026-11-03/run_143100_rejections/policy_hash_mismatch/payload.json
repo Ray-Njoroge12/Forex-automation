@@ -1,0 +1,19 @@
+{
+  "trade_id": "DEMO_MATRIX_POLICY_HASH_MISMATCH",
+  "symbol": "EURUSD",
+  "direction": "BUY",
+  "risk_percent": 0.001,
+  "stop_pips": 20.0,
+  "take_profit_pips": 44.0,
+  "timestamp_utc": "2026-11-03T14:31:07.336171+00:00",
+  "order_type": "MARKET",
+  "schema_version": 2,
+  "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "policy_mode": "core_srs",
+  "reservation_id": "RSV_DEMO_POLICY_HASH_MISMATCH_143101",
+  "issued_at": "2026-11-03T14:31:07.336165+00:00",
+  "expires_at": "2026-11-03T14:33:07.336165+00:00",
+  "max_spread_pips": 2.0,
+  "max_positions": 2,
+  "max_combined_exposure": 0.05
+}

@@ -1,0 +1,11 @@
+{
+  "case": "malformed_schema",
+  "trade_id": "DEMO_MATRIX_MALFORMED",
+  "outcome": "DELETED_NO_FEEDBACK",
+  "feedback": null,
+  "positions_before": 0,
+  "positions_after": 0,
+  "signal_file_remaining": false,
+  "observed_at_utc": "2026-11-03T14:31:04.327404+00:00",
+  "artifacts": []
+}

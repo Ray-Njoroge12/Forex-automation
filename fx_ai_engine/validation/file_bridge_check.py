@@ -43,6 +43,17 @@ def run_checks(bridge_dir: Path) -> list[Check]:
     ))
     demo = conn.is_demo_account()
     checks.append(Check("demo_account", demo is True, f"is_demo_account={demo}"))
+    try:
+        status = conn._status()
+        flags = {k: status.get(k) for k in ("terminal_trade_allowed", "ea_trade_allowed", "account_trade_allowed")}
+        checks.append(Check(
+            "trading_enabled",
+            all(v is True for v in flags.values()),
+            " ".join(f"{k}={v}" for k, v in flags.items())
+            + ("" if all(v is True for v in flags.values()) else " (enable the MT5 Algo Trading button and the EA's Allow Algo Trading)"),
+        ))
+    except FileBridgeDataError as exc:
+        checks.append(Check("trading_enabled", False, str(exc)))
 
     snapshot = conn.get_account_snapshot() or {}
     checks.append(Check(

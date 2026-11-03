@@ -1,6 +1,6 @@
 {
-  "installed_at": "2026-08-31T15:13:05.202538+00:00",
-  "source_file": "market_context_2026-08-31_calendar.json",
-  "source_sha256": "8520e545b2a6c4f0913a9575011c7ee08c363e9f2e152b79aed7906abbd3eaac",
-  "quality": "coverage_end=2026-09-29T04:30:00+00:00 valid_events=10"
+  "installed_at": "2026-11-03T14:28:52.456000+00:00",
+  "source_file": "market_context_2026-11-03_mt5_calendar.json",
+  "source_sha256": "a48dde6d5d68262ce20d83381fcb366903b99b6ad0aa1b50a5e3a2dbf4bac34a",
+  "quality": "coverage_end=2026-11-17T13:30:00+00:00 valid_events=33"
 }

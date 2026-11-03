@@ -24,7 +24,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.03-1"
+#define EA_VERSION "2026.11.03-2"
 
 CTrade trade;
 
@@ -327,6 +327,11 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"account_is_demo\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "true" : "false") + ",";
    payload += "\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + ",";
    payload += "\"server\":\"" + JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\",";
+   // Terminal "Algo Trading" button, the EA's own "Allow Algo Trading" setting,
+   // and the account's trading permission. All must be true for orders to work.
+   payload += "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ? "true" : "false") + ",";
+   payload += "\"ea_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) ? "true" : "false") + ",";
+   payload += "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) ? "true" : "false") + ",";
    payload += "\"calendar_generated_at\":\"" + g_calendar_generated_at + "\",";
    payload += "\"calendar_high_impact_events\":" + IntegerToString(g_calendar_event_count) + ",";
    payload += "\"latest_closed_bars\":{";

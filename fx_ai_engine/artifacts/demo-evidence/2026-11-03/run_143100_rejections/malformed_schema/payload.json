@@ -1,0 +1,11 @@
+{
+  "trade_id": "DEMO_MATRIX_MALFORMED",
+  "symbol": "EURUSD",
+  "direction": "BUY",
+  "risk_percent": 0.001,
+  "stop_pips": 20.0,
+  "take_profit_pips": 44.0,
+  "timestamp_utc": "2026-11-03T14:31:01.317603+00:00",
+  "order_type": "MARKET",
+  "schema_version": 999
+}

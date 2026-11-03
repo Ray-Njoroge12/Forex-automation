@@ -1,0 +1,19 @@
+{
+  "trade_id": "DEMO_MATRIX_SPREAD_LIMIT",
+  "symbol": "USDJPY",
+  "direction": "BUY",
+  "risk_percent": 0.001,
+  "stop_pips": 20.0,
+  "take_profit_pips": 44.0,
+  "timestamp_utc": "2026-11-03T14:33:23.821749+00:00",
+  "order_type": "MARKET",
+  "schema_version": 2,
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "policy_mode": "core_srs",
+  "reservation_id": "RSV_DEMO_SPREAD_LIMIT_143323",
+  "issued_at": "2026-11-03T14:33:23.821744+00:00",
+  "expires_at": "2026-11-03T14:35:23.821744+00:00",
+  "max_spread_pips": 0.0001,
+  "max_positions": 2,
+  "max_combined_exposure": 0.05
+}
