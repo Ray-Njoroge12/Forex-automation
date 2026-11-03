@@ -15,7 +15,7 @@ input int    YearsBack = 5;
 input string OutFolder = "history";
 
 string          g_symbols[] = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"};
-ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4};
+ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
 
 string TfName(const ENUM_TIMEFRAMES tf)
 {
@@ -24,6 +24,7 @@ string TfName(const ENUM_TIMEFRAMES tf)
       case PERIOD_M15: return "M15";
       case PERIOD_H1:  return "H1";
       case PERIOD_H4:  return "H4";
+      case PERIOD_D1:  return "D1";
       default:         return "";
    }
 }

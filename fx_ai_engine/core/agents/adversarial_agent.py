@@ -70,8 +70,11 @@ class AdversarialAgent:
         technical_signal: TechnicalSignal,
         account_status: AccountStatus,
         timeframe_m15: int,
+        now_utc: datetime | None = None,
     ) -> AdversarialDecision:
-        now = datetime.now(timezone.utc).isoformat()
+        # Replay passes the bar decision time; live uses the wall clock.
+        decision_time = now_utc or datetime.now(timezone.utc)
+        now = decision_time.isoformat()
 
         spread = self.fetch_spread(self.symbol)
         if spread is None:
@@ -85,7 +88,7 @@ class AdversarialAgent:
 
         pip_value = 0.0001 if "JPY" not in self.symbol else 0.01
         spread_pips = spread / pip_value
-        session = get_active_session(datetime.now(timezone.utc))
+        session = get_active_session(decision_time)
         base_limit = self.symbol_spread_limits.get(self.symbol, self.max_spread_pips)
         spread_limit = base_limit * self.session_spread_multiplier.get(session, 1.0)
         if spread_pips > spread_limit:
