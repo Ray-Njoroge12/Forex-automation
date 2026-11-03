@@ -27,11 +27,21 @@ mkdir -p "$STAGE" "$ARTIFACTS"
 cp "$SOURCE" "$STAGE/FX_Execution.mq5"
 cp -R "$TERMINAL_DIR/MQL5/Include" "$STAGE/Include"
 
-# Z: maps to the macOS root inside Wine.
+# Z: maps to the macOS root inside Wine. MetaEditor sometimes keeps the Wine
+# process alive after compiling, so wait for the log's Result line instead.
 "$WINE" "$TERMINAL_DIR/metaeditor64.exe" \
   /compile:"Z:$STAGE/FX_Execution.mq5" \
   /include:"Z:$STAGE" \
-  /log:"Z:$STAGE/compile.log" >/dev/null 2>&1 || true
+  /log:"Z:$STAGE/compile.log" >/dev/null 2>&1 &
+WINE_PID=$!
+for _ in $(seq 1 120); do
+  if [[ -f "$STAGE/compile.log" ]] && iconv -f UTF-16LE -t UTF-8 "$STAGE/compile.log" 2>/dev/null | grep -aq "Result:"; then
+    break
+  fi
+  sleep 1
+done
+sleep 1
+kill "$WINE_PID" 2>/dev/null || true
 
 [[ -f "$STAGE/compile.log" ]] || { echo "No compile log produced" >&2; exit 1; }
 iconv -f UTF-16LE -t UTF-8 "$STAGE/compile.log" > "$ARTIFACTS/compile.txt" 2>/dev/null || cp "$STAGE/compile.log" "$ARTIFACTS/compile.txt"
