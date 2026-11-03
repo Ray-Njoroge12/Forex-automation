@@ -206,13 +206,16 @@ def _r1_checks(r1: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _r4_check(trades: Sequence[Mapping[str, Any]], frames: Frames, cost: CostModel, min_multiple: float) -> dict[str, Any]:
-    rc = cost_stress.recost_trades(trades, frames, cost, (1.0, min_multiple))
+    """Multiples are absolute: the trades' realised R is taken at cost.multiplier and re-costed from there."""
+    m0 = float(cost.multiplier)
+    rc = cost_stress.recost_trades(trades, frames, cost, sorted({1.0, m0, float(min_multiple)}))
     if rc.get("no_trades"):
         return _check("R4_COST_STRESS", False, [{"reason": "R4_NO_TRADES"}], recost=rc, min_breakeven_multiple=min_multiple)
-    at_stress = rc["rows"][-1]["expectancy_r"]
+    by_m = {row["multiple"]: row["expectancy_r"] for row in rc["rows"]}
+    at_stress = by_m[float(min_multiple)]
     ok = at_stress is not None and at_stress > 0
-    detail = [{"expectancy_r_at_1x": rc["rows"][0]["expectancy_r"], f"expectancy_r_at_{min_multiple:g}x": at_stress,
-               "breakeven_multiple": rc["breakeven_label"]}]
+    detail = [{"replay_cost_multiplier": m0, "expectancy_r_at_1x": by_m[1.0],
+               f"expectancy_r_at_{min_multiple:g}x": at_stress, "breakeven_multiple": rc["breakeven_label"]}]
     return _check("R4_COST_STRESS", ok, detail, recost=rc, min_breakeven_multiple=min_multiple)
 
 

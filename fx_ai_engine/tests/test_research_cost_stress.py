@@ -64,6 +64,37 @@ def test_scale_commission_changes_recost_only_through_commission():
         assert p["expectancy_r"] - s["expectancy_r"] == pytest.approx((p["multiple"] - 1) * 0.07, abs=1e-4)
 
 
+STRESS_1_5X = CostModel("stress_1_5x", 1.5, use_bar_spread=False, spread_floor_pips={"EURUSD": 1.0},
+                        slippage_pips=0.5)
+
+
+def _stress_1_5x(trades: list[dict]) -> list[dict]:
+    """The same trades as if replayed at stress_1_5x: s = 0.2 R and c = commission/risk per 1x, both scaled 1.5x."""
+    out = []
+    for t in trades:
+        c = t["commission_usd"] / t["risk_usd"]
+        out.append(dict(t, r_multiple=t["r_multiple"] - 0.5 * 0.2 - 0.5 * c, commission_usd=1.5 * t["commission_usd"]))
+    return out
+
+
+@pytest.mark.parametrize("scale_commission", [False, True])
+def test_recost_of_stress_replay_uses_absolute_multiples(scale_commission):
+    base_trades = [_trade("BUY", 1.0, commission_usd=70.0), _trade("SELL", -0.6, commission_usd=70.0)]
+    stress_trades = _stress_1_5x(base_trades)
+    multiples = (1.0, 1.5, 2.0, 3.0)
+    base = cost_stress.recost_trades(base_trades, _frames(), COST, multiples, scale_commission=scale_commission)
+    stress = cost_stress.recost_trades(stress_trades, _frames(), STRESS_1_5X, multiples,
+                                       scale_commission=scale_commission)
+    assert stress["replay_cost_multiplier"] == 1.5 and stress["replay_commission_multiplier"] == 1.5
+    by_m = {row["multiple"]: row for row in stress["rows"]}
+    if scale_commission:
+        assert by_m[1.5]["expectancy_r"] == pytest.approx(np.mean([t["r_multiple"] for t in stress_trades]), abs=1e-4)
+    assert [row["expectancy_r"] for row in stress["rows"]] == pytest.approx(
+        [row["expectancy_r"] for row in base["rows"]], abs=1e-4)
+    assert stress["breakeven_multiple"] == pytest.approx(base["breakeven_multiple"], abs=1e-4)
+    assert by_m[1.0]["below_replay_cost"] and not by_m[2.0]["below_replay_cost"]
+
+
 def test_fixture_cost_stress_table():
     frames = load_frames(bridge_dir=FIXTURE)
     report, trades = cost_stress.run_cost_stress(frames, policy_for_variant("baseline")[0])

@@ -27,9 +27,9 @@ On a history export use `--data-dir artifacts/datasets/<dataset>`. Other options
 - `rerun`: stage 2 re-simulated with costs scaled. `trades`, `expectancy_r`, `expectancy_r_ci95`, `profit_factor`, `net_usd` per multiple; `expectancy_r` is null with 0 trades. This includes the selection effect: the adversarial spread filter (`ADV_SPREAD_TOO_WIDE`) blocks entries as spreads widen, and sizing changes with balance.
 - `notes`: what `run_replay` already provides and what this tool adds.
 
-Re-cost model: `R(m) = r − (m − 1) × (spread_1x + 2 × slippage_1x) / stop_pips`. Spread is taken from the entry bar for BUY (ask paid at entry) and from the exit bar for SELL. Exact under the linear model; approximate for trades with a partial close.
+Re-cost model: `R(m) = r − (m − m0) × (spread_1x + 2 × slippage_1x) / stop_pips`, where `m0` is the cost multiple the trades were replayed at (`recost.replay_cost_multiplier`: 1.0 for `base`, 1.5 for `stress_1_5x`). Multiples are always absolute (1× = base cost), so a `stress_1_5x` replay's 2× row means 2× base cost, and its 1.5× row is its realised expectancy when commission is scaled. Rows with `below_replay_cost: true` add cost back out of the realised trades. Spread is taken from the entry bar for BUY (ask paid at entry) and from the exit bar for SELL. Exact under the linear model; approximate for trades with a partial close.
 
-Commission: held at 1× by default (the task's spread-plus-slippage definition). `--scale-commission` also subtracts `(m − 1) × commission_usd / risk_usd`, matching `run_replay`'s `CostModel`, which scales spread, slippage and commission together (profiles `base`, `stress_1_5x`, `stress_2x`).
+Commission: held at 1× by default (the task's spread-plus-slippage definition), whatever multiple `k` the replay applied (`recost.replay_commission_multiplier`); the 1× commission is `commission_usd / k`. `--scale-commission` sets commission to `m` instead, matching `run_replay`'s `CostModel`, which scales spread, slippage and commission together (profiles `base`, `stress_1_5x`, `stress_2x`). `recost_trades` must be given the cost model the trades were replayed with.
 
 The R2 gate uses the re-cost at 2×: it passes only when expectancy there is above 0.
 
