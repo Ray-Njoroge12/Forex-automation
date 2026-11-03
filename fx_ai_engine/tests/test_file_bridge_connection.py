@@ -18,14 +18,14 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _last_closed(tf: str) -> int:
+def _last_closed(tf: str, now: datetime = NOW) -> int:
     step = TF_SECONDS[tf]
-    current_open = int(NOW.timestamp()) // step * step
+    current_open = int(now.timestamp()) // step * step
     return current_open - step
 
 
-def _bars(tf: str, count: int = 5) -> list[list[float]]:
-    last = _last_closed(tf)
+def _bars(tf: str, count: int = 5, now: datetime = NOW) -> list[list[float]]:
+    last = _last_closed(tf, now)
     rows = []
     for i in range(count):
         t = last - (count - 1 - i) * TF_SECONDS[tf]
@@ -38,13 +38,15 @@ def _write(path: Path, payload) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-@pytest.fixture
-def bridge(tmp_path: Path) -> Path:
-    market = tmp_path / "market"
-    feedback = tmp_path / "feedback"
+def build_bridge(root: Path, now: datetime = NOW, *, open_tickets: tuple[int, ...] = (111,), bar_count: int = 5) -> Path:
+    """Write a complete, fresh set of EA exports under *root* (reused by engine tests)."""
+    market = root / "market"
+    feedback = root / "feedback"
+    for sub in ("pending_signals", "exits", "active_locks"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
     status = {
         "schema_version": 1,
-        "generated_at": _iso(NOW - timedelta(seconds=3)),
+        "generated_at": _iso(now - timedelta(seconds=3)),
         "ea_version": "test",
         "magic": 20261103,
         "server_utc_offset_seconds": 7200,
@@ -53,43 +55,45 @@ def bridge(tmp_path: Path) -> Path:
         "account_is_demo": True,
         "login": 5058284077,
         "server": "MetaQuotes-Demo",
-        "latest_closed_bars": {s: {tf: _last_closed(tf) for tf in TF_SECONDS} for s in SYMBOLS},
+        "latest_closed_bars": {s: {tf: _last_closed(tf, now) for tf in TF_SECONDS} for s in SYMBOLS},
     }
     _write(market / "status.json", status)
     for sym in SYMBOLS:
         for tf in TF_SECONDS:
             _write(market / f"bars_{sym}_{tf}.json", {
                 "schema_version": 1, "symbol": sym, "timeframe": tf,
-                "generated_at": _iso(NOW - timedelta(minutes=7)),
+                "generated_at": _iso(now - timedelta(minutes=7)),
                 "server_utc_offset_seconds": 7200,
                 "columns": ["time_utc", "open", "high", "low", "close", "tick_volume", "spread_points"],
-                "bars": _bars(tf),
+                "bars": _bars(tf, bar_count, now),
             })
     _write(feedback / "account_snapshot.json", {
-        "timestamp": _iso(NOW - timedelta(seconds=4)),
+        "timestamp": _iso(now - timedelta(seconds=4)),
         "account_is_demo": True, "account_authenticated": True, "terminal_connected": True,
         "login": 5058284077, "server": "MetaQuotes-Demo", "currency": "USD",
         "balance": 100000.0, "equity": 100050.0, "margin_free": 99000.0,
-        "open_positions_count": 1, "floating_pnl": 50.0, "open_symbols": ["EURUSD"],
-        "open_usd_exposure_count": 1, "management_state_restored": True,
-        "managed_positions_count": 1, "managed_position_tickets": [111], "unmanaged_position_tickets": [],
+        "open_positions_count": len(open_tickets), "floating_pnl": 50.0 if open_tickets else 0.0,
+        "open_symbols": ["EURUSD"] if open_tickets else [],
+        "open_usd_exposure_count": 1 if open_tickets else 0, "management_state_restored": True,
+        "managed_positions_count": len(open_tickets), "managed_position_tickets": list(open_tickets),
+        "unmanaged_position_tickets": [],
     })
     _write(feedback / "market_quotes.json", {
-        "schema_version": 1, "timestamp": _iso(NOW - timedelta(seconds=2)),
+        "schema_version": 1, "timestamp": _iso(now - timedelta(seconds=2)),
         "account_is_demo": True, "account_authenticated": True, "terminal_connected": True,
         "quotes": [{"symbol": "EURUSD", "bid": 1.10000, "ask": 1.10012, "tick_age_seconds": 1}],
     })
     _write(market / "symbols.json", {
-        "schema_version": 1, "generated_at": _iso(NOW - timedelta(seconds=20)),
+        "schema_version": 1, "generated_at": _iso(now - timedelta(seconds=20)),
         "symbols": {"EURUSD": {"digits": 5, "point": 0.00001, "tick_size": 0.00001, "tick_value": 1.0,
                                "contract_size": 100000, "volume_min": 0.01, "volume_step": 0.01,
                                "volume_max": 500, "stops_level": 0, "freeze_level": 0,
                                "filling_mode": 1, "trade_mode": 4, "swap_long": -1, "swap_short": 0.5}},
     })
-    open_ms = int((NOW - timedelta(hours=2)).timestamp() * 1000)
-    close_ms = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    open_ms = int((now - timedelta(hours=2)).timestamp() * 1000)
+    close_ms = int((now - timedelta(hours=1)).timestamp() * 1000)
     _write(market / "deals.json", {
-        "schema_version": 1, "generated_at": _iso(NOW - timedelta(seconds=10)),
+        "schema_version": 1, "generated_at": _iso(now - timedelta(seconds=10)),
         "server_utc_offset_seconds": 7200, "lookback_days": 30,
         "deals": [
             {"ticket": 2, "order": 20, "position_id": 999, "time_msc": close_ms, "type": 1, "entry": 1,
@@ -100,7 +104,12 @@ def bridge(tmp_path: Path) -> Path:
              "swap": 0.0, "fee": 0.0, "magic": 20261103, "comment": "AI_TEST_1"},
         ],
     })
-    return tmp_path
+    return root
+
+
+@pytest.fixture
+def bridge(tmp_path: Path) -> Path:
+    return build_bridge(tmp_path)
 
 
 def _conn(path: Path, now: datetime = NOW) -> FileBridgeConnection:
