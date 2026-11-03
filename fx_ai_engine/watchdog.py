@@ -69,6 +69,20 @@ def _get_mt5_path() -> str | None:
     return None
 
 def _ensure_mt5_running() -> None:
+    if sys.platform == "darwin":
+        # MT5 runs inside Wine; the process command line contains terminal64.exe.
+        for proc in psutil.process_iter(["cmdline"]):
+            try:
+                if any("terminal64.exe" in arg for arg in (proc.info.get("cmdline") or [])):
+                    return
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        logger.warning("MT5 terminal not detected — opening MetaTrader 5.app")
+        try:
+            subprocess.Popen(["open", "-a", "MetaTrader 5"])
+        except OSError as e:
+            logger.error("Failed to open MetaTrader 5.app: %s", e)
+        return
     path = _get_mt5_path()
     if path:
         # It's running, good. We could save this path for later.

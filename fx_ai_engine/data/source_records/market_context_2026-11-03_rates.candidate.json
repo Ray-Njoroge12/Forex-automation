@@ -1,0 +1,24 @@
+{
+  "_comment": "CANDIDATE for owner review, not installed. Rate differential = base-currency policy rate minus quote-currency policy rate (percentage points). Fed uses target-range midpoint (3.875%). Install after review: python -m validation.update_market_context --rates data/source_records/market_context_2026-11-03_rates.candidate.json",
+  "_last_updated": "2026-11-03T00:00:00Z",
+  "_review_required": [
+    "CAD: 2.50% (28 Oct 2026 hike) is reported by cbrates.com, econolens.co.in and forexuro.com, but the Bank of Canada key-interest-rate page fetched on 2026-11-03 still listed 2.25% (2 Sep 2026). Confirm on bankofcanada.ca before installing.",
+    "GBP: Bank of England decides on 5 Nov 2026; update this file after the decision."
+  ],
+  "_rate_definition": "EUR ECB deposit facility 2.50; GBP Bank Rate 3.75; USD federal-funds target-range midpoint 3.875; JPY BOJ policy rate 1.25; AUD RBA cash-rate target 4.85; CAD target for overnight rate 2.50 (verify); CHF SNB policy rate 0.00.",
+  "_sources": {
+    "USD": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm",
+    "EUR": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
+    "GBP": "https://www.bankofengland.co.uk/monetary-policy/the-interest-rate-bank-rate",
+    "JPY": "https://www.cbrates.com/decisions.htm (BOJ raised to 1.25% on 18 Sep 2026; held 30 Oct)",
+    "AUD": "https://www.rba.gov.au/cash-rate-target-overview.html",
+    "CAD": "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/",
+    "CHF": "https://www.snb.ch/en/the-snb/mandates-goals/monetary-policy/decisions"
+  },
+  "EURUSD": -1.375,
+  "GBPUSD": -0.125,
+  "USDJPY": 2.625,
+  "AUDUSD": 0.975,
+  "USDCAD": 1.375,
+  "USDCHF": 3.875
+}
