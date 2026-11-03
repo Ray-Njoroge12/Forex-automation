@@ -5,7 +5,24 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from core.account_status import AccountStatus
-from main import Engine, _snapshot_age_seconds
+import pytest
+
+from main import Engine, _snapshot_age_seconds, _demo_account_verified
+
+
+@pytest.mark.parametrize("account_type,expected", [(True, True), (False, False), (None, False)])
+def test_demo_account_gate_requires_verified_demo(account_type, expected):
+    assert _demo_account_verified(SimpleNamespace(is_demo_account=lambda: account_type), use_mock=False) is expected
+
+
+def test_demo_loop_stops_before_processing_if_account_changes():
+    engine = Engine.__new__(Engine)
+    engine.bridge = SimpleNamespace(is_demo_account=lambda: False)
+    engine.use_mock = False
+    engine.account_status = AccountStatus()
+    engine._consume_feedback = lambda: pytest.fail("feedback must not be consumed on a live account")
+    engine.run("demo", iterations=1)
+    assert engine.account_status.is_trading_halted
 
 
 def test_snapshot_age_seconds_computes_age() -> None:

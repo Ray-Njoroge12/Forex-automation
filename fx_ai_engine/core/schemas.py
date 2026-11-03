@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 from core.types import TechnicalSignal
@@ -53,6 +54,8 @@ def validate_signal_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_execution_feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise SchemaError("ExecutionFeedback must be an object")
     required = {
         "trade_id",
         "ticket",
@@ -66,6 +69,32 @@ def validate_execution_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         "close_time",
     }
     _required(payload, required, "ExecutionFeedback")
+    statuses = {
+        "EXECUTED", "REJECTED_POLICY_CONFIGURATION", "REJECTED_POLICY_HASH",
+        "REJECTED_SPREAD", "REJECTED_POSITION_LIMIT", "REJECTED_LOT",
+        "REJECTED_ORDER_SEND", "EXECUTION_UNCERTAIN",
+    }
+    if not isinstance(payload["trade_id"], str) or not payload["trade_id"].strip():
+        raise SchemaError("ExecutionFeedback trade_id must be nonempty")
+    if not isinstance(payload["status"], str) or payload["status"] not in statuses:
+        raise SchemaError("ExecutionFeedback status is not recognized")
+    ticket = payload["ticket"]
+    if isinstance(ticket, bool) or not isinstance(ticket, int) or ticket < 0:
+        raise SchemaError("ExecutionFeedback ticket must be a nonnegative integer")
+    if payload["status"] == "EXECUTED" and ticket == 0:
+        raise SchemaError("ExecutionFeedback EXECUTED requires a positive integer ticket")
+    if payload["status"] != "EXECUTED" and ticket != 0:
+        raise SchemaError("ExecutionFeedback rejection cannot include an execution ticket")
+    for field in ("entry_price", "lot_size", "slippage", "spread_at_entry", "profit_loss", "r_multiple"):
+        value = payload[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise SchemaError(f"ExecutionFeedback {field} must be a finite number")
+    if payload["status"] == "EXECUTED" and (payload["entry_price"] <= 0 or payload["lot_size"] <= 0):
+        raise SchemaError("ExecutionFeedback EXECUTED requires positive entry_price and lot_size")
+    if payload["spread_at_entry"] < 0:
+        raise SchemaError("ExecutionFeedback spread_at_entry must be nonnegative")
+    if "position_ticket" in payload and (isinstance(payload["position_ticket"], bool) or not isinstance(payload["position_ticket"], int) or payload["position_ticket"] < 0):
+        raise SchemaError("ExecutionFeedback position_ticket must be a nonnegative integer")
     return payload
 
 

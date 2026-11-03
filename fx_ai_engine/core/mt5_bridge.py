@@ -91,7 +91,8 @@ def _closed_history_summary_from_deals(
 
     open_deal = open_deals[0] if open_deals else matched[0]
     close_deal = close_deals[-1]
-    raw_type = int(getattr(open_deal, "type", -1) or -1)
+    raw_type_value = getattr(open_deal, "type", None)
+    raw_type = int(raw_type_value) if raw_type_value is not None else -1
     direction = None
     if raw_type == order_type_buy:
         direction = "BUY"
@@ -420,7 +421,11 @@ class MT5Connection:
             }
 
         positions = mt5.positions_get() if mt5 is not None else None
-        open_positions = list(positions) if positions else []
+        if positions is None:
+            return {"error": self._make_error(
+                "MT5_POSITIONS_UNAVAILABLE", "Cannot verify broker positions for account snapshot."
+            ).__dict__}
+        open_positions = list(positions)
 
         floating_pnl = float(sum(getattr(pos, "profit", 0.0) for pos in open_positions))
         raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
@@ -444,18 +449,19 @@ class MT5Connection:
         )
         return snapshot
 
-    def get_open_position_tickets(self) -> list[int]:
+    def get_open_position_tickets(self) -> list[int] | None:
         """Returns current broker position tickets for reconciliation checks."""
         if not self._ensure_connected():
             self._make_error(
                 "MT5_NOT_CONNECTED",
                 "Cannot fetch open position tickets because MT5 is not connected.",
             )
-            return []
+            return None
 
         positions = mt5.positions_get() if mt5 is not None else None
-        if not positions:
-            return []
+        if positions is None:
+            self._make_error("MT5_POSITIONS_UNAVAILABLE", "Cannot verify open position tickets.")
+            return None
 
         tickets: set[int] = set()
         for pos in positions:

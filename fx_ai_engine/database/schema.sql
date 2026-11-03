@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS trade_reservations (
 CREATE INDEX IF NOT EXISTS idx_trade_reservations_state_expiry
     ON trade_reservations(state, expires_at);
 
+CREATE TABLE IF NOT EXISTS execution_feedback_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evidence_stream TEXT NOT NULL, account_scope TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL, trade_id TEXT NOT NULL,
+    reason TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
+    resolved_at TEXT, UNIQUE(evidence_stream, account_scope, dedupe_key)
+);
+
 CREATE TABLE IF NOT EXISTS trade_lifecycle_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id TEXT NOT NULL,

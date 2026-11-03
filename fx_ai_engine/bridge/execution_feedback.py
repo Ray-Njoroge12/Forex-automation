@@ -89,7 +89,7 @@ class ExecutionFeedbackReader:
         return None, "locked"
 
     def _should_block_mock_payload(self, payload: dict[str, Any]) -> bool:
-        if self.allow_mock_artifacts:
+        if self.allow_mock_artifacts or not isinstance(payload, dict):
             return False
         source = str(payload.get("feedback_source", payload.get("snapshot_source", "")) or "").strip().lower()
         return source == "mock_feedback_simulator"

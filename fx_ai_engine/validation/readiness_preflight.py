@@ -30,7 +30,7 @@ class CheckResult:
 
 
 def _database_schema_check(database_path: Path) -> CheckResult:
-    required = {"trades", "trade_reservations", "trade_lifecycle_events"}
+    required = {"trades", "trade_reservations", "trade_lifecycle_events", "feedback_receipts", "execution_feedback_conflicts"}
     if not database_path.is_file():
         return CheckResult("database_schema", False, f"database missing: {database_path}")
     try:

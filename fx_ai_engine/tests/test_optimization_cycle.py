@@ -16,6 +16,7 @@ from config_microcapital import get_policy_config
 from core.account_status import AccountStatus
 from core.data_quality.freshness import evaluate_calendar_freshness, evaluate_rate_differential_freshness
 from core.policy.envelope import attach_execution_envelope, validate_execution_envelope
+from core.schemas import SchemaError, validate_execution_feedback
 from database import db as db_mod
 from validation import update_market_context
 from validation.prepare_replay_dataset import write_manifest
@@ -84,6 +85,56 @@ def test_reservation_rejects_projected_exposure_before_position_cap(tmp_path, mo
     service.reserve_and_route(_payload("T1", "EURUSD", 0.032), account_status=account)
     with pytest.raises(ReservationRejected, match="RESERVATION_MAX_EXPOSURE"):
         service.reserve_and_route(_payload("T2", "GBPUSD", 0.02), account_status=account)
+
+
+@pytest.mark.parametrize("state", ["RESERVED", "ROUTED", "EXECUTION_UNCERTAIN"])
+def test_expired_unresolved_reservation_retains_capacity(tmp_path, monkeypatch, state) -> None:
+    _patch_database(tmp_path, monkeypatch)
+    args = dict(symbol="EURUSD", risk_percent=0.02, policy_hash="policy",
+                expires_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                max_positions=1, max_combined_exposure=0.05,
+                broker_open_positions=0, broker_open_risk=0.0)
+    assert db_mod.try_create_trade_reservation(reservation_id="R1", trade_id="T1", **args)["approved"]
+    if state != "RESERVED":
+        db_mod.transition_trade_reservation("R1", state, "TEST")
+    result = db_mod.try_create_trade_reservation(reservation_id="R2", trade_id="T2", **args)
+    assert result["reason_code"] == "RESERVATION_MAX_POSITIONS"
+    transitioned = db_mod.transition_trade_reservation("R1", "REJECTED", "BROKER_CONFIRMED")
+    assert transitioned is (state != "EXECUTION_UNCERTAIN")
+    assert db_mod.try_create_trade_reservation(reservation_id="R2", trade_id="T2", **args)["approved"] is transitioned
+
+
+def test_unexpected_router_failure_retains_capacity(tmp_path, monkeypatch) -> None:
+    _patch_database(tmp_path, monkeypatch)
+    class FailingRouter:
+        def send(self, payload):
+            raise RuntimeError("unknown publication outcome")
+
+    service = RoutingService(FailingRouter(), get_policy_config(mode_id="core_srs"))
+    with pytest.raises(RuntimeError, match="unknown publication outcome"):
+        service.reserve_and_route(_payload("T1", "EURUSD"), account_status=AccountStatus(balance=10000, equity=10000))
+    with db_mod.get_conn() as conn:
+        row = conn.execute("SELECT state, reason_code FROM trade_reservations WHERE trade_id='T1'").fetchone()
+    assert (row["state"], row["reason_code"]) == ("EXECUTION_UNCERTAIN", "ROUTER_SEND_UNCERTAIN")
+
+
+@pytest.mark.parametrize("status,ticket", [("UNKNOWN", 1), ("EXECUTED", 0), ("EXECUTED", True)])
+def test_invalid_execution_feedback_is_quarantined(tmp_path, monkeypatch, status, ticket) -> None:
+    from bridge.execution_feedback import ExecutionFeedbackReader
+    import json
+
+    _patch_database(tmp_path, monkeypatch)
+    payload = dict(trade_id="T1", ticket=ticket, status=status, entry_price=1.1,
+                   lot_size=0.01, slippage=0, spread_at_entry=0, profit_loss=0,
+                   r_multiple=0, close_time="2026-11-02T00:00:00Z")
+    with pytest.raises(SchemaError):
+        validate_execution_feedback(payload)
+    feedback = tmp_path / "feedback"
+    feedback.mkdir()
+    (feedback / "execution_T1.json").write_text(json.dumps(payload))
+    reader = ExecutionFeedbackReader(feedback_dir=feedback, exits_dir=tmp_path / "exits")
+    assert reader.collect_execution_feedback() == []
+    assert not (feedback / "execution_T1.json").exists()
 
 
 def test_expired_execution_envelope_is_rejected() -> None:
@@ -235,7 +286,7 @@ def test_readiness_preflight_reports_stale_market_context_and_local_guards(tmp_p
         encoding="utf-8",
     )
     with sqlite3.connect(root / "database" / "trading_state.db") as conn:
-        for table in ("trades", "trade_reservations", "trade_lifecycle_events"):
+        for table in ("trades", "trade_reservations", "trade_lifecycle_events", "feedback_receipts", "execution_feedback_conflicts"):
             conn.execute(f"CREATE TABLE {table} (id INTEGER)")
     results = {result.check_id: result for result in run_preflight(root)}
     assert not results["calendar_freshness"].approved
@@ -282,7 +333,7 @@ def test_ea_demo_matrix_is_policy_pinned_and_records_expected_cases(tmp_path) ->
     pin, cases = build_demo_matrix("core_srs")
     assert len(pin["policy_hash"]) == 64
     assert {case.case_id for case in cases} == {
-        "valid", "expired", "policy_hash_mismatch", "spread_limit", "malformed_schema", "position_limit"
+        "valid", "expired", "policy_hash_mismatch", "spread_limit", "malformed_schema", "position_limit", "restart_duplicate"
     }
     assert next(case for case in cases if case.case_id == "policy_hash_mismatch").payload["policy_hash"] == "0" * 64
     manifest = write_demo_matrix(tmp_path / "matrix")

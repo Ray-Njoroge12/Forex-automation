@@ -7,6 +7,7 @@ input double MaxSpreadPips = 2.0;
 input int PollIntervalSeconds = 1;
 input string ExpectedPolicyHash = ""; // Required when RequirePolicyHashPin is true.
 input bool RequirePolicyHashPin = true; // Fail closed until the deployed policy hash is pinned.
+input bool RequireDemoAccount = true; // Demo is the default; do not send orders to other account types.
 
 // --- Trade Management Inputs ---
 input double BreakEvenTriggerR = 1.0;     // Move SL to entry when profit reaches this R-multiple
@@ -180,6 +181,7 @@ void OnTimer()
    
    if(TimeCurrent() - lastSnapshot >= 5) { // Update every 5s
       WriteAccountSnapshot();
+      WriteMarketQuoteSnapshot();
       lastSnapshot = TimeCurrent();
    }
 }
@@ -452,6 +454,40 @@ bool WriteTextFile(const string filePath, const string content)
    return true;
 }
 
+// Read-only market observations for the local Python bridge. Quotes are not
+// trading signals, and unavailable symbols are omitted rather than guessed.
+void WriteMarketQuoteSnapshot()
+{
+   string symbols[] = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"};
+   string payload = "{\"schema_version\":1,\"timestamp\":\"" + IsoTimestampUtc() + "\",";
+   payload += "\"account_is_demo\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "true" : "false") + ",";
+   payload += "\"account_authenticated\":" + (AccountInfoInteger(ACCOUNT_LOGIN) > 0 ? "true" : "false") + ",";
+   payload += "\"terminal_connected\":" + (TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false") + ",\"quotes\":[";
+   bool first = true;
+   // TimeCurrent freezes when quotes stop; use the terminal's estimated
+   // current server time so a closed market cannot refresh an old tick.
+   datetime serverNow = TimeTradeServer();
+   for(int i = 0; i < ArraySize(symbols); i++)
+   {
+      MqlTick tick;
+      if(serverNow <= 0 || !SymbolInfoTick(symbols[i], tick) || tick.time <= 0 || tick.bid <= 0.0 || tick.ask < tick.bid)
+         continue;
+      long tickAge = (long)(serverNow - tick.time);
+      if(tickAge < 0) continue;
+      int digits = (int)SymbolInfoInteger(symbols[i], SYMBOL_DIGITS);
+      if(digits < 0 || digits > 10) continue;
+      if(!first) payload += ",";
+      payload += "{\"symbol\":\"" + symbols[i] + "\",\"bid\":" + DoubleToString(tick.bid, digits);
+      payload += ",\"ask\":" + DoubleToString(tick.ask, digits) + ",\"tick_age_seconds\":" + IntegerToString(tickAge) + "}";
+      first = false;
+   }
+   payload += "]}";
+   string tmp = FeedbackFolder() + "\\market_quotes.tmp";
+   string dst = FeedbackFolder() + "\\market_quotes.json";
+   if(!WriteTextFile(tmp, payload) || !FileMove(tmp, 0, dst, FILE_REWRITE))
+      LogDebug("Could not publish market quote snapshot");
+}
+
 bool GetFirstPendingSignalFile(string &fileName)
 {
    string searchMask = PendingFolder() + "\\*.json";
@@ -474,7 +510,7 @@ string IsoTimestampUtc(const datetime value = 0)
 {
    datetime ts = value;
    if(ts <= 0)
-      ts = TimeCurrent();
+      ts = TimeGMT();
 
    MqlDateTime parts;
    if(!TimeToStruct(ts, parts))
@@ -534,7 +570,10 @@ void WriteExecutionFeedback(
    const double spreadAtEntry,
    const double lotSize,
    const double profitLoss,
-   const double rMultiple)
+   const double rMultiple,
+   const uint serverRetcode = 0,
+   const ulong brokerOrder = 0,
+   const ulong brokerDeal = 0)
 {
    string payload = "{";
    payload += "\"trade_id\":\"" + tradeId + "\",";
@@ -547,6 +586,9 @@ void WriteExecutionFeedback(
    payload += "\"lot_size\":" + DoubleToString(lotSize, 2) + ",";
    payload += "\"profit_loss\":" + DoubleToString(profitLoss, 2) + ",";
    payload += "\"r_multiple\":" + DoubleToString(rMultiple, 4) + ",";
+   payload += "\"server_retcode\":" + IntegerToString((int)serverRetcode) + ",";
+   payload += "\"broker_order\":" + StringFormat("%I64u", brokerOrder) + ",";
+   payload += "\"broker_deal\":" + StringFormat("%I64u", brokerDeal) + ",";
    payload += "\"close_time\":\"" + IsoTimestampUtc() + "\"";
    payload += "}";
 
@@ -623,6 +665,9 @@ void WriteAccountSnapshot()
 
    string payload = "{";
    payload += "\"timestamp\":\"" + IsoTimestampUtc() + "\",";
+   payload += "\"account_is_demo\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "true" : "false") + ",";
+   payload += "\"account_authenticated\":" + (AccountInfoInteger(ACCOUNT_LOGIN) > 0 ? "true" : "false") + ",";
+   payload += "\"terminal_connected\":" + (TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false") + ",";
    payload += "\"balance\":" + DoubleToString(balance, 2) + ",";
    payload += "\"equity\":" + DoubleToString(equity, 2) + ",";
    payload += "\"margin_free\":" + DoubleToString(marginFree, 2) + ",";
@@ -1028,6 +1073,11 @@ string BuildManagementStateError()
 
 void ProcessPendingSignal()
 {
+   if(RequireDemoAccount && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
+   {
+      LogDebug("Demo account required; refusing to process pending signals");
+      return;
+   }
    string fileName;
    if(!GetFirstPendingSignalFile(fileName))
       return;
@@ -1057,6 +1107,18 @@ void ProcessPendingSignal()
    string expiresAt = "";
 
    if(!ExtractJsonString(content, "trade_id", tradeId)) { LogDebug("JSON fail: tid"); return; }
+   if(fileName != tradeId + ".json") { LogDebug("Signal filename does not match trade_id"); return; }
+   string submissionMarker = FeedbackFolder() + "\\submission_" + tradeId + ".lock";
+   if(FileIsExist(submissionMarker))
+   {
+      // The marker is written before submission. A restart cannot distinguish
+      // an unsent request from one already accepted by the broker.
+      LogDebug("Submission marker exists; broker reconciliation required: " + tradeId);
+      string priorFeedback = FeedbackFolder() + "\\execution_" + tradeId + ".json";
+      if(!FileIsExist(priorFeedback))
+         WriteExecutionFeedback(tradeId, 0, 0, "EXECUTION_UNCERTAIN", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      return;
+   }
    if(IsProcessed(tradeId))
    {
       LogDebug("Signal already processed locally: " + tradeId);
@@ -1167,6 +1229,21 @@ void ProcessPendingSignal()
    if(requestedLot > 0.0 && requestedLot < recalculateLot)
       finalLot = requestedLot;
 
+   // Persist intent before sending. If a restart occurs at any subsequent
+   // point the same signal is held for reconciliation, not submitted again.
+   // Requires a single EA instance for this bridge directory.
+   if(!WriteTextFile(submissionMarker, tradeId))
+   {
+      LogDebug("Cannot persist submission marker; order not sent: " + tradeId);
+      return;
+   }
+   string markerContents;
+   if(!ReadTextFile(submissionMarker, markerContents) || markerContents != tradeId)
+   {
+      LogDebug("Cannot verify submission marker; order not sent: " + tradeId);
+      return;
+   }
+
    // --- Determine execution method based on order_type ---
    bool placed = false;
    double entry = 0.0; // declared here so it is in scope for slippage calculation below
@@ -1208,15 +1285,25 @@ void ProcessPendingSignal()
          placed = trade.Sell(finalLot, symbol, entry, sl, tp, tradeId);
    }
 
-   if(!placed)
+   uint serverRetcode = trade.ResultRetcode();
+   ulong brokerOrder = trade.ResultOrder();
+   ulong brokerDeal = trade.ResultDeal();
+   double brokerVolume = trade.ResultVolume();
+   double brokerPrice = trade.ResultPrice();
+   // CTrade's boolean only confirms request structure checks. Pending orders,
+   // partial fills, missing deal IDs and ambiguous failures require recovery.
+   if(!placed || orderType == "LIMIT" || serverRetcode != TRADE_RETCODE_DONE || brokerDeal == 0 ||
+      brokerPrice <= 0.0 || brokerVolume <= 0.0 || MathAbs(brokerVolume - finalLot) > 0.00000001)
    {
-      LogDebug("Order Execution FAIL: " + trade.ResultRetcodeDescription());
-      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ORDER_SEND", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      LogDebug("Order outcome uncertain: " + trade.ResultRetcodeDescription());
+      MarkProcessed(tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "EXECUTION_UNCERTAIN", 0.0, 0.0, spread, finalLot, 0.0, 0.0,
+                             serverRetcode, brokerOrder, brokerDeal);
       FileDelete(filePath);
       return;
    }
 
-   double fillPrice = trade.ResultPrice();
+   double fillPrice = brokerPrice;
    double resolvedEntryPrice = (fillPrice > 0.0) ? fillPrice : entry;
    double slippage = 0.0;
    if(fillPrice > 0.0 && entry > 0.0)
@@ -1260,7 +1347,8 @@ void ProcessPendingSignal()
       " initial_stop_dist=" + DoubleToString(initialStopDist, digits)
    );
    MarkProcessed(tradeId);
-   WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", resolvedEntryPrice, slippage, spread, finalLot, 0.0, 0.0);
+   WriteExecutionFeedback(tradeId, ticket, posTicket, "EXECUTED", resolvedEntryPrice, slippage, spread, finalLot, 0.0, 0.0,
+                          serverRetcode, brokerOrder, brokerDeal);
 
    if(!FileDelete(filePath))
       LogDebug("WARNING: Failed to delete signal file: " + filePath + " err=" + (string)GetLastError());

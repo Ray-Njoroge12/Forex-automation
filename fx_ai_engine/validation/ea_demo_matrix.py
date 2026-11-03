@@ -101,6 +101,12 @@ def build_demo_matrix(mode_id: str = "core_srs") -> tuple[dict[str, str], list[D
             "Before copying valid.json under a new trade id, open the configured number of demo positions/orders.",
             valid | {"trade_id": "DEMO_MATRIX_POSITION_LIMIT", "reservation_id": "RSV_DEMO_POSITION_LIMIT"},
         ),
+        DemoCase(
+            "restart_duplicate",
+            "An existing submission marker prevents another order; retain marker and reconcile broker history.",
+            "Use one disposable demo EA; retain the signal and restart after the marker is created. Verify orders and deals before cleanup.",
+            valid | {"trade_id": "DEMO_MATRIX_RESTART", "reservation_id": "RSV_DEMO_RESTART"},
+        ),
     ]
 
 

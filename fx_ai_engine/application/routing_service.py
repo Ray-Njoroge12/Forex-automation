@@ -68,7 +68,9 @@ class RoutingService:
             )
             raise
         except Exception:
-            transition_trade_reservation(reservation_id, "RELEASED", "ROUTER_SEND_FAILED")
+            # An unexpected failure may have occurred after publication. Only
+            # SignalRouteError can attest that no pending file was written.
+            transition_trade_reservation(reservation_id, "EXECUTION_UNCERTAIN", "ROUTER_SEND_UNCERTAIN")
             raise
         transition_trade_reservation(reservation_id, "ROUTED", "ROUTED_TO_MT5")
         return RoutedReservation(reservation_id=reservation_id, payload=executable)

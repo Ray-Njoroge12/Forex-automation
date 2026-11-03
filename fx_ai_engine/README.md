@@ -30,6 +30,10 @@ Deterministic, local-hosted Forex automation engine aligned to `SRS_v1`.
 - Smoke mode: `python main.py --mode smoke`
 - Demo mode: `python main.py --mode demo`
 
+Demo mode checks that the connected MT5 account is a demo account at startup
+and on every processing loop. The EA also defaults to `RequireDemoAccount=true`.
+Keep that setting enabled for demo testing and verify the account in MT5.
+
 ## Backtesting (Backtrader)
 1. Use an OHLC CSV with columns: `time,open,high,low,close[,volume]`
 2. Run:
@@ -53,6 +57,12 @@ optimisation outcome:
 
 - `python -m backtesting.threshold_audit --csv /path/EURUSD.csv --symbol EURUSD --policy-mode preserve_10 --dataset-manifest artifacts/datasets/EURUSD.manifest.json --tech-pullback-buffer-pips 8`
 
+`backtesting.replay_execution` provides experimental bid/ask quote-bar fill
+primitives with next-observation timing and conservative stop-gap handling.
+These primitives are not yet connected to the strategy or portfolio replay;
+the existing Backtrader runner and its results remain separate. Neither is a
+verified production-equivalent replay or evidence for parameter promotion.
+
 ## Observability (Local Only)
 Environment variables:
 - `USE_MT5_MOCK=1` (use mock MT5 for tests/dev)
@@ -75,8 +85,49 @@ modifier. Install sourced replacements only through the validation command:
 
 Executable signals use schema version 2, an expiring policy envelope, and an
 atomic portfolio reservation. The MT5 EA must be rebuilt after envelope changes.
+Signal expiry alone does not release an unresolved reservation: the order may
+already have reached the broker. Reserved, routed, and execution-uncertain
+entries continue to consume capacity until a terminal outcome or verified
+reconciliation resolves them. Investigate stalled reservations against the
+MT5 order and position history before any manual state change.
+
+Execution feedback is applied with its reservation, lifecycle event, and
+deduplication receipt in one database transaction. Invalid feedback is
+quarantined; unresolved conflicts and uncertain order sends halt new entries.
+Inspect `execution_feedback_conflicts`, quarantined `execution_*.json` files,
+and the broker's orders, deals, and positions before resolving a halt. Do not
+clear the records merely to resume trading. Records produced by older versions,
+including prior `REJECTED_ORDER_SEND` outcomes, require separate review.
+
+Build 2 still needs terminal evidence for MT5 order-send return codes, partial
+fills, delayed feedback, broker history and restarts, plus a documented,
+evidence-backed resolution workflow. The Python tests do not validate those
+broker behaviors or establish demo readiness.
+
+The EA now reports an uncertain outcome unless a market request reports a
+completed server result, deal ID, positive fill price and matching fill volume.
+Pending limit orders and partial fills require reconciliation. The EA writes a
+submission marker before sending and holds repeated signals for reconciliation
+across restarts. This assumes only one EA instance uses the bridge directory;
+the marker is not a cross-process lock. Compile and test restart behavior on the
+intended demo terminal before relying on this control. Do not remove markers
+without reviewing broker orders, deals and positions.
+
+For a read-only local inventory of active reservations and unresolved feedback
+conflicts, run `python -m validation.reconciliation_inventory`. The output
+includes unscoped orphan reservations and explicitly marks broker evidence as
+unverified. It does not query MT5 or resolve anything. Compare its identifiers
+with the correct account's current orders, deals, positions and terminal logs;
+retain that evidence and keep trading halted when it is incomplete.
+Pass `--bridge-dir /path/to/bridge` to include pending signals, submission
+markers, and quarantined execution feedback in the inventory.
 
 ## Immediate readiness gates
+
+On macOS, run `python -m validation.mt5_background_preflight` for a read-only
+inventory of the installed terminal, candidate MQL5 locations and Python
+binding availability. It does not launch MT5, identify the active account or
+prove that a candidate directory is the terminal's current data folder.
 
 Before tuning any strategy parameter, install current sourced market context,
 compile and demo-test the EA, and produce a hash-manifested replay baseline.

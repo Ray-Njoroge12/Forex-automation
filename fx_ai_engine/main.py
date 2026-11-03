@@ -86,11 +86,24 @@ from database.db import (
     run_all_migrations,
     insert_ml_shadow_event,
     update_trade_execution_result,
+    apply_execution_feedback,
+    has_unresolved_execution_feedback,
     update_trade_exit_result,
     transition_trade_reservation_by_trade_id,
 )
 
 logger = logging.getLogger("fx_ai_engine.main")
+
+
+def _demo_account_verified(bridge: MT5Connection, *, use_mock: bool) -> bool:
+    """Demo mode must never operate against a live or unverified account."""
+    if use_mock:
+        return True
+    try:
+        return bridge.is_demo_account() is True
+    except Exception:
+        logger.exception("Unable to verify MT5 account type")
+        return False
 
 SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"]
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
@@ -1053,6 +1066,17 @@ class Engine:
     def _fail_closed_preserve_10_bridge(self, reason: str) -> None:
         self._fail_closed_bridge_uncertainty(reason)
 
+    def _enforce_execution_feedback_integrity(self) -> None:
+        quarantine = self.feedback.feedback_dir / "quarantine"
+        try:
+            unresolved = has_unresolved_execution_feedback(self.evidence_context)
+        except Exception:
+            logger.exception("Cannot verify execution feedback integrity")
+            unresolved = True
+        if (getattr(self, "_execution_feedback_error", False) or getattr(self, "_broker_recovery_error", False) or unresolved
+                or (quarantine.exists() and any(quarantine.glob("execution_*.json")))):
+            self._fail_closed_bridge_uncertainty("unresolved execution feedback requires reconciliation")
+
     def _validate_bridge_path(self, bridge_path: Path) -> None:
         required = ["pending_signals", "feedback", "exits", "active_locks"]
         missing = [name for name in required if not (bridge_path / name).exists()]
@@ -1248,6 +1272,7 @@ class Engine:
         return broker_summary
 
     def _recover_missing_trade_closures_from_broker(self) -> None:
+        self._broker_recovery_error = False
         open_trades = list_open_trades(
             evidence_stream=self.evidence_context.evidence_stream,
             account_scope=self.evidence_context.account_scope,
@@ -1256,8 +1281,12 @@ class Engine:
             return
 
         try:
-            open_position_tickets = set(self.bridge.get_open_position_tickets())
+            tickets = self.bridge.get_open_position_tickets()
+            if tickets is None:
+                raise RuntimeError("broker position query unavailable")
+            open_position_tickets = set(tickets)
         except Exception as exc:
+            self._broker_recovery_error = True
             logger.warning("Failed reading broker open positions during lifecycle recovery: %s", exc)
             return
 
@@ -1337,21 +1366,15 @@ class Engine:
 
     def _consume_feedback(self) -> None:
         with self.tracer.start_as_current_span("consume_feedback"):
+            self._execution_feedback_error = False
             # Collect execution artifacts first; delete only after durable DB success.
             for path, payload in self.feedback.collect_execution_feedback():
                 dedupe_key = _execution_feedback_dedupe_key(payload)
-                if feedback_receipt_exists(
-                    "execution",
-                    dedupe_key,
-                    evidence_context=self.evidence_context,
-                ):
-                    self.feedback.delete_artifact(path)
-                    self.router.release_lock(str(payload.get("trade_id", "")))
-                    continue
-
                 try:
-                    updated = update_trade_execution_result(payload)
+                    outcome = apply_execution_feedback(payload, dedupe_key=dedupe_key,
+                                                       source_file=path.name, evidence_context=self.evidence_context)
                 except Exception:
+                    self._execution_feedback_error = True
                     logger.exception(
                         "Failed to apply execution feedback; deferring source=%s trade_id=%s",
                         path,
@@ -1359,41 +1382,16 @@ class Engine:
                     )
                     continue
 
-                if not updated:
+                if outcome in {"unmatched", "conflict"}:
+                    self._execution_feedback_error = True
                     logger.warning(
-                        "Execution feedback update matched no trade row; deferring source=%s trade_id=%s",
+                        "Execution feedback %s; deferring source=%s trade_id=%s",
+                        outcome,
                         path,
                         payload.get("trade_id", ""),
                     )
                     continue
-
-                execution_status = str(payload.get("status", "")).upper()
-                transition_trade_reservation_by_trade_id(
-                    str(payload.get("trade_id", "")),
-                    "EXECUTED" if execution_status == "EXECUTED" else "REJECTED",
-                    execution_status or "EXECUTION_FEEDBACK",
-                )
-
-                try:
-                    record_feedback_receipt(
-                        "execution",
-                        dedupe_key,
-                        trade_id=str(payload.get("trade_id", "") or ""),
-                        ticket=_safe_int(payload.get("ticket")),
-                        status=str(payload.get("status", "") or ""),
-                        close_time=str(payload.get("close_time", "") or ""),
-                        source_file=path.name,
-                        evidence_context=self.evidence_context,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to persist execution feedback receipt; deferring source=%s trade_id=%s",
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-
-                if str(payload.get("status", "")).upper() == "EXECUTED":
+                if outcome == "applied" and payload.get("status") == "EXECUTED":
                     alert_trade_execution(
                         str(payload.get("trade_id", "")),
                         str(payload.get("symbol", "")),
@@ -1401,7 +1399,8 @@ class Engine:
                         float(payload.get("lot_size", 0.0)),
                         float(payload.get("entry_price", 0.0)),
                     )
-                self.router.release_lock(str(payload.get("trade_id", "")))
+                if payload.get("status") not in {"REJECTED_ORDER_SEND", "EXECUTION_UNCERTAIN"}:
+                    self.router.release_lock(str(payload.get("trade_id", "")))
                 self.feedback.delete_artifact(path)
 
             # Collect trade exit artifacts first; keep unmatched finals for later retry.
@@ -2089,6 +2088,10 @@ class Engine:
     def run(self, mode: str, iterations: int = 0) -> None:
         count = 0
         while True:
+            if mode == "demo" and not _demo_account_verified(self.bridge, use_mock=self.use_mock):
+                logger.error("Demo account verification failed; stopping before processing or routing signals")
+                self._fail_closed_bridge_uncertainty("demo account unverified or changed")
+                return
             update_health_status(
                 status="running",
                 account_balance=self.account_status.balance,
@@ -2099,6 +2102,8 @@ class Engine:
             self._consume_feedback()
             self._recover_missing_trade_closures_from_broker()
             self._update_account_state()
+
+            self._enforce_execution_feedback_integrity()
 
             if self.account_status.is_stale(max_age_seconds=180):
                 self.account_status.is_trading_halted = True
@@ -2181,10 +2186,6 @@ def main(argv: list[str] | None = None) -> int:
     tracer = init_tracing(os.getenv("OTEL_SERVICE_NAME", "fx_ai_engine"))
     metrics = init_metrics()
 
-    start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
-    from core.alerts import send_telegram_message
-    send_telegram_message("🚀 <b>FX AI Engine Started</b>\nMode: " + args.mode)
-
     bridge = MT5Connection(
         creds.login if creds else 0,
         creds.password if creds else "",
@@ -2193,6 +2194,14 @@ def main(argv: list[str] | None = None) -> int:
     if not bridge.connect():
         logger.error("MT5 connection failed: %s", bridge.last_error)
         return 2
+
+    if args.mode == "demo" and not _demo_account_verified(bridge, use_mock=use_mock):
+        logger.error("Demo mode requires a verified MT5 demo account; refusing to start")
+        return 2
+
+    start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
+    from core.alerts import send_telegram_message
+    send_telegram_message("🚀 <b>FX AI Engine Started</b>\nMode: " + args.mode)
 
     try:
         if args.policy_mode:

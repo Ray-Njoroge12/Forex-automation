@@ -48,3 +48,6 @@ NUL
 
 # Ignore user-specific Claude Code config only; hooks/agents/skills/settings.json are team-facing
 .claude/settings.local.json
+
+# MT5 build outputs (rebuild from source; keep compile logs as evidence elsewhere)
+*.ex5

@@ -88,6 +88,18 @@ def run_all_migrations() -> None:
     migrate_add_ml_shadow_events()
     migrate_add_trade_reservations()
     migrate_add_trade_lifecycle_events()
+    migrate_add_feedback_conflicts()
+
+
+def migrate_add_feedback_conflicts() -> None:
+    with get_conn() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS execution_feedback_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            evidence_stream TEXT NOT NULL, account_scope TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL, trade_id TEXT NOT NULL,
+            reason TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
+            resolved_at TEXT, UNIQUE(evidence_stream, account_scope, dedupe_key)
+        )""")
 
 
 def migrate_add_trade_lifecycle_events() -> None:
@@ -168,6 +180,17 @@ def migrate_add_trade_reservations() -> None:
 
 _ACTIVE_RESERVATION_STATES = ("RESERVED", "ROUTED", "EXECUTION_UNCERTAIN")
 
+# Terminal outcomes cannot be overwritten by a delayed route or feedback.
+_RESERVATION_PREDECESSORS = {
+    "ROUTED": ("RESERVED",),
+    "EXECUTION_UNCERTAIN": ("RESERVED", "ROUTED", "EXECUTION_UNCERTAIN"),
+    "EXECUTED": ("RESERVED", "ROUTED", "EXECUTION_UNCERTAIN", "EXECUTED"),
+    "REJECTED": ("RESERVED", "ROUTED", "REJECTED"),
+    "RELEASED": ("RESERVED", "RELEASED"),
+    "EXPIRED": ("EXPIRED",),
+    "CLOSED": ("EXECUTED", "CLOSED"),
+}
+
 
 def try_create_trade_reservation(
     *,
@@ -192,15 +215,10 @@ def try_create_trade_reservation(
         return {"approved": False, "reason_code": "RESERVATION_INPUT_INVALID"}
     with get_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            """
-            UPDATE trade_reservations
-               SET state='EXPIRED', reason_code='RESERVATION_EXPIRED', updated_at=?
-             WHERE state IN ('RESERVED', 'ROUTED', 'EXECUTION_UNCERTAIN')
-               AND expires_at <= ?
-            """,
-            (now, now),
-        )
+        # Signal expiry prevents new execution; it does not prove that an
+        # earlier send was not filled. Retain capacity until a terminal result
+        # or broker reconciliation explicitly resolves the reservation. This
+        # also covers a crash between publishing the file and marking it routed.
         duplicate = conn.execute(
             "SELECT state FROM trade_reservations WHERE trade_id=? OR reservation_id=? LIMIT 1",
             (trade_id, reservation_id),
@@ -273,9 +291,9 @@ def transition_trade_reservation(
             """
             UPDATE trade_reservations
                SET state=?, reason_code=?, updated_at=?
-             WHERE reservation_id=?
-            """,
-            (normalized, reason_code, now, reservation_id),
+             WHERE reservation_id=? AND state IN ({})
+            """.format(",".join("?" for _ in _RESERVATION_PREDECESSORS[normalized])),
+            (normalized, reason_code, now, reservation_id, *_RESERVATION_PREDECESSORS[normalized]),
         )
         return int(cursor.rowcount or 0) > 0
 
@@ -292,8 +310,8 @@ def transition_trade_reservation_by_trade_id(
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         cursor = conn.execute(
-            "UPDATE trade_reservations SET state=?, reason_code=?, updated_at=? WHERE trade_id=?",
-            (normalized, reason_code, now, trade_id),
+            "UPDATE trade_reservations SET state=?, reason_code=?, updated_at=? WHERE trade_id=? AND state IN ({})".format(",".join("?" for _ in _RESERVATION_PREDECESSORS[normalized])),
+            (normalized, reason_code, now, trade_id, *_RESERVATION_PREDECESSORS[normalized]),
         )
         return int(cursor.rowcount or 0) > 0
 
@@ -638,6 +656,103 @@ def _positive_float(value: Any) -> float | None:
     return parsed if parsed > 0 else None
 
 
+def apply_execution_feedback(payload: dict[str, Any], *, dedupe_key: str, source_file: str,
+                             evidence_context: EvidenceContext) -> str:
+    """Apply execution evidence atomically; return applied, duplicate, unmatched or conflict.
+
+    The trade determines account scope because reservations predate evidence scoping.
+    A broker send failure is not proof that an order did not reach the broker.
+    """
+    from core.schemas import validate_execution_feedback
+
+    validate_execution_feedback(payload)
+    trade_id, status = payload["trade_id"], payload["status"]
+    now = datetime.now(timezone.utc).isoformat()
+    evidence = evidence_context
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        trade = conn.execute("SELECT * FROM trades WHERE trade_id=? AND evidence_stream=? AND account_scope=?",
+                             (trade_id, evidence.evidence_stream, evidence.account_scope)).fetchone()
+        reservation = conn.execute("SELECT * FROM trade_reservations WHERE trade_id=?", (trade_id,)).fetchone()
+
+        def conflict(reason: str, result: str = "conflict") -> str:
+            conn.execute("""INSERT OR IGNORE INTO execution_feedback_conflicts
+                (evidence_stream, account_scope, dedupe_key, trade_id, reason, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""", (evidence.evidence_stream, evidence.account_scope, dedupe_key,
+                trade_id, reason, json.dumps(payload, sort_keys=True, default=str), now))
+            return result
+
+        if conn.execute("SELECT 1 FROM feedback_receipts WHERE evidence_stream=? AND account_scope=? AND feedback_kind='execution' AND dedupe_key=?",
+                        (evidence.evidence_stream, evidence.account_scope, dedupe_key)).fetchone():
+            # Existing receipt keys do not include price or quantity. Compare
+            # retained evidence before treating the same key as a retry.
+            rows = conn.execute("SELECT payload_json FROM trade_lifecycle_events WHERE trade_id=? AND event_type='EXECUTION' ORDER BY id DESC", (trade_id,)).fetchall()
+            for row in rows:
+                previous = json.loads(row["payload_json"])
+                if (previous.get("status"), previous.get("ticket"), previous.get("close_time")) == (status, payload["ticket"], payload["close_time"]):
+                    if any(previous.get(key) != payload.get(key) for key in ("entry_price", "lot_size", "position_ticket")):
+                        return conflict("RECEIPT_EVIDENCE_CONFLICT")
+                    break
+            return "duplicate"
+        if trade is None:
+            return conflict("TRADE_NOT_FOUND_IN_EVIDENCE_SCOPE", "unmatched")
+        if reservation is None:
+            return conflict("RESERVATION_NOT_FOUND", "unmatched")
+
+        state = reservation["state"]
+        target = "EXECUTED" if status == "EXECUTED" else ("EXECUTION_UNCERTAIN" if status in {"REJECTED_ORDER_SEND", "EXECUTION_UNCERTAIN"} else "REJECTED")
+        if state not in _RESERVATION_PREDECESSORS[target]:
+            return conflict(f"RESERVATION_TRANSITION_CONFLICT:{state}->{target}")
+        if state == target and target in {"EXECUTED", "REJECTED"}:
+            same = (target == "EXECUTED" and trade["status"] == "EXECUTED_OPEN"
+                    and trade["trade_ticket"] == payload["ticket"]
+                    and trade["position_ticket"] == (payload.get("position_ticket") or payload["ticket"])
+                    and trade["entry_price"] == payload["entry_price"] and trade["lot_size"] == payload["lot_size"])
+            same = same or (target == "REJECTED" and trade["status"] == "REJECTED" and trade["reason_code"] == status)
+            if not same:
+                return conflict("TERMINAL_EVIDENCE_CONFLICT")
+            return "duplicate"
+        if trade["status"] not in ("PENDING", "EXECUTION_UNCERTAIN"):
+            return conflict(f"TRADE_STATE_CONFLICT:{trade['status']}")
+
+        trade_status = {"EXECUTED": "EXECUTED_OPEN", "REJECTED": "REJECTED", "EXECUTION_UNCERTAIN": "EXECUTION_UNCERTAIN"}[target]
+        conn.execute("""UPDATE trades SET status=?, reason_code=?, trade_ticket=?, position_ticket=?,
+            entry_price=?, lot_size=?, slippage=?, spread_exec_price=?, execution_time=?
+            WHERE trade_id=? AND evidence_stream=? AND account_scope=?""",
+            (trade_status, status, payload["ticket"] if target == "EXECUTED" else None,
+             (payload.get("position_ticket") or payload["ticket"]) if target == "EXECUTED" else None,
+             payload["entry_price"] if target == "EXECUTED" else trade["entry_price"],
+             payload["lot_size"] if target == "EXECUTED" else trade["lot_size"],
+             payload["slippage"], payload["spread_at_entry"],
+             (payload.get("execution_time") or payload["close_time"] or now) if target == "EXECUTED" else None,
+             trade_id, evidence.evidence_stream, evidence.account_scope))
+        record_trade_lifecycle_event(trade_id, "EXECUTION", trade_status, status, payload, conn=conn)
+        conn.execute("UPDATE trade_reservations SET state=?, reason_code=?, updated_at=? WHERE trade_id=?",
+                     (target, status, now, trade_id))
+        conn.execute("""INSERT INTO feedback_receipts (timestamp, evidence_stream, policy_mode, execution_mode,
+            account_scope, feedback_kind, dedupe_key, trade_id, ticket, status, close_time, source_file)
+            VALUES (?, ?, ?, ?, ?, 'execution', ?, ?, ?, ?, ?, ?)""",
+            (now, evidence.evidence_stream, evidence.policy_mode, evidence.execution_mode, evidence.account_scope,
+             dedupe_key, trade_id, payload["ticket"] or None, status, payload["close_time"], source_file))
+        conn.execute("""UPDATE execution_feedback_conflicts SET resolved_at=? WHERE evidence_stream=? AND account_scope=?
+            AND dedupe_key=? AND reason IN ('TRADE_NOT_FOUND_IN_EVIDENCE_SCOPE', 'RESERVATION_NOT_FOUND')""",
+            (now, evidence.evidence_stream, evidence.account_scope, dedupe_key))
+    return "applied"
+
+
+def has_unresolved_execution_feedback(evidence_context: EvidenceContext) -> bool:
+    with get_conn() as conn:
+        conflict = conn.execute("SELECT 1 FROM execution_feedback_conflicts WHERE evidence_stream=? AND account_scope=? AND resolved_at IS NULL LIMIT 1",
+                                (evidence_context.evidence_stream, evidence_context.account_scope)).fetchone()
+        uncertain = conn.execute("""SELECT 1 FROM trade_reservations r LEFT JOIN trades t ON t.trade_id=r.trade_id
+            WHERE r.state IN ('RESERVED', 'ROUTED', 'EXECUTION_UNCERTAIN')
+            AND (r.state='EXECUTION_UNCERTAIN' OR t.trade_id IS NULL OR julianday(r.expires_at) IS NULL
+                 OR julianday(r.expires_at) <= julianday('now'))
+            AND (t.trade_id IS NULL OR (t.evidence_stream=? AND t.account_scope=?)) LIMIT 1""",
+            (evidence_context.evidence_stream, evidence_context.account_scope)).fetchone()
+        return bool(conflict or uncertain)
+
+
 def update_trade_execution_result(payload: dict[str, Any]) -> bool:
     raw_status = str(payload.get("status", "UNKNOWN")).upper()
     ticket = _positive_int(payload.get("ticket")) or 0
@@ -734,6 +849,7 @@ def mark_trade_execution_uncertain(
     reason_code: str = "PRESERVE_10_EXECUTION_UNCERTAIN",
 ) -> None:
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             """
             UPDATE trades
@@ -745,6 +861,9 @@ def mark_trade_execution_uncertain(
             ("EXECUTION_UNCERTAIN", reason_code, trade_id),
         )
         if int(cursor.rowcount or 0) > 0:
+            conn.execute("""UPDATE trade_reservations SET state='EXECUTION_UNCERTAIN',
+                reason_code=?, updated_at=? WHERE trade_id=? AND state IN ('RESERVED', 'ROUTED')""",
+                (reason_code, datetime.now(timezone.utc).isoformat(), trade_id))
             record_trade_lifecycle_event(
                 trade_id,
                 "EXECUTION_UNCERTAIN",
