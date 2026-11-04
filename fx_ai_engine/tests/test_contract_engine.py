@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.account_status import AccountStatus
+from database.repositories.memory import InMemoryEngineRepository
 from main import Engine
 from tests.engine_harness import make_file_bridge_engine
 from tests.test_engine_file_bridge import isolated_db  # noqa: F401  (fixture)
@@ -105,6 +106,8 @@ def test_run_loop_order_is_unchanged(monkeypatch):
     engine._stale_episode_active = False
     engine._consecutive_losses_dirty = False
     engine.metrics = SimpleNamespace(inc=lambda *_: None)
+    # Persistence seam once the services take an injected repository (no SQLite writes).
+    engine.repository = InMemoryEngineRepository()
     for name in (
         "_consume_feedback",
         "_recover_missing_trade_closures_from_broker",
