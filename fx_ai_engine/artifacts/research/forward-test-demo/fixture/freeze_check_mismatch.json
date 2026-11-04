@@ -1,0 +1,33 @@
+{
+  "tool": "r10_freeze_check",
+  "checked_at_utc": "2026-11-04T06:29:33.211762+00:00",
+  "repo_root": "/private/tmp/fx-r10-fixture-repo",
+  "manifest_sha256": "300feb7108ac9a0c85b68a2dee20decdb01f38f7759d830e97fbfdd09323df8e",
+  "verdict": "MISMATCH",
+  "frozen_at_utc": "2026-11-04T06:29:32.869836+00:00",
+  "label": "fixture-demo",
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "git_commit": null,
+  "protected_files_checked": 12,
+  "mismatches": [
+    {
+      "code": "CONFIG_HASH_CHANGED",
+      "item": "fx_ai_engine/config_microcapital.py",
+      "expected": "4b74a43eccdcb1a2cf44228a4356eed35e1502cd0ba768245c80d05ca4dbc361",
+      "actual": "aa6771bcbc05ddf14fde0ede49efd961b5ebf81c7e6a84103721c5e197c7156e"
+    },
+    {
+      "code": "EA_BUILD_HASH_CHANGED",
+      "item": "/tmp/fx-r10-fixture-repo/build/FX_Execution.ex5",
+      "expected": "c8f1e2603aab8ee5e44987aa25612fcb5f3002f2a5dacc0cd3b8e8db8cde3d15",
+      "actual": "30a08929da1e27be1c4349209d56b96ceb8022e3399bdda54dec7086168d70c0"
+    },
+    {
+      "code": "PROTECTED_FILE_CHANGED",
+      "item": "fx_ai_engine/config_microcapital.py",
+      "expected": "4b74a43eccdcb1a2cf44228a4356eed35e1502cd0ba768245c80d05ca4dbc361",
+      "actual": "aa6771bcbc05ddf14fde0ede49efd961b5ebf81c7e6a84103721c5e197c7156e"
+    }
+  ],
+  "notes": []
+}

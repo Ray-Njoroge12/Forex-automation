@@ -1,0 +1,12 @@
+{
+  "schema": "fx-forward-seal/1",
+  "criteria_path": "docs/research/forward-test/criteria-srs-v1.1-draft.json",
+  "criteria_sha256": "55a38ca1333b7cb53138cb5b6c9ea982d71972b0b0b742654bd14ff5be61fc76",
+  "criteria_id": "srs-v1.1-30-day-demo",
+  "criteria_version": "0.1.0-draft",
+  "criteria_status": "DRAFT_NOT_APPROVED",
+  "start_utc": "2026-11-03T15:00:00+00:00",
+  "sealed_at_utc": "2026-11-04T06:30:48.587067+00:00",
+  "backdated": true,
+  "seal_sha256": "e4bbb507fc25a67883a5e57eb29c6c2cda71e96b484a395acef300c76863405e"
+}

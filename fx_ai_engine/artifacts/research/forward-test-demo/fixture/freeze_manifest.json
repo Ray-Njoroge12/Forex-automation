@@ -1,0 +1,42 @@
+{
+  "config": {
+    "path": "fx_ai_engine/config_microcapital.py",
+    "sha256": "4b74a43eccdcb1a2cf44228a4356eed35e1502cd0ba768245c80d05ca4dbc361"
+  },
+  "created_at_utc": "2026-11-04T06:29:32.869836+00:00",
+  "ea_build": {
+    "path": "/tmp/fx-r10-fixture-repo/build/FX_Execution.ex5",
+    "sha256": "c8f1e2603aab8ee5e44987aa25612fcb5f3002f2a5dacc0cd3b8e8db8cde3d15"
+  },
+  "ea_source": {
+    "path": "fx_ai_engine/mt5_ea/FX_Execution.mq5",
+    "pinned_policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+    "sha256": "3bfae3cd7b3a319a7c1712e9cb3b01a919a85f86ba44e33af3c3ce3019ec1eb4"
+  },
+  "git": {
+    "commit": null
+  },
+  "label": "fixture-demo",
+  "manifest_sha256": "300feb7108ac9a0c85b68a2dee20decdb01f38f7759d830e97fbfdd09323df8e",
+  "policy": {
+    "mode": "core_srs",
+    "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+    "source": "validation.print_policy_hash --mode core_srs"
+  },
+  "protected_files": {
+    "SRS_v1.md": "4d4df9a4e3821360ba544ebcadaba6e9813aa9585879e19fc3caceef4bf4f859",
+    "fx_ai_engine/bridge/__init__.py": "5b352c195b9d994f735cdc176c6063d6ed0fb67446ac050cf18c37a8fb8fce09",
+    "fx_ai_engine/bridge/execution_feedback.py": "3cdb7032a063af512c8f9a4c09d29c431668dd28a94dac027c5cdb438260d142",
+    "fx_ai_engine/bridge/mock_feedback_simulator.py": "c3dbbbc51a7de969f855230d8b3d980918c3a9f0d71c4ad232973b6b18973ae6",
+    "fx_ai_engine/bridge/signal_router.py": "423fe0237b49d3f1da776a79f2072444e4fe4c5134ea95e2e470629923d5802d",
+    "fx_ai_engine/config_microcapital.py": "4b74a43eccdcb1a2cf44228a4356eed35e1502cd0ba768245c80d05ca4dbc361",
+    "fx_ai_engine/core/risk/__init__.py": "5b352c195b9d994f735cdc176c6063d6ed0fb67446ac050cf18c37a8fb8fce09",
+    "fx_ai_engine/core/risk/exposure_manager.py": "e8146c1641f07a0af3da0d274160348c66b6fcea53e91f46fd200364ebca3777",
+    "fx_ai_engine/core/risk/hard_risk_engine.py": "2872faaab536189aa7e50a6eaba76c7098e31a8398effe204a8cb0eed299990b",
+    "fx_ai_engine/core/risk/reset_scheduler.py": "449479622017382b2652ea44fd748022cfea52f6ad2b9586e1db6791bba137bf",
+    "fx_ai_engine/mt5_ea/FX_Execution.mq5": "3bfae3cd7b3a319a7c1712e9cb3b01a919a85f86ba44e33af3c3ce3019ec1eb4",
+    "fx_ai_engine/mt5_ea/FX_HistoryExport.mq5": "e1ab741e042000b2a4efdb40a5c485f8c0a20c2fc13b149a93235b71c83b732c"
+  },
+  "repo_root_at_freeze": "/private/tmp/fx-r10-fixture-repo",
+  "schema": "fx-forward-freeze/1"
+}
