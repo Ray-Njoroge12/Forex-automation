@@ -1,0 +1,357 @@
+{
+  "tool": "r5_monte_carlo",
+  "note": "Evidence for plan decision D3 (ADR 0001). No risk constant is changed by this tool.",
+  "limits": {
+    "daily_stop_pct": 0.08,
+    "weekly_stop_pct": 0.15,
+    "hard_drawdown_pct": 0.2,
+    "loss_halt_threshold": 3,
+    "loss_throttle_steps": {
+      "1": 0.75,
+      "2": 0.5
+    },
+    "base_risk_pct": 0.032,
+    "acceptance_max_drawdown": 0.15
+  },
+  "trades_in_sample": 6406,
+  "mean_r": -0.3476,
+  "trades_per_day": 7,
+  "days_per_week": 5,
+  "block_length": 5,
+  "runs": 10000,
+  "seed": 11,
+  "risks": [
+    0.01,
+    0.015,
+    0.032
+  ],
+  "trade_counts": [
+    30,
+    100
+  ],
+  "rows": [
+    {
+      "method": "iid",
+      "risk": 0.01,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.0011,
+      "p_weekly_stop": 0.0,
+      "p_drawdown_halt": 0.0,
+      "p_loss_streak_halt": 0.9918,
+      "p_max_dd_gt_acceptance": 0.0,
+      "max_drawdown": {
+        "p5": 0.0166,
+        "p25": 0.0248,
+        "p50": 0.0268,
+        "p75": 0.0378,
+        "p95": 0.0593
+      },
+      "final_equity": {
+        "p5": 0.9456,
+        "p25": 0.9682,
+        "p50": 0.9753,
+        "p75": 0.9856,
+        "p95": 1.0122
+      }
+    },
+    {
+      "method": "iid",
+      "risk": 0.015,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.0033,
+      "p_weekly_stop": 0.0019,
+      "p_drawdown_halt": 0.0,
+      "p_loss_streak_halt": 0.9908,
+      "p_max_dd_gt_acceptance": 0.0022,
+      "max_drawdown": {
+        "p5": 0.0249,
+        "p25": 0.037,
+        "p50": 0.04,
+        "p75": 0.0564,
+        "p95": 0.0879
+      },
+      "final_equity": {
+        "p5": 0.9192,
+        "p25": 0.9524,
+        "p50": 0.963,
+        "p75": 0.9782,
+        "p95": 1.0177
+      }
+    },
+    {
+      "method": "iid",
+      "risk": 0.032,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.4207,
+      "p_weekly_stop": 0.0797,
+      "p_drawdown_halt": 0.0077,
+      "p_loss_streak_halt": 0.9348,
+      "p_max_dd_gt_acceptance": 0.1108,
+      "max_drawdown": {
+        "p5": 0.0528,
+        "p25": 0.0779,
+        "p50": 0.0842,
+        "p75": 0.1181,
+        "p95": 0.1648
+      },
+      "final_equity": {
+        "p5": 0.8436,
+        "p25": 0.8993,
+        "p50": 0.922,
+        "p75": 0.9531,
+        "p95": 1.0341
+      }
+    },
+    {
+      "method": "iid",
+      "risk": 0.01,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.0032,
+      "p_weekly_stop": 0.0001,
+      "p_drawdown_halt": 0.0007,
+      "p_loss_streak_halt": 1.0,
+      "p_max_dd_gt_acceptance": 0.0111,
+      "max_drawdown": {
+        "p5": 0.0447,
+        "p25": 0.0633,
+        "p50": 0.0773,
+        "p75": 0.0947,
+        "p95": 0.1251
+      },
+      "final_equity": {
+        "p5": 0.8809,
+        "p25": 0.9125,
+        "p50": 0.9313,
+        "p75": 0.9511,
+        "p95": 0.9903
+      }
+    },
+    {
+      "method": "iid",
+      "risk": 0.015,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.0099,
+      "p_weekly_stop": 0.0048,
+      "p_drawdown_halt": 0.022,
+      "p_loss_streak_halt": 0.9998,
+      "p_max_dd_gt_acceptance": 0.1705,
+      "max_drawdown": {
+        "p5": 0.0666,
+        "p25": 0.0938,
+        "p50": 0.1141,
+        "p75": 0.1392,
+        "p95": 0.1826
+      },
+      "final_equity": {
+        "p5": 0.8264,
+        "p25": 0.871,
+        "p50": 0.8981,
+        "p75": 0.9269,
+        "p95": 0.984
+      }
+    },
+    {
+      "method": "iid",
+      "risk": 0.032,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.7384,
+      "p_weekly_stop": 0.0984,
+      "p_drawdown_halt": 0.7029,
+      "p_loss_streak_halt": 0.9763,
+      "p_max_dd_gt_acceptance": 0.9243,
+      "max_drawdown": {
+        "p5": 0.1385,
+        "p25": 0.1916,
+        "p50": 0.2054,
+        "p75": 0.2126,
+        "p95": 0.2229
+      },
+      "final_equity": {
+        "p5": 0.7807,
+        "p25": 0.7936,
+        "p50": 0.8141,
+        "p75": 0.8569,
+        "p95": 0.9647
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.01,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.0007,
+      "p_weekly_stop": 0.0,
+      "p_drawdown_halt": 0.0,
+      "p_loss_streak_halt": 0.9933,
+      "p_max_dd_gt_acceptance": 0.0,
+      "max_drawdown": {
+        "p5": 0.0172,
+        "p25": 0.0244,
+        "p50": 0.0263,
+        "p75": 0.035,
+        "p95": 0.0552
+      },
+      "final_equity": {
+        "p5": 0.9497,
+        "p25": 0.9706,
+        "p50": 0.976,
+        "p75": 0.9867,
+        "p95": 1.0139
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.015,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.0032,
+      "p_weekly_stop": 0.0005,
+      "p_drawdown_halt": 0.0,
+      "p_loss_streak_halt": 0.993,
+      "p_max_dd_gt_acceptance": 0.0009,
+      "max_drawdown": {
+        "p5": 0.0257,
+        "p25": 0.0364,
+        "p50": 0.0393,
+        "p75": 0.0522,
+        "p95": 0.0819
+      },
+      "final_equity": {
+        "p5": 0.925,
+        "p25": 0.9561,
+        "p50": 0.964,
+        "p75": 0.9799,
+        "p95": 1.0203
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.032,
+      "trades": 30,
+      "runs": 10000,
+      "p_daily_stop": 0.3842,
+      "p_weekly_stop": 0.0575,
+      "p_drawdown_halt": 0.0057,
+      "p_loss_streak_halt": 0.9544,
+      "p_max_dd_gt_acceptance": 0.0822,
+      "max_drawdown": {
+        "p5": 0.0544,
+        "p25": 0.0767,
+        "p50": 0.0827,
+        "p75": 0.1093,
+        "p95": 0.1587
+      },
+      "final_equity": {
+        "p5": 0.8482,
+        "p25": 0.9067,
+        "p50": 0.9239,
+        "p75": 0.9559,
+        "p95": 1.0396
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.01,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.0022,
+      "p_weekly_stop": 0.0,
+      "p_drawdown_halt": 0.0001,
+      "p_loss_streak_halt": 1.0,
+      "p_max_dd_gt_acceptance": 0.0053,
+      "max_drawdown": {
+        "p5": 0.0427,
+        "p25": 0.0598,
+        "p50": 0.0736,
+        "p75": 0.0893,
+        "p95": 0.1169
+      },
+      "final_equity": {
+        "p5": 0.8891,
+        "p25": 0.918,
+        "p50": 0.9361,
+        "p75": 0.9568,
+        "p95": 0.997
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.015,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.0084,
+      "p_weekly_stop": 0.0022,
+      "p_drawdown_halt": 0.0117,
+      "p_loss_streak_halt": 1.0,
+      "p_max_dd_gt_acceptance": 0.1221,
+      "max_drawdown": {
+        "p5": 0.0637,
+        "p25": 0.0888,
+        "p50": 0.1087,
+        "p75": 0.1314,
+        "p95": 0.1708
+      },
+      "final_equity": {
+        "p5": 0.8376,
+        "p25": 0.879,
+        "p50": 0.9052,
+        "p75": 0.9352,
+        "p95": 0.9942
+      }
+    },
+    {
+      "method": "block",
+      "risk": 0.032,
+      "trades": 100,
+      "runs": 10000,
+      "p_daily_stop": 0.7036,
+      "p_weekly_stop": 0.0748,
+      "p_drawdown_halt": 0.6383,
+      "p_loss_streak_halt": 0.9851,
+      "p_max_dd_gt_acceptance": 0.9001,
+      "max_drawdown": {
+        "p5": 0.133,
+        "p25": 0.1821,
+        "p50": 0.2039,
+        "p75": 0.2117,
+        "p95": 0.2216
+      },
+      "final_equity": {
+        "p5": 0.7817,
+        "p25": 0.7953,
+        "p50": 0.8209,
+        "p75": 0.8695,
+        "p95": 0.9836
+      }
+    }
+  ],
+  "legacy_iid_reference": {
+    "30": {
+      "risk_per_trade": 0.032,
+      "trades_per_run": 30,
+      "runs": 10000,
+      "p_max_dd_gt_15pct": 0.9522,
+      "p_max_dd_gt_20pct": 0.8544,
+      "median_max_dd": 0.2921,
+      "median_final_equity": 0.7428,
+      "p_final_below_start": 0.9606
+    },
+    "100": {
+      "risk_per_trade": 0.032,
+      "trades_per_run": 100,
+      "runs": 10000,
+      "p_max_dd_gt_15pct": 1.0,
+      "p_max_dd_gt_20pct": 0.9999,
+      "median_max_dd": 0.6419,
+      "median_final_equity": 0.3798,
+      "p_final_below_start": 0.9993
+    }
+  },
+  "trades_csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__base_trades.csv"
+}
