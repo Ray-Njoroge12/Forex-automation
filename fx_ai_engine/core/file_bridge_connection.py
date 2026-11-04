@@ -134,6 +134,15 @@ class FileBridgeConnection(MT5Connection):
             raise FileBridgeDataError("MT5 terminal reports no server connection")
         return status
 
+    def server_utc_offset_seconds(self) -> int | None:
+        """Broker server time minus UTC from a fresh, valid status file, else ``None``."""
+        try:
+            offset = self._status().get("server_utc_offset_seconds")
+        except ValueError as exc:  # FileBridgeDataError or an unparsable timestamp
+            self._fail("FILE_BRIDGE_STATUS_UNAVAILABLE", exc)
+            return None
+        return offset if type(offset) is int else None
+
     def _account_snapshot_payload(self) -> dict[str, Any]:
         snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
         if not isinstance(snapshot, dict):
@@ -342,11 +351,21 @@ class FileBridgeConnection(MT5Connection):
                 raise FileBridgeDataError("bar times are not strictly increasing")
             previous = t
         last_time = int(rows[-1][0])
-        if last_time != expected:
+        step = TIMEFRAME_SECONDS[tf_name]
+        # status.json is rewritten every few seconds but a bar file on bar close,
+        # so at a bar boundary the bar file can be exactly one bar ahead of the
+        # status it is checked against. Accept that one bar; the future-close
+        # check below still rejects a bar that has not closed yet.
+        if last_time < expected:
             raise FileBridgeDataError(
                 f"bar export lags the terminal (last={last_time} expected={expected})"
             )
-        bar_close = last_time + TIMEFRAME_SECONDS[tf_name]
+        if last_time not in (expected, expected + step):
+            raise FileBridgeDataError(
+                "bar export is more than one bar ahead of the terminal status "
+                f"(last={last_time} expected={expected})"
+            )
+        bar_close = last_time + step
         if bar_close > self._now().timestamp() + FUTURE_TOLERANCE_SECONDS + 60:
             raise FileBridgeDataError("latest closed bar ends in the future; check server offset")
         frame = pd.DataFrame(rows, columns=BAR_COLUMNS)

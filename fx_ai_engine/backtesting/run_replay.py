@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,13 +24,24 @@ from backtesting.replay_report import (
     breakdown, equity_metrics, monte_carlo_drawdown, render_markdown, trade_metrics, windows,
 )
 from backtesting.unified_replay import (
-    COST_SCENARIOS, EXIT_MODES, SYMBOLS, SimulationConfig, generate_all_candidates, load_csv_frames, simulate,
+    COST_SCENARIOS, DEFAULT_WORKERS, EXIT_MODES, SYMBOLS, SimulationConfig, generate_all_candidates,
+    load_csv_frames, simulate,
 )
 from config_microcapital import apply_agent_threshold_overrides, get_policy_config
 from core.policy.envelope import canonical_policy_hash
 
 PROJECT_ROOT = Path(__file__).parents[1]
 REGISTRY = PROJECT_ROOT / "artifacts" / "experiments" / "registry.jsonl"
+DEFAULT_CACHE_DIR = PROJECT_ROOT / "artifacts" / "replay" / "cache"
+
+
+def _raise_system_exit(signum, _frame) -> None:
+    raise SystemExit(128 + signum)
+
+
+def install_sigterm_handler() -> None:
+    """Turn SIGTERM into SystemExit so worker pools are terminated on the way out."""
+    signal.signal(signal.SIGTERM, _raise_system_exit)
 
 # Ablations of the loosened live parameters against the coded defaults (assessment section 4.1).
 VARIANTS: dict[str, dict] = {
@@ -83,19 +95,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--holdout-months", type=int, default=6)
     parser.add_argument("--start", default=None, help="ISO start date (default: data start + 60 days warm-up)")
     parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="candidate worker processes (capped by FX_MAX_WORKERS)")
+    parser.add_argument("--symbols", nargs="+", default=list(SYMBOLS), choices=SYMBOLS)
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR,
+                        help="candidate cache keyed by policy, data, cost, range and code hashes")
+    parser.add_argument("--no-cache", action="store_true", help="always regenerate candidates")
     parser.add_argument("--halts", choices=("srs", "edge"), default="srs",
                         help="srs: SRS daily/weekly/drawdown/loss-streak halts as specified; "
                              "edge: those account halts disabled so the full period measures strategy edge "
                              "(position limits, exposure cap, correlation and throttle unchanged)")
     args = parser.parse_args(argv)
+    install_sigterm_handler()
+    symbols = tuple(s for s in SYMBOLS if s in set(args.symbols))
+    cache_dir = None if args.no_cache else args.cache_dir.resolve()
 
     data_dir = args.data_dir.resolve()
     datasets = sorted(p.name for p in data_dir.glob("*.csv"))
     dataset_hashes = {p.name: _sha(p) for p in sorted(data_dir.glob("*.csv"))}
-    frames = load_csv_frames(data_dir)
-    m15_start = max(frames[s]["M15"].index[0] for s in SYMBOLS)
-    data_end = min(frames[s]["M15"].index[-1] for s in SYMBOLS) + pd.Timedelta(minutes=15)
+    frames = load_csv_frames(data_dir, symbols=symbols)
+    m15_start = max(frames[s]["M15"].index[0] for s in symbols)
+    data_end = min(frames[s]["M15"].index[-1] for s in symbols) + pd.Timedelta(minutes=15)
     start = pd.Timestamp(args.start, tz="UTC") if args.start else m15_start + pd.Timedelta(days=60)
     holdout_start = data_end - pd.DateOffset(months=args.holdout_months)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -108,8 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         policy = apply_agent_threshold_overrides(get_policy_config(mode_id="core_srs", env={}), VARIANTS[variant] or None)
         policy_hash = canonical_policy_hash(policy)
         print(f"[{variant}] generating candidates {start.date()} .. {data_end.date()} ...", flush=True)
-        candidates, funnels = generate_all_candidates(data_dir, policy, COST_SCENARIOS["base"],
-                                                      start=start, end=data_end, workers=args.workers)
+        candidates, funnels = generate_all_candidates(data_dir, policy, COST_SCENARIOS["base"], symbols=symbols,
+                                                      start=start, end=data_end, workers=args.workers,
+                                                      cache_dir=cache_dir)
         print(f"[{variant}] {len(candidates)} candidates", flush=True)
         for exit_mode in args.exit_modes:
             for cost_name in args.costs:

@@ -89,6 +89,45 @@ def run_all_migrations() -> None:
     migrate_add_trade_reservations()
     migrate_add_trade_lifecycle_events()
     migrate_add_feedback_conflicts()
+    migrate_add_engine_runtime_state()
+
+
+def migrate_add_engine_runtime_state() -> None:
+    """Small key/value store for engine state that must survive a restart."""
+    with get_conn() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS engine_runtime_state (
+            evidence_stream TEXT NOT NULL, account_scope TEXT NOT NULL,
+            key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (evidence_stream, account_scope, key)
+        )""")
+
+
+def get_engine_runtime_state(key: str, *, evidence_context: EvidenceContext) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM engine_runtime_state WHERE evidence_stream=? AND account_scope=? AND key=?",
+            (evidence_context.evidence_stream, evidence_context.account_scope, key),
+        ).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_engine_runtime_state(key: str, value: str, *, evidence_context: EvidenceContext) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO engine_runtime_state (evidence_stream, account_scope, key, value, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(evidence_stream, account_scope, key)
+            DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (
+                evidence_context.evidence_stream,
+                evidence_context.account_scope,
+                key,
+                str(value),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
 
 
 def migrate_add_feedback_conflicts() -> None:

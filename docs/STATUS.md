@@ -6,13 +6,13 @@ Updated: 2026-11-04. Every agent (Kiro, Claude Code, Codex) reads this before st
 
 | Item | State |
 | --- | --- |
-| Branch | `hardening/2026-11` (pushed). `main` is behind; nothing merged yet. |
+| Branch | `hardening/2026-11` (pushed). `main` is behind; nothing merged yet. Development wave in progress on `dev/development-wave` (worktree `.worktrees/development-wave`, plan `.agents/tasks/development-wave/plan.md`); stage A done, not yet merged. |
 | Plan | `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md` (phases 0–7, gates G0–G6) |
 | Decisions | `docs/decisions/0001-development-plan-defaults.md` (owner chose defaults; demo account only) |
 | Account | MetaQuotes-Demo `5058284077`, balance 101,609.81 after one closed engine trade |
 | Engine | Stopped. launchd agents (watchdog, calendar, keep-awake) uninstalled on 2026-11-03 at owner request |
 | EA on chart | Build `2026.11.03-2`. Build `-3` (exit close_time in UTC) compiled and deployed to `MQL5/Experts` but needs re-attaching |
-| Tests | 353 passing (`USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` from `fx_ai_engine/`), Python 3.12 venv |
+| Tests | 388 passing on `dev/development-wave` after stage A (`388 passed in 17.45s`; 353 at base), `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` from `fx_ai_engine/`, Python 3.12 venv |
 
 ## Phase and gate status
 
@@ -21,6 +21,7 @@ Updated: 2026-11-04. Every agent (Kiro, Claude Code, Codex) reads this before st
 | 0 Foundation | Done (G0 met) | AGENTS.md, CI workflow, Kiro hooks, ADR 0001, lock file |
 | 1 Demo plumbing | Done except burn-in | File bridge 43/43 checks; EA matrix 7/7 cases (`fx_ai_engine/artifacts/demo-evidence/2026-11-03/`); first engine trade GBPUSD BUY 23.53 lots routed, filled, closed +1,576.51 (0.49R). G1 burn-in started then paused after <1 day |
 | 2 Edge evidence | Replay built; **G2 failed: no edge** | See "Phase 2 result" below |
+| Dev wave A: points of error | Done on `dev/development-wave` (needs review + owner approval; touches `main.py`) | Known issues 1–5 below fixed with tests; long-job runbook `fx_ai_engine/docs/runbooks/long-jobs.md` |
 | 2b Strategy redesign | Not started (required before Phase 6) | — |
 | 3 SRS v1.1 | Not started | Needs Phase 2b numbers; D3 default says lower risk to 1.0–1.5% |
 | 4 Structure/ops | Not started | `main.py` 2,300 lines, `db.py` 1,550 lines |
@@ -36,13 +37,18 @@ Updated: 2026-11-04. Every agent (Kiro, Claude Code, Codex) reads this before st
 - With SRS account halts on, the replay hits the 20% drawdown halt within two weeks of the start.
 - Registry of every run: `fx_ai_engine/artifacts/experiments/registry.jsonl`; diagnostics: `fx_ai_engine/artifacts/replay/2026-11-03_edge_diagnostics.json`; datasets (CSV untracked, manifests tracked): `fx_ai_engine/artifacts/datasets/mt5_2026-11-03/`.
 
+## Known issues resolved in development wave stage A (`dev/development-wave`, not merged)
+
+Numbers are kept so earlier references stay valid.
+
+1. **File-bridge race at bar boundaries** (fixed). `FileBridgeConnection._load_bars` now accepts a bar export whose last bar equals `status.json`'s `latest_closed_bars` or is exactly one bar newer; older is still `bar export lags the terminal`, anything else is `bar export is more than one bar ahead of the terminal status`. The "latest closed bar ends in the future" check still rejects an unclosed bar. Tests: `tests/test_file_bridge_connection.py::test_fetch_ohlc_accepts_bar_export_one_bar_ahead_of_status`, `..._two_bars_ahead_...`, `..._misaligned_...`, `..._one_bar_ahead_export_that_has_not_closed`.
+2. **Unconsumed legacy exit** (fixed in code; live DB still `EXECUTED_OPEN` until the owner's next engine start in a testing wave). `main._normalise_legacy_exit_close_time` converts exits without `close_time_server` (EA builds before `2026.11.03-3`) on the file bridge: close time from `deals.json` for the position (UTC), else payload time minus `server_utc_offset_seconds` (new `FileBridgeConnection.server_utc_offset_seconds()`); the original is kept as `close_time_reported`, the receipt dedupe key stays on the raw payload. Tested with a verbatim copy of the live payload (`tests/fixtures/exits/exit_59159851261.json`) on a temp bridge and DB: trade `CLOSED_WIN` +1,576.51 0.4926R, `close_time` `2026-11-03T19:03:16.520000+00:00`, reservation `CLOSED`, file deleted, second delivery deduped (`tests/test_legacy_exit_consumption.py`).
+3. **Replay resource use** (fixed). `backtesting/replay_cache.py` caches per-symbol candidates as gzip JSON keyed by policy hash, CSV hashes, cost model, start/end, cache version and a fingerprint of the agent/indicator/replay code (`artifacts/replay/cache/`, git-ignored; `--no-cache` bypasses). Default workers 2 (`--workers`, capped by `FX_MAX_WORKERS`); a spawn `Pool` that is terminated on any parent exception, workers niced to ≥10 that exit within 2 s if the parent dies; `run_replay`/`edge_diagnostics` turn SIGTERM into a clean exit; new `run_replay --symbols`. Tests: `tests/test_replay_cache_and_workers.py`.
+4. **Long foreground jobs** (fixed). `python -m validation.detached_job start|status|stop` runs a command in its own session and process group with niceness 10, `FX_MAX_WORKERS=2`, a 3 h default timeout, kills leftovers in the group, and writes the completion flag `done.json` (`completed`/`failed`/`timeout`/`stopped`). Runbook: `fx_ai_engine/docs/runbooks/long-jobs.md`. Tests: `tests/test_detached_job.py`.
+5. **Restart re-evaluates the current bar** (fixed). The per-symbol last-seen M15 candle map is persisted in the new `engine_runtime_state` table (per evidence stream and account scope; `migrate_add_engine_runtime_state`) and seeded on `Engine.__init__`; malformed, unknown-symbol or future values are ignored; a DB failure only logs. Tests: `tests/test_engine_restart_state.py`.
+
 ## Known issues and points of error (open)
 
-1. **File-bridge race at bar boundaries.** `FileBridgeConnection._load_bars` rejects a bar file whose last bar is *newer* than `status.json` (status written every 5 s, bars on bar close). Caused missed decisions on 2026-11-03 (8 `bar export lags the terminal` errors with last > expected).
-2. **Unconsumed exit.** `exit_59159851261.json` (GBPUSD close, written by EA build -2 with server time labelled `Z`) is still in the bridge; DB still shows `EXECUTED_OPEN`. The engine must consume it on next start before any new trading.
-3. **Replay resource use.** Candidate generation re-runs per variant (≈2.5 min × 6 processes); killed parents left orphaned `multiprocessing` workers. Needs candidate caching, a lower default worker count, and clean shutdown.
-4. **Long foreground jobs.** Agent tool timeouts killed foreground replays. Long jobs must run detached with a completion flag and a resource budget.
-5. **Restart re-evaluates the current bar.** An engine restart mid-bar re-runs that bar's decisions (blocked by portfolio checks on 2026-11-03, but should be fixed).
 6. **Rate differentials stale** since 2026-08-31; candidate file awaiting owner review (`fx_ai_engine/data/source_records/market_context_2026-11-03_rates.candidate.json`).
 7. **Parallel agent work.** `.worktrees/codex-file-bridge-timestamp-validation` (uncommitted file-bridge/calendar hardening) and branch `research/validation-wave1` (research tooling: bias audit, authenticity gate, cost stress, Monte Carlo, hypothesis cards, Kiro skills) are not reviewed or merged and overlap with work on `hardening/2026-11`.
 8. **SRS acceptance gates inconsistent** (average R ≥ 2.0 over all trades is unreachable at 2.2R targets; 3.2% risk incompatible with the 15% drawdown gate). Resolve in SRS v1.1.

@@ -28,6 +28,9 @@ Timing and price assumptions (stated in every report):
 from __future__ import annotations
 
 import math
+import os
+import threading
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -37,6 +40,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from backtesting import replay_cache
 from backtesting.replay_execution import QuoteBar, protective_exit
 from core.account_status import AccountStatus
 from core.agents.adversarial_agent import AdversarialAgent
@@ -282,18 +286,120 @@ def _candidate_worker(args: tuple) -> tuple[list[Candidate], Counter]:
     return generate_candidates(symbol, frames, policy, cost, start=start, end=end)
 
 
+DEFAULT_WORKERS = 2
+MAX_WORKERS_ENV = "FX_MAX_WORKERS"  # upper bound set by validation.detached_job
+WORKER_NICENESS = 10
+
+
+def effective_workers(requested: int, env: Mapping[str, str] | None = None) -> int:
+    """``requested`` capped by ``FX_MAX_WORKERS`` when that is a positive integer."""
+    workers = max(1, int(requested))
+    raw = (os.environ if env is None else env).get(MAX_WORKERS_ENV, "").strip()
+    if raw:
+        try:
+            cap = int(raw)
+        except ValueError:
+            cap = 0
+        if cap >= 1:
+            workers = min(workers, cap)
+    return workers
+
+
+def _parent_watchdog(parent_pid: int, *, getppid: Callable[[], int] = os.getppid,
+                     exit: Callable[[int], None] = os._exit, interval: float = 2.0,
+                     sleep: Callable[[float], None] = time.sleep) -> None:
+    """Exit this worker once its parent has gone (a SIGKILLed parent orphans pool workers)."""
+    while True:
+        if getppid() != parent_pid:
+            exit(1)
+            return
+        sleep(interval)
+
+
+def _worker_init(parent_pid: int) -> None:
+    try:
+        current = os.nice(0)
+        if current < WORKER_NICENESS:
+            os.nice(WORKER_NICENESS - current)
+    except OSError:
+        pass
+    threading.Thread(target=_parent_watchdog, args=(parent_pid,), daemon=True,
+                     name="replay-parent-watchdog").start()
+
+
+def _candidates_to_payload(candidates: Sequence[Candidate], funnel: Counter) -> dict[str, Any]:
+    return {
+        "candidates": [{"decision_time": pd.Timestamp(c.decision_time).isoformat(), "symbol": c.symbol,
+                        "signal": c.signal, "regime": c.regime} for c in candidates],
+        "funnel": dict(funnel),
+    }
+
+
+def _candidates_from_payload(payload: Mapping[str, Any]) -> tuple[list[Candidate], Counter]:
+    candidates = [Candidate(pd.Timestamp(row["decision_time"]).tz_convert("UTC"), str(row["symbol"]),
+                            dict(row["signal"]), dict(row["regime"])) for row in payload["candidates"]]
+    return candidates, Counter({str(k): int(v) for k, v in payload["funnel"].items()})
+
+
+def _candidate_cache_parts(symbol: str, data_dir: Path, policy: Mapping[str, object], cost: CostModel,
+                           start, end) -> dict[str, Any]:
+    from core.policy.envelope import canonical_policy_hash
+
+    data = {}
+    for tf in ("M15", "H1", "H4", "D1"):
+        path = Path(data_dir) / f"{symbol}_{tf}.csv"
+        if path.exists():
+            data[path.name] = replay_cache.file_sha256_16(path)
+    stamp = lambda t: None if t is None else pd.Timestamp(t).isoformat()
+    return {"policy_hash": canonical_policy_hash(policy), "symbol": symbol, "data_sha256_16": data,
+            "cost": asdict(cost), "start": stamp(start), "end": stamp(end)}
+
+
 def generate_all_candidates(data_dir: Path, policy: Mapping[str, object], cost: CostModel, *,
                             symbols: Sequence[str] = SYMBOLS, start=None, end=None,
-                            workers: int = 6) -> tuple[list[Candidate], dict[str, Counter]]:
-    from concurrent.futures import ProcessPoolExecutor
+                            workers: int = DEFAULT_WORKERS,
+                            cache_dir: Path | None = None) -> tuple[list[Candidate], dict[str, Counter]]:
+    """Candidates for every symbol, from the cache where possible, else in up to ``workers`` processes.
+
+    Worker processes run at niceness >= 10, exit if the parent dies, and are
+    terminated (not awaited) if the parent raises or receives SystemExit.
+    """
     import multiprocessing as mp
 
     jobs = [(s, str(data_dir), dict(policy), cost, start, end) for s in symbols]
-    if workers <= 1:
-        results = [_candidate_worker(job) for job in jobs]
+    results: list[tuple[list[Candidate], Counter] | None] = [None] * len(jobs)
+    cache_entries: dict[int, tuple[str, dict[str, Any]]] = {}
+    if cache_dir is not None:
+        for i, symbol in enumerate(symbols):
+            parts = _candidate_cache_parts(symbol, Path(data_dir), policy, cost, start, end)
+            key = replay_cache.cache_key("candidates", **parts)
+            meta = replay_cache.key_parts("candidates", **parts)
+            cached = replay_cache.load(cache_dir, "candidates", key, meta)
+            if cached is not None:
+                try:
+                    results[i] = _candidates_from_payload(cached)
+                except (KeyError, TypeError, ValueError):
+                    results[i] = None
+            if results[i] is None:
+                cache_entries[i] = (key, meta)
+
+    pending = [i for i, r in enumerate(results) if r is None]
+    processes = min(effective_workers(workers), len(pending))
+    if processes <= 1:
+        computed = [_candidate_worker(jobs[i]) for i in pending]
     else:
-        with ProcessPoolExecutor(max_workers=min(workers, len(jobs)), mp_context=mp.get_context("spawn")) as pool:
-            results = list(pool.map(_candidate_worker, jobs))
+        ctx = mp.get_context("spawn")
+        # Pool.__exit__ calls terminate(), so an exception or SIGTERM-driven
+        # SystemExit in the parent kills the workers instead of waiting for them.
+        with ctx.Pool(processes, initializer=_worker_init, initargs=(os.getpid(),)) as pool:
+            computed = pool.map(_candidate_worker, [jobs[i] for i in pending])
+        pool.join()
+    for i, result in zip(pending, computed):
+        results[i] = result
+        if i in cache_entries:
+            key, meta = cache_entries[i]
+            replay_cache.store(cache_dir, "candidates", key, _candidates_to_payload(*result), meta)
+
     candidates = sorted((c for cands, _ in results for c in cands),
                         key=lambda c: (c.decision_time, SYMBOLS.index(c.symbol)))
     funnels = {s: f for s, (_, f) in zip(symbols, results)}

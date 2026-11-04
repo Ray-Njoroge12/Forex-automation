@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from backtesting.replay_report import trade_metrics
+from backtesting.run_replay import DEFAULT_CACHE_DIR, install_sigterm_handler
 from backtesting.unified_replay import (
     COST_SCENARIOS, SYMBOLS, CostModel, SimulationConfig, generate_all_candidates, load_csv_frames, simulate,
 )
@@ -48,14 +49,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", default="2022-12-24")
     parser.add_argument("--holdout-months", type=int, default=6)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args(argv)
+    install_sigterm_handler()
+    cache_dir = None if args.no_cache else args.cache_dir.resolve()
     frames = load_csv_frames(args.data_dir)
     policy = get_policy_config(mode_id="core_srs", env={})
     policy.update({"DAILY_STOP_LOSS_PCT": 10.0, "WEEKLY_STOP_LOSS_PCT": 10.0,
                    "HARD_DRAWDOWN_PCT": 1e9, "LOSS_HALT_THRESHOLD": 10**6})
     start = pd.Timestamp(args.start, tz="UTC")
     end = min(frames[s]["M15"].index[-1] for s in SYMBOLS) - pd.DateOffset(months=args.holdout_months)
-    candidates, _ = generate_all_candidates(args.data_dir, policy, COST_SCENARIOS["base"], start=start, end=end)
+    candidates, _ = generate_all_candidates(args.data_dir, policy, COST_SCENARIOS["base"], start=start, end=end,
+                                            cache_dir=cache_dir)
     cfg = lambda mode: SimulationConfig(exit_mode=mode, start=start, end=end, fixed_sizing=True)
     rng = random.Random(5)
     randomised = [replace(c, signal=dict(c.signal, direction=rng.choice(["BUY", "SELL"]))) for c in candidates]

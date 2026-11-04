@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -62,6 +63,7 @@ from core.state_sync import update_account_status_from_snapshot
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
 from database.db import (
     feedback_receipt_exists,
+    get_engine_runtime_state,
     get_latest_account_metric,
     get_open_trade_ledger,
     initialize_schema,
@@ -85,6 +87,7 @@ from database.db import (
     migrate_phase8_columns,
     record_feedback_receipt,
     run_all_migrations,
+    set_engine_runtime_state,
     insert_ml_shadow_event,
     update_trade_execution_result,
     apply_execution_feedback,
@@ -111,6 +114,7 @@ PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
 PRESERVE_10_REFERENCE_BALANCE_USD = 10.0
 MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS = 30
+LAST_M15_CANDLE_STATE_KEY = "last_m15_candle_by_symbol"
 
 
 def _predict_threshold() -> float:
@@ -176,6 +180,48 @@ def _exit_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
             str(payload.get("close_time", "") or ""),
         )
     )
+
+
+def _normalise_legacy_exit_close_time(payload: Mapping[str, object], bridge: object) -> dict[str, object]:
+    """Return a copy of an exit payload with ``close_time`` in UTC.
+
+    EA builds before 2026.11.03-3 wrote broker server time labelled ``Z`` and no
+    ``close_time_server`` field. Only the file bridge knows the server offset, so
+    other bridges (mock, Windows MT5Connection) are left unchanged. The deal
+    history (converted to UTC by the EA) is preferred; otherwise the status
+    file's server offset is subtracted. The original value is kept in
+    ``close_time_reported``.
+    """
+    result = dict(payload)
+    offset_fn = getattr(bridge, "server_utc_offset_seconds", None)
+    if not callable(offset_fn) or "close_time_server" in payload:
+        return result
+    reported = payload.get("close_time")
+    corrected: datetime | None = None
+    position_ticket = _safe_int(payload.get("position_ticket") or payload.get("ticket"))
+    if position_ticket > 0:
+        try:
+            summary = bridge.get_position_history_summary(position_ticket)
+        except Exception as exc:
+            logger.warning("Deal history lookup failed for legacy exit position_ticket=%s: %s", position_ticket, exc)
+            summary = None
+        if isinstance(summary, Mapping):
+            corrected = _parse_timestamp_utc(summary.get("close_time"))
+    if corrected is None:
+        reported_utc = _parse_timestamp_utc(reported)
+        offset = offset_fn()
+        if reported_utc is not None and type(offset) is int:
+            corrected = reported_utc - timedelta(seconds=offset)
+    if corrected is None:
+        logger.warning(
+            "Legacy exit close_time %s left unconverted (no deal history or server offset) trade_id=%s",
+            reported,
+            payload.get("trade_id", ""),
+        )
+        return result
+    result["close_time"] = corrected.isoformat()
+    result["close_time_reported"] = reported
+    return result
 
 
 def _safe_int(value: object, *, default: int = 0) -> int:
@@ -915,7 +961,9 @@ class Engine:
         )
 
         self.last_m15_candle: datetime | None = None
-        self._last_m15_candle_by_symbol: dict[str, datetime] = {}
+        self._last_m15_candle_by_symbol: dict[str, datetime] = self._load_last_m15_candles()
+        if self._last_m15_candle_by_symbol:
+            self.last_m15_candle = max(self._last_m15_candle_by_symbol.values())
         self._ensure_consecutive_losses_seeded()
 
     def _insert_trade_proposal(self, technical, *, status: str, reason_code: str, risk_percent: float, market_regime: str, **kwargs) -> None:
@@ -1424,6 +1472,9 @@ class Engine:
                     self.feedback.delete_artifact(path)
                     continue
 
+                # The receipt key stays on the raw payload so a re-delivered raw
+                # file still dedupes; DB rows get the UTC close time.
+                payload = _normalise_legacy_exit_close_time(payload, self.bridge)
                 is_final_exit = payload.get("is_final_exit") is not False
                 try:
                     matched_trade = update_trade_exit_result(
@@ -1514,7 +1565,45 @@ class Engine:
         if latest_candle is not None:
             self.last_m15_candle = latest_candle
 
+        if saw_new_candle:
+            self._store_last_m15_candles()
         return saw_new_candle
+
+    def _load_last_m15_candles(self) -> dict[str, datetime]:
+        """Seed the per-symbol seen-candle map so a restart does not re-run the current bar."""
+        try:
+            raw = get_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, evidence_context=self.evidence_context)
+        except Exception:
+            logger.warning("Could not read persisted M15 candle state; the current bar may be re-evaluated", exc_info=True)
+            return {}
+        if not raw:
+            return {}
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring malformed persisted M15 candle state")
+            return {}
+        if not isinstance(stored, dict):
+            return {}
+        now_utc = datetime.now(timezone.utc)
+        seeded: dict[str, datetime] = {}
+        for symbol, value in stored.items():
+            if symbol not in SYMBOLS:
+                continue
+            candle = _parse_timestamp_utc(value)
+            if candle is None or candle > now_utc:
+                continue
+            seeded[symbol] = candle
+        return seeded
+
+    def _store_last_m15_candles(self) -> None:
+        payload = json.dumps(
+            {symbol: candle.isoformat() for symbol, candle in sorted(self._last_m15_candle_by_symbol.items())}
+        )
+        try:
+            set_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, payload, evidence_context=self.evidence_context)
+        except Exception:
+            logger.warning("Could not persist M15 candle state; a restart may re-evaluate this bar", exc_info=True)
 
     def _evaluate_symbol(self, sym: str, decision_time: datetime, session_name: str | None) -> None:
         logger.debug("Evaluating symbol %s", sym)

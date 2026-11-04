@@ -150,6 +150,52 @@ def test_fetch_ohlc_fails_closed_when_export_lags_terminal(bridge):
     assert "lags the terminal" in df.attrs["error"]["message"]
 
 
+def _shift_status_bar(bridge: Path, symbol: str, tf: str, delta_seconds: int) -> None:
+    status_path = bridge / "market" / "status.json"
+    status = json.loads(status_path.read_text())
+    status["latest_closed_bars"][symbol][tf] += delta_seconds
+    status_path.write_text(json.dumps(status))
+
+
+def test_fetch_ohlc_accepts_bar_export_one_bar_ahead_of_status(bridge):
+    """Bar-boundary race: the bar file is written on close, status.json up to 5 s earlier."""
+    _shift_status_bar(bridge, "EURUSD", "M15", -900)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert not df.empty, df.attrs.get("error")
+    assert int(df.index[-1].timestamp()) == _last_closed("M15")
+
+
+def test_fetch_ohlc_rejects_bar_export_two_bars_ahead_of_status(bridge):
+    _shift_status_bar(bridge, "EURUSD", "M15", -1800)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "more than one bar ahead" in df.attrs["error"]["message"]
+
+
+def test_fetch_ohlc_rejects_misaligned_bar_export(bridge):
+    _shift_status_bar(bridge, "EURUSD", "M15", -60)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "more than one bar ahead" in df.attrs["error"]["message"]
+
+
+def test_fetch_ohlc_rejects_one_bar_ahead_export_that_has_not_closed(bridge):
+    """The accepted extra bar must still have closed (close <= now + tolerance)."""
+    path = bridge / "market" / "bars_EURUSD_M15.json"
+    payload = json.loads(path.read_text())
+    unclosed = payload["bars"][-1][0] + 900  # the bar that is still forming at NOW
+    payload["bars"].append([unclosed, 1.1000, 1.1010, 1.0990, 1.1005, 100, 12])
+    path.write_text(json.dumps(payload))
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "ends in the future" in df.attrs["error"]["message"]
+
+
+def test_server_utc_offset_seconds_from_fresh_status(bridge):
+    assert _conn(bridge).server_utc_offset_seconds() == 7200
+    assert _conn(bridge, NOW + timedelta(minutes=5)).server_utc_offset_seconds() is None
+
+
 def test_fetch_ohlc_rejects_inconsistent_ohlc(bridge):
     path = bridge / "market" / "bars_EURUSD_H1.json"
     payload = json.loads(path.read_text())
