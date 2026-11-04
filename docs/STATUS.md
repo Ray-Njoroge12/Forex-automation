@@ -9,7 +9,7 @@ Updated: 2026-11-04 (validation waves and development wave merged; ADR 0007; cap
 | Branch | `hardening/2026-11` (pushed, CI green). Development wave stages A to C and validation waves 1 to 4 are merged into it. `main` is behind; nothing has been merged into `main` yet. `dev/development-wave` (worktree `.worktrees/development-wave`) continues with the repository-interface work and is not yet merged past `97a8852`. |
 | Plan | `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md` (phases 0–7, gates G0–G6) |
 | Decisions | `docs/decisions/`: 0001 plan defaults (demo account only); 0002 validation wave 1; 0003 development wave integration (one tool per job); 0004 live-vs-replay tools (wave 3); 0005 forward-test tooling (wave 4); 0006 multiple-testing (wave 2); **0007 no 30-day demo: continuous demo testing, one frozen release per owner-started test wave** |
-| Current assessment | `fx_ai_engine/docs/2026-11-04-system-capability-and-readiness.md` (capability, demo record, update list). Funded accounts and brokers: `fx_ai_engine/docs/2026-11-04-funded-account-and-broker-options.md` |
+| Current assessment | `fx_ai_engine/docs/2026-11-04-system-capability-and-readiness.md` (capability, demo record, update list). Funded accounts and brokers: `fx_ai_engine/docs/2026-11-04-funded-account-and-broker-options.md`. MT5, demo sufficiency and live-account feasibility: `fx_ai_engine/docs/2026-11-04-mt5-demo-and-live-account-assessment.md` |
 | Account | MetaQuotes-Demo `5058284077`, balance 101,609.81 after one closed engine trade |
 | Engine | Stopped. launchd agents (watchdog, calendar, keep-awake) uninstalled on 2026-11-03 at owner request |
 | EA on chart | Build `2026.11.03-2`. Build `2026.11.04-1` (calendar completeness flag, plus build `-3`'s UTC exit times) is in the merged source and compiled in staging; the owner deploys it with `scripts/mt5/compile_ea.sh --deploy` and re-attaches. The copy in `MQL5/Experts` is the `-3` build |
@@ -69,6 +69,11 @@ Numbers are kept so earlier references stay valid.
 16. **Replay series lost for three variants.** The 2026-11-03 batches shared one output folder, so a later run overwrote the trade files of `rsi_bounded`, `adx_20_25` and `trend_distance_5pip`. R3 reports them as `SERIES_FILES_MISSING`. Fix: per-batch output folders in `run_replay.py` (wave 2 integration note (a)) and re-run those variants.
 17. **Calendar coverage ends 2026-11-17** and the refresh agent is uninstalled. Refresh before the next engine run.
 18. **Commission is 0.0 on MetaQuotes-Demo** while the replay assumes $7.00 per lot round trip. Demo P&L overstates results by that amount until a raw-spread broker demo is used.
+19. **No live mode.** `main.py --mode` accepts only `smoke` and `demo`, demo refuses a non-demo account, and the EA's `RequireDemoAccount = true` drops signals on a real one. Going live is a deliberate build (protected paths, SRS v1.1 pre-live gate, owner approval). See `fx_ai_engine/docs/2026-11-04-mt5-demo-and-live-account-assessment.md`.
+20. **Host is not fit for unattended or live running.** MacBook Pro M2, 8 GB: 4.9 GB swap in use, MT5 at about 140% CPU, sleeps when the display sleeps (keep-awake agent uninstalled). Real money needs a Windows VPS.
+21. **MetaQuotes-Demo connection drops**: 21 losses on 2026-11-03 and 76 on 2026-11-04 (up to 08:43 local), each re-authorized within 1 to 2 s. Cause unknown (network, Wine or server); compare on a broker demo.
+22. **Calendar export intermittently empty.** The EA exported 0 events at 10:03 UTC on 2026-11-04 (31 the day before). `install_calendar` rejects an empty list, so the installed calendar (to 2026-11-17) stays in use. Treat an empty export as a failed refresh in the EA (protected path).
+23. **MetaQuotes-Demo prices are not market-like for cost testing**: zero commission, GBPUSD spread 0.0 pips. Do not use its P&L as a cost estimate.
 
 ## Operating rules learned
 
