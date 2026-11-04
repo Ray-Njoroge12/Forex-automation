@@ -138,6 +138,11 @@ class TradeRepository(Protocol):
         checkpoint_path: str | None = None,
         feature_schema_version: str | None = None,
         evidence_context: EvidenceContext | None = None,
+        veto: bool | None = None,
+        risk_multiplier: float | None = None,
+        would_be_risk_percent: float | None = None,
+        latency_ms: float | None = None,
+        strategy_id: str | None = None,
     ) -> None: ...
 
 

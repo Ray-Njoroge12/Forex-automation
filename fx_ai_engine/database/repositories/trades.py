@@ -769,6 +769,11 @@ def insert_ml_shadow_event(
     checkpoint_path: str | None = None,
     feature_schema_version: str | None = None,
     evidence_context: EvidenceContext | None = None,
+    veto: bool | None = None,
+    risk_multiplier: float | None = None,
+    would_be_risk_percent: float | None = None,
+    latency_ms: float | None = None,
+    strategy_id: str | None = None,
 ) -> None:
     evidence = evidence_context or _default_evidence_context()
     with _connection.get_conn() as conn:
@@ -792,8 +797,13 @@ def insert_ml_shadow_event(
                 threshold,
                 model_loaded,
                 checkpoint_path,
-                feature_schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                feature_schema_version,
+                veto,
+                risk_multiplier,
+                would_be_risk_percent,
+                latency_ms,
+                strategy_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
@@ -814,6 +824,11 @@ def insert_ml_shadow_event(
                 int(bool(model_loaded)),
                 checkpoint_path,
                 feature_schema_version,
+                None if veto is None else int(bool(veto)),
+                risk_multiplier,
+                would_be_risk_percent,
+                latency_ms,
+                strategy_id,
             ),
         )
 

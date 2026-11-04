@@ -10,6 +10,7 @@ Persistence goes through ``engine.repository`` (``application.repository``).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Mapping
 
@@ -19,6 +20,7 @@ from bridge.signal_router import SignalRouteError
 from core.data_quality.freshness import evaluate_calendar_freshness
 from core.filters.calendar_filter import is_news_blackout
 from core.filters.session_filter import get_active_session, is_tradeable_session
+from core.policy.ai_verdict import apply_ai_verdict, verdict_from_shadow
 from core.schemas import technical_signal_to_payload
 from core.strategy import STRATEGY_ERROR
 from core.timeframes import TIMEFRAME_M15
@@ -318,6 +320,7 @@ def evaluate_symbol(engine, sym: str, decision_time: datetime, session_name: str
 
     shadow_decision = None
     if engine.shadow_runtime.enabled:
+        started = time.perf_counter()
         shadow_decision = engine.shadow_runtime.evaluate(
             symbol=sym,
             trade_id=technical.trade_id,
@@ -325,10 +328,16 @@ def evaluate_symbol(engine, sym: str, decision_time: datetime, session_name: str
             decision_time=decision_time,
             technical_timestamp_utc=technical.timestamp_utc,
         )
+        latency_ms = (time.perf_counter() - started) * 1000.0
         primary_gate_route = preserve_primary_route_decision(
             primary_gate_route,
             shadow_decision.outcome,
         )
+        # Shadow only (AGENTS.md invariant 3): what the reduce-only combinator would
+        # do to the rule risk is logged; nothing in this cycle reads it.
+        verdict = verdict_from_shadow(shadow_decision)
+        rule_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 8)
+        _, would_be_risk, _ = apply_ai_verdict(True, rule_risk, verdict)
         engine._insert_ml_shadow_event(
             decision_time=decision_time,
             symbol=sym,
@@ -336,6 +345,11 @@ def evaluate_symbol(engine, sym: str, decision_time: datetime, session_name: str
             stage="POST_HARD_RISK",
             primary_gate_outcome="ROUTE" if primary_gate_route else "REJECT",
             shadow_decision=shadow_decision,
+            veto=verdict.veto,
+            risk_multiplier=verdict.risk_multiplier,
+            would_be_risk_percent=would_be_risk,
+            latency_ms=latency_ms,
+            strategy_id=decision.strategy_id,
         )
 
     canary_decision = evaluate_canary_decision(

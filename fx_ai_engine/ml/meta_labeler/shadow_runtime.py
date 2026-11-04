@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
-from ml.features import FEATURE_SCHEMA_VERSION, FeatureBuilder
+from ml.features import FEATURE_SCHEMA_VERSION, FeatureBuilder, FeatureVector
 from ml.meta_labeler.adapters import (
     normalize_ohlcv_columns,
     normalize_regime_label_for_features,
@@ -375,9 +375,11 @@ class MetaLabelerShadowRuntime:
                 feature_schema_version=self._feature_schema_version,
             )
 
-        m15_df = self._fetch_ohlc(symbol_norm, TIMEFRAME_M15, self.config.m15_lookback)
-        h1_df = self._fetch_ohlc(symbol_norm, TIMEFRAME_H1, self.config.h1_lookback)
-        if m15_df.empty or h1_df.empty:
+        try:
+            vector = shadow_features(
+                self._fetch_ohlc, symbol_norm, regime_label, technical_timestamp_utc, self.config
+            )
+        except ShadowMarketDataUnavailable:
             return ShadowRuntimeDecision(
                 decision_time_utc=decision_iso,
                 symbol=symbol_norm,
@@ -391,15 +393,7 @@ class MetaLabelerShadowRuntime:
                 checkpoint_path=str(self.config.checkpoint_path) if self.config.checkpoint_path else None,
                 feature_schema_version=self._feature_schema_version,
             )
-
-        try:
-            m15_df = normalize_ohlcv_columns(m15_df).sort_index(kind="mergesort")
-            h1_df = normalize_ohlcv_columns(h1_df).sort_index(kind="mergesort")
-            feature_builder = FeatureBuilder(m15_df, h1_df, symbol_norm)
-            feature_time = _resolve_feature_time(technical_timestamp_utc, m15_df)
-            normalized_regime = normalize_regime_label_for_features(regime_label)
-            vector = feature_builder.build(feature_time, regime_label=normalized_regime)
-        except (ValueError, RuntimeError) as exc:
+        except ShadowFeatureBuildFailed as exc:
             return ShadowRuntimeDecision(
                 decision_time_utc=decision_iso,
                 symbol=symbol_norm,
@@ -503,6 +497,43 @@ class MetaLabelerShadowRuntime:
         if probability > 1.0:
             return 1.0
         return probability
+
+
+class ShadowMarketDataUnavailable(Exception):
+    """The feed returned no M15 or no H1 bars."""
+
+
+class ShadowFeatureBuildFailed(Exception):
+    """Normalising the bars or building the feature vector raised ValueError/RuntimeError."""
+
+
+def shadow_features(
+    fetch_ohlc: FetchOHLC,
+    symbol: str,
+    regime_label: str,
+    technical_timestamp_utc: str,
+    config: ShadowRuntimeConfig,
+) -> FeatureVector:
+    """Feature vector the shadow runtime scores, from the bars ``fetch_ohlc`` serves now.
+
+    Live passes the bridge fetch (closed bars only); replay passes a
+    ``PointInTimeFeed`` set to the decision time, so both see the same bars.
+    Errors raised by ``fetch_ohlc`` itself propagate unchanged.
+    """
+    symbol_norm = str(symbol or "").upper().strip()
+    m15_df = fetch_ohlc(symbol_norm, TIMEFRAME_M15, config.m15_lookback)
+    h1_df = fetch_ohlc(symbol_norm, TIMEFRAME_H1, config.h1_lookback)
+    if m15_df.empty or h1_df.empty:
+        raise ShadowMarketDataUnavailable("insufficient market data for shadow features")
+    try:
+        m15_df = normalize_ohlcv_columns(m15_df).sort_index(kind="mergesort")
+        h1_df = normalize_ohlcv_columns(h1_df).sort_index(kind="mergesort")
+        feature_builder = FeatureBuilder(m15_df, h1_df, symbol_norm)
+        feature_time = _resolve_feature_time(technical_timestamp_utc, m15_df)
+        normalized_regime = normalize_regime_label_for_features(regime_label)
+        return feature_builder.build(feature_time, regime_label=normalized_regime)
+    except (ValueError, RuntimeError) as exc:
+        raise ShadowFeatureBuildFailed(str(exc)) from exc
 
 
 def _resolve_feature_time(technical_timestamp_utc: str, m15_df: pd.DataFrame) -> pd.Timestamp:

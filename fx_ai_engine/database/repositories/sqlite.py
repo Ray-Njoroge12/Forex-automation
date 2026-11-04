@@ -179,6 +179,11 @@ class SqliteEngineRepository:
         checkpoint_path: str | None = None,
         feature_schema_version: str | None = None,
         evidence_context: EvidenceContext | None = None,
+        veto: bool | None = None,
+        risk_multiplier: float | None = None,
+        would_be_risk_percent: float | None = None,
+        latency_ms: float | None = None,
+        strategy_id: str | None = None,
     ) -> None:
         _trades.insert_ml_shadow_event(
             decision_time=decision_time,
@@ -195,6 +200,11 @@ class SqliteEngineRepository:
             checkpoint_path=checkpoint_path,
             feature_schema_version=feature_schema_version,
             evidence_context=evidence_context,
+            veto=veto,
+            risk_multiplier=risk_multiplier,
+            would_be_risk_percent=would_be_risk_percent,
+            latency_ms=latency_ms,
+            strategy_id=strategy_id,
         )
 
     # Risk -------------------------------------------------------------------

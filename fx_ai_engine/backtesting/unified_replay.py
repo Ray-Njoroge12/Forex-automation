@@ -50,8 +50,10 @@ from core.agents.portfolio_manager import PortfolioManager
 from core.filters.session_filter import is_tradeable_session
 from core.indicators import calculate_atr
 from core.risk.hard_risk_engine import HardRiskEngine
+from core.policy.ai_verdict import apply_ai_verdict, verdict_from_shadow
 from core.strategy import DEFAULT_STRATEGY_ID, build_strategy, canonical_params
 from core.types import RegimeOutput, TechnicalSignal
+from ml.meta_labeler.shadow_runtime import MetaLabelerShadowRuntime, ShadowRuntimeConfig
 
 SYMBOLS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF")
 TIMEFRAME_CODES = {"M15": 15, "H1": 16385, "H4": 16388, "D1": 16408}
@@ -461,6 +463,8 @@ class SimulationConfig:
     fixed_sizing: bool = False  # size every trade on starting_balance (edge measurement without compounding)
     start: pd.Timestamp | None = None
     end: pd.Timestamp | None = None
+    # Meta-labeler shadow after hard-risk approval: logged in shadow_decisions, never changes trades.
+    shadow: ShadowRuntimeConfig | None = None
 
 
 @dataclass
@@ -470,6 +474,7 @@ class SimulationResult:
     decisions: Counter
     risk_events: list[dict[str, Any]]
     config: dict[str, Any]
+    shadow_decisions: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _SymbolBars:
@@ -503,12 +508,17 @@ def ea_lot_size(symbol: str, balance: float, risk_percent: float, stop_pips: flo
 
 
 def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[str, object],
-             cost: CostModel, config: SimulationConfig = SimulationConfig()) -> SimulationResult:
+             cost: CostModel, config: SimulationConfig = SimulationConfig(), *,
+             shadow_model: Any | None = None) -> SimulationResult:
+    """``config.shadow`` adds the live meta-labeler shadow (``shadow_model`` overrides its checkpoint)."""
     feed = PointInTimeFeed(frames)
     spread_fn = lambda s: _bar_spread_price(frames, feed, s, cost)
     adversarial = {s: AdversarialAgent(s, feed.fetch_ohlc, spread_fn, policy=dict(policy)) for s in frames}
     portfolio = PortfolioManager(fetch_ohlc=feed.fetch_ohlc, policy=dict(policy))
     hard_risk = HardRiskEngine(policy=dict(policy))
+    shadow = (MetaLabelerShadowRuntime(config=config.shadow, fetch_ohlc=feed.fetch_ohlc, model=shadow_model)
+              if config.shadow is not None else None)
+    shadow_decisions: list[dict[str, Any]] = []
     bars = {s: _SymbolBars(tfs["M15"]) for s, tfs in frames.items()}
 
     by_time: dict[int, list[Candidate]] = {}
@@ -729,6 +739,15 @@ def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[st
                     risk_events.append({"time": cand.decision_time.isoformat(), "rule": risk.reason_code})
                 continue
             final_risk = round(pm.final_risk_percent * risk.risk_throttle_multiplier, 8)
+            if shadow is not None:
+                # Same closed-bar view as live; technical timestamp = decision time (live uses wall clock ~ now).
+                vote = shadow.evaluate(symbol=symbol, trade_id=signal.trade_id, regime_label=regime.regime,
+                                       decision_time=cand.decision_time.to_pydatetime(),
+                                       technical_timestamp_utc=cand.decision_time.isoformat())
+                _, would_be_risk, _ = apply_ai_verdict(True, final_risk, verdict_from_shadow(vote))
+                shadow_decisions.append({"decision_time": cand.decision_time.isoformat(), "symbol": symbol,
+                                         "outcome": vote.outcome, "probability": vote.probability,
+                                         "would_be_risk": would_be_risk})
             pending[symbol] = (cand, signal, final_risk)
             decisions["APPROVED"] += 1
             refresh_exposure()
@@ -744,5 +763,6 @@ def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[st
 
     equity = pd.DataFrame({"equity": equity_v, "balance": balance_v},
                           index=pd.to_datetime(np.array(equity_t, dtype="int64"), utc=True))
+    simulation = {k: str(v) for k, v in asdict(config).items() if not (k == "shadow" and v is None)}
     return SimulationResult(trades, equity, decisions, risk_events,
-                            {"cost": asdict(cost), "simulation": {k: str(v) for k, v in asdict(config).items()}})
+                            {"cost": asdict(cost), "simulation": simulation}, shadow_decisions)

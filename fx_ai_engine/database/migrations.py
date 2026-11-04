@@ -330,6 +330,12 @@ def migrate_add_ml_shadow_events() -> None:
             )
             """
         )
+        # Typed AI verdict (stage E2); nullable so older rows stay valid.
+        _ensure_column(conn, "ml_shadow_events", "veto", "INTEGER")
+        _ensure_column(conn, "ml_shadow_events", "risk_multiplier", "REAL")
+        _ensure_column(conn, "ml_shadow_events", "would_be_risk_percent", "REAL")
+        _ensure_column(conn, "ml_shadow_events", "latency_ms", "REAL")
+        _ensure_column(conn, "ml_shadow_events", "strategy_id", "TEXT")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_ml_shadow_scope_time

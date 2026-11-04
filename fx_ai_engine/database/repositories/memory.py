@@ -586,6 +586,11 @@ class InMemoryEngineRepository:
         checkpoint_path: str | None = None,
         feature_schema_version: str | None = None,
         evidence_context: EvidenceContext | None = None,
+        veto: bool | None = None,
+        risk_multiplier: float | None = None,
+        would_be_risk_percent: float | None = None,
+        latency_ms: float | None = None,
+        strategy_id: str | None = None,
     ) -> None:
         evidence = evidence_context or _default_evidence_context()
         with self._lock:
@@ -606,6 +611,11 @@ class InMemoryEngineRepository:
                 "model_loaded": int(bool(model_loaded)),
                 "checkpoint_path": checkpoint_path,
                 "feature_schema_version": feature_schema_version,
+                "veto": None if veto is None else int(bool(veto)),
+                "risk_multiplier": risk_multiplier,
+                "would_be_risk_percent": would_be_risk_percent,
+                "latency_ms": latency_ms,
+                "strategy_id": strategy_id,
             })
 
     # Risk ---------------------------------------------------------------------

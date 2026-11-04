@@ -816,6 +816,11 @@ class Engine:
         stage: str,
         primary_gate_outcome: str,
         shadow_decision,
+        veto: bool | None = None,
+        risk_multiplier: float | None = None,
+        would_be_risk_percent: float | None = None,
+        latency_ms: float | None = None,
+        strategy_id: str | None = None,
     ) -> None:
         try:
             self.repository.insert_ml_shadow_event(
@@ -833,6 +838,11 @@ class Engine:
                 checkpoint_path=shadow_decision.checkpoint_path,
                 feature_schema_version=shadow_decision.feature_schema_version,
                 evidence_context=self.evidence_context,
+                veto=veto,
+                risk_multiplier=risk_multiplier,
+                would_be_risk_percent=would_be_risk_percent,
+                latency_ms=latency_ms,
+                strategy_id=strategy_id,
             )
         except TypeError as exc:
             if "evidence_context" not in str(exc):

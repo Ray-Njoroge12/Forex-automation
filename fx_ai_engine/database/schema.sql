@@ -108,7 +108,12 @@ CREATE TABLE IF NOT EXISTS ml_shadow_events (
     threshold REAL,
     model_loaded INTEGER DEFAULT 0,
     checkpoint_path TEXT,
-    feature_schema_version TEXT
+    feature_schema_version TEXT,
+    veto INTEGER,
+    risk_multiplier REAL,
+    would_be_risk_percent REAL,
+    latency_ms REAL,
+    strategy_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_ml_shadow_scope_time
