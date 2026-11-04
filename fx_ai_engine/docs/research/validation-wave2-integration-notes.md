@@ -1,6 +1,6 @@
 # Validation wave 2: integration notes for run_replay.py
 
-Branch `research/validation-wave2-multiple-testing` adds `research/multiple_testing.py` (R3) without editing `backtesting/run_replay.py`; another session owns that file. These are the changes the run_replay owner would make so R3 can judge every batch. Nothing below has been applied. Decisions are in `docs/decisions/0003-validation-wave2-multiple-testing.md`.
+Branch `research/validation-wave2-multiple-testing` adds `research/multiple_testing.py` (R3) without editing `backtesting/run_replay.py`; another session owns that file. These are the changes the run_replay owner would make so R3 can judge every batch. Nothing below has been applied. Decisions are in `docs/decisions/0006-validation-wave2-multiple-testing.md`.
 
 (a) **Keep each batch's series.** `run_replay` defaults `--out` to `artifacts/replay/<run_id>`, which is safe. The 2026-11-03 batches were run with a shared `--out artifacts/replay/2026-11-03_edge`, so run `20261103T184434Z` overwrote the JSON and trades files of 18 rows from run `20261103T175026Z`. Those rows have a newer row for the same label and cost, so R3 lists them as superseded; if one were evaluated, its file would fail `SERIES_RUN_MISMATCH` (`generated_at` ≠ `run_id`), because R3 never uses a file that belongs to another run. The 18 rows of `rsi_bounded`, `adx_20_25` and `trend_distance_5pip` from that run have no files in the directory at all and are `SERIES_FILES_MISSING`. Either keep the per-run default, or put the run id in the stem:
 
@@ -44,4 +44,4 @@ Or from the shell: `USE_MT5_MOCK=1 ../.venv/bin/python -m research.multiple_test
 
 (f) **Coupling.** R3 depends on the label format `<variant>__<exit_mode>[__<halts>]` (exit modes from `unified_replay.EXIT_MODES`), the report path `report` relative to `fx_ai_engine/` with `<stem>.json` and `<stem>_trades.csv` beside it, the JSON keys `generated_at`, `policy_hash`, `cost`, `holdout_start`, `development.range` (`"YYYY-MM-DD to YYYY-MM-DD"`), the CSV columns `entry_time` and `r_multiple`, and the dev split `entry_time < holdout_start`. Changing any of these turns rows into `SERIES_*` INCONCLUSIVE until R3 is updated.
 
-Results on this branch are in `artifacts/research/fixture-demo/r3/` (synthetic, PASS) and `artifacts/research/real-2026-11-03/r3/` (real registry, INCONCLUSIVE, NOT_EVIDENCE) and summarised in ADR 0003 M9.
+Results on this branch are in `artifacts/research/fixture-demo/r3/` (synthetic, PASS) and `artifacts/research/real-2026-11-03/r3/` (real registry, INCONCLUSIVE, NOT_EVIDENCE) and summarised in ADR 0006 M9.

@@ -1,7 +1,7 @@
 # ADR 0005: Forward-test protocol tooling (validation wave 4, R10)
 Date: 2026-11-04. Status: proposed, owner review.
 Context: plan `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md` Phase 3 (SRS v1.1; item 6 freezes the configuration hash) and Phase 6 (no-change rule, abort and exit criteria), and assessment `fx_ai_engine/docs/2026-11-03-system-assessment-and-benchmark.md` §4.2. Branch `research/validation-wave4-forward-test`, based on `research/validation-wave1` at fa466d8. The tools are offline and read-only: they never place, size or route orders, never write to the bridge folder and never change a risk constant, the SRS or the EA.
-Numbering: 0005 was assigned to this wave; parallel waves use 0003 and 0004.
+Numbering: renumbered on 2026-11-04 when the validation waves merged into `hardening/2026-11`. ADR 0003 is `0003-development-wave-integration.md` on `dev/development-wave`; validation waves 2, 3 and 4 are ADRs 0006, 0004 and 0005. Wave 2 was first written as ADR 0003.
 | # | Decision | Adopted |
 | --- | --- | --- |
 | F1 | Location | New subpackage `fx_ai_engine/research/forward_test/` (`freeze`, `prereg`, `evaluate`). Tests in `fx_ai_engine/tests/test_research_forward_*.py`, fixture `tests/fixtures/forward_test/demo_trades.sql` (synthetic). Starter criteria `fx_ai_engine/docs/research/forward-test/criteria-srs-v1.1-draft.json` (DRAFT, not approved). Draft SRS v1.1 proposal `fx_ai_engine/docs/2026-11-04-srs-v1.1-draft-proposal.md`. Skill `.kiro/skills/fx-forward-test-protocol/SKILL.md`. No existing file is edited. |

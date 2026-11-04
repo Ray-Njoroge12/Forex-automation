@@ -1,12 +1,13 @@
 ---
 name: fx-forward-test-protocol
-description: Run the R10 forward-test protocol for the 30-day demo (plan Phase 3 and Phase 6). Freeze the configuration, seal pre-registered go/no-go and abort criteria before the start, check the freeze daily, and evaluate recorded demo trades read-only, getting GO, NO_GO, ABORT, INCONCLUSIVE, INVALID or REFUSED.
+description: Run the R10 forward-test protocol for each demo test-wave release (ADR 0007). Freeze the release, seal pre-registered go/no-go and abort criteria before the wave starts, check the freeze daily, and evaluate the release's recorded demo trades read-only, getting GO, NO_GO, ABORT, INCONCLUSIVE, INVALID or REFUSED.
 ---
 # FX forward-test protocol (R10)
+**Owner direction (ADR 0007, 2026-11-04):** there is no 30-day demo. Each owner-started demo test wave runs one frozen release, and each release is evaluated on its own. Read "the demo" below as "the release under test". The 30-day clock and the 30-trading-day minimum do not apply. A minimum closed-trade count still does.
 ## When to run
-- Before the 30-day demo (plan Phase 6) starts: freeze the configuration and seal the criteria. Run nothing here before gate G2 passes, unless the owner has decided to run the demo anyway (proposal decision G2-START).
-- Every trading day of the demo: `freeze check`. Every week, and at the end: the evaluator.
-- Any time someone wants to change a parameter, the risk, the strategy or the EA during the demo. The no-change rule says a behaviour-changing fix restarts the 30-day clock. A new freeze and a new seal follow.
+- At the start of each owner-started test wave: freeze the release and seal that release's criteria.
+- Every trading day of the wave: `freeze check`. Weekly and at the end of the wave: the evaluator.
+- Any change to a parameter, the risk, the strategy or the EA ends the release. A new freeze and a new seal start the next one. Do not pool results across releases with different policy hashes.
 ## Commands
 Run from `fx_ai_engine/` with the repo venv. Every command is read-only against the checkout and the database. Each writes only the file named by `--out` or `--report`.
 ```

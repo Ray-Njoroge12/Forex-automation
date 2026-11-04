@@ -4,7 +4,7 @@ Date: 2026-11-04. Status: proposed, owner review.
 
 Context: assessment `fx_ai_engine/docs/2026-11-03-system-assessment-and-benchmark.md` (§4.3 execution layer, §4.4 validation, §6 step 5 broker realism) and plan `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md` Phase 6 (daily report of spread and slippage at fill; exit criterion "live costs within the replay's 1.5× assumption") and build A2 (daily report without write access to bridge or DB). Branch `research/validation-wave3`, based on `research/validation-wave1` at fa466d8. The tools compare demo-account reality with the replay. They are offline, read-only and report-only: no halt or veto authority, nothing in the engine reads their output, and no cost-model value or risk constant is changed.
 
-Numbering: parallel runs use 0003 (wave 2) and 0005 (wave 4); this ADR keeps 0004.
+Numbering: renumbered on 2026-11-04 when the validation waves merged into `hardening/2026-11`. ADR 0003 is `0003-development-wave-integration.md` on `dev/development-wave`; validation waves 2, 3 and 4 are ADRs 0006, 0004 and 0005. Wave 2 was first written as ADR 0003.
 
 | # | Decision | Adopted |
 | --- | --- | --- |

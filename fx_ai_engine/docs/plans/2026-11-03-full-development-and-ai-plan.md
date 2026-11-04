@@ -258,6 +258,8 @@ Revise and version the SRS, using Phase 2 numbers:
 
 ### Phase 6: 30-day forward demo validation
 
+> **Superseded for development on 2026-11-04 by `docs/decisions/0007-continuous-demo-testing-instead-of-30-day-demo.md`.** The owner chose continuous demo testing in owner-started test waves, with one frozen release per wave evaluated on its own, instead of a 30-day frozen run. The pre-live gate in SRS v1 §12 is still to be settled in SRS v1.1. The text below is kept for reference.
+
 Runs the frozen config from G3, on the target broker's demo if D1 is known, otherwise MetaQuotes-Demo with the caveat that its spreads and fills differ from real brokers.
 
 1. **No-change rule.** No parameter, risk or strategy edits. Bug fixes that change behavior restart the 30-day clock.

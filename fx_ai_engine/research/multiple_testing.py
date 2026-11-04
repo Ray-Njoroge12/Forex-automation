@@ -12,7 +12,7 @@ Per registry row (development trades only; the holdout stays untouched):
     by combinatorially symmetric cross-validation (CSCV) on weekly R sums per group;
   * a minimum dev sample derived from the plan's target expectancy (MIN_TRADES).
 Missing or inconsistent inputs give INCONCLUSIVE, never PASS. See
-docs/decisions/0003-validation-wave2-multiple-testing.md.
+docs/decisions/0006-validation-wave2-multiple-testing.md.
 
 Usage (from fx_ai_engine/):
     USE_MT5_MOCK=1 ../.venv/bin/python -m research.multiple_testing \
