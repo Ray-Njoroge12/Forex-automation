@@ -1,0 +1,46 @@
+Break-even win rate at R:R 2.2 = (1 + c) / (3.2 - ... ) -> p* = (1 + c) / (RR + 1)
+round-trip cost 2.5 pips: cost in R by stop size and the win rate needed to break even
+  stop  8 pips: cost 0.312R  break-even win rate  41.0%   (zero-cost: 31.2%)
+  stop 12 pips: cost 0.208R  break-even win rate  37.8%   (zero-cost: 31.2%)
+  stop 20 pips: cost 0.125R  break-even win rate  35.2%   (zero-cost: 31.2%)
+  stop 25 pips: cost 0.100R  break-even win rate  34.4%   (zero-cost: 31.2%)
+  stop 30 pips: cost 0.083R  break-even win rate  33.9%   (zero-cost: 31.2%)
+  stop 40 pips: cost 0.062R  break-even win rate  33.2%   (zero-cost: 31.2%)
+  stop 60 pips: cost 0.042R  break-even win rate  32.6%   (zero-cost: 31.2%)
+
+Growth of $10 under core SRS rules; cost 0.10R (about a 25-pip stop); 250 trading days; 20,000 paths
+trades/day | risk | win rate -> expectancy | P($20 by 60d / 120d / 250d) | median day if reached | drawdown-halted | median end | mean end
+  1.5      | 1.5% |  30% -> -0.14R |   0.0% /   0.0% /   0.0% |  118.0 |  98.9% | $  8.34 | $   8.62
+  1.5      | 1.5% |  35% -> +0.02R |   0.0% /   0.3% /   2.9% |  190.0 |  82.7% | $  9.39 | $  10.43
+  1.5      | 1.5% |  40% -> +0.18R |   0.3% /   6.8% /  38.4% |  172.0 |  42.2% | $ 15.76 | $  17.23
+  1.5      | 1.5% |  45% -> +0.34R |   2.9% /  37.3% /  88.3% |  130.0 |  11.4% | $ 31.87 | $  34.28
+  1.5      | 1.5% |  50% -> +0.50R |  15.4% /  80.2% /  99.0% |   88.0 |   2.0% | $ 65.20 | $  71.85
+  1.5      | 3.2% |  30% -> -0.14R |   0.3% /   0.5% /   0.5% |   48.0 | 100.0% | $  8.51 | $   8.96
+  1.5      | 3.2% |  35% -> +0.02R |   3.2% /   5.1% /   5.2% |   53.0 | 100.0% | $  9.15 | $  10.23
+  1.5      | 3.2% |  40% -> +0.18R |  15.3% /  23.1% /  23.5% |   52.0 |  99.5% | $ 10.84 | $  15.10
+  1.5      | 3.2% |  45% -> +0.34R |  39.7% /  52.5% /  52.7% |   45.0 |  95.0% | $ 16.77 | $  48.60
+  1.5      | 3.2% |  50% -> +0.50R |  69.0% /  77.8% /  77.8% |   36.0 |  77.8% | $ 55.19 | $ 336.05
+  1.0      | 1.5% |  30% -> -0.14R |   0.0% /   0.0% /   0.0% |  213.0 |  96.2% | $  8.35 | $   8.65
+  1.0      | 1.5% |  35% -> +0.02R |   0.0% /   0.1% /   1.5% |  205.0 |  72.3% | $  9.41 | $  10.36
+  1.0      | 1.5% |  40% -> +0.18R |   0.0% /   1.8% /  22.8% |  193.0 |  32.4% | $ 14.51 | $  15.24
+  1.0      | 1.5% |  45% -> +0.34R |   0.3% /  13.9% /  73.8% |  165.0 |   8.6% | $ 23.60 | $  24.78
+  1.0      | 1.5% |  50% -> +0.50R |   2.8% /  47.7% /  97.6% |  122.0 |   1.6% | $ 38.65 | $  41.24
+  1.0      | 3.2% |  30% -> -0.14R |   0.3% /   0.6% /   0.7% |   70.0 | 100.0% | $  8.51 | $   8.98
+  1.0      | 3.2% |  35% -> +0.02R |   1.7% /   4.4% /   5.0% |   74.0 |  99.9% | $  9.11 | $  10.17
+  1.0      | 3.2% |  40% -> +0.18R |   8.6% /  21.4% /  23.6% |   72.0 |  98.1% | $ 10.98 | $  14.90
+  1.0      | 3.2% |  45% -> +0.34R |  25.6% /  50.6% /  53.3% |   62.0 |  88.4% | $ 16.96 | $  35.94
+  1.0      | 3.2% |  50% -> +0.50R |  51.1% /  77.1% /  78.1% |   51.0 |  65.4% | $ 57.03 | $ 132.42
+
+Expected dollars per trade on a $10 account: risk$ x expectancy
+  risk 1.5% ($0.15): E=+0.10R -> $+0.015, E=+0.25R -> $+0.037, E=+0.50R -> $+0.075
+  risk 3.2% ($0.32): E=+0.10R -> $+0.032, E=+0.25R -> $+0.080, E=+0.50R -> $+0.160
+  risk 5.0% ($0.50): E=+0.10R -> $+0.050, E=+0.25R -> $+0.125, E=+0.50R -> $+0.250
+
+Trades needed to double with compounding g = f*E per trade: n = ln2 / ln(1+g)
+  risk 1.5%: E=+0.10R ->  462 trades, E=+0.25R ->  185 trades, E=+0.50R ->   93 trades
+  risk 3.2%: E=+0.10R ->  217 trades, E=+0.25R ->   87 trades, E=+0.50R ->   44 trades
+
+Kelly fraction for win rate p, payoff b=2.2-c: f* = p - (1-p)/b   (full Kelly; use <= half)
+  p=35%: full Kelly   4.0%  half Kelly   2.0%
+  p=40%: full Kelly  11.4%  half Kelly   5.7%
+  p=45%: full Kelly  18.8%  half Kelly   9.4%
