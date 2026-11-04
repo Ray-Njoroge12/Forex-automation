@@ -83,6 +83,23 @@ def test_env_overrides_do_not_move_micro_live_values():
     assert canonical_policy_hash(policy) == MICRO_LIVE_HASH
 
 
+def test_preserve10_divisor_env_does_not_reach_micro_live_sizing():
+    env = {
+        "FX_POLICY_MODE": "micro_live",
+        "FX_ALLOW_NON_SRS_POLICY": "1",
+        "MAX_SPREAD_PIPS": "9",
+        "FIXED_RISK_USD": "5",
+        "ML_PREDICT_THRESHOLD": "0.9",
+        "FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR": "100",
+    }
+    policy = get_policy_config("micro_live", env=env)
+    assert "VIRTUAL_BALANCE_DIVISOR" not in policy
+    assert canonical_policy_hash(policy) == MICRO_LIVE_HASH
+    # The divisor is still honoured where it was before (preserve_10).
+    preserve = get_policy_config("preserve_10", env={**env, "FX_POLICY_MODE": "preserve_10"})
+    assert preserve["VIRTUAL_BALANCE_DIVISOR"] == 100.0
+
+
 def test_pinned_quirk_override_decision_uses_env_mode_not_policy_mode():
     # Current behaviour, not a goal: the override gate reads FX_POLICY_MODE from
     # the env, so another override-enabled env mode lets MAX_SPREAD_PIPS move a

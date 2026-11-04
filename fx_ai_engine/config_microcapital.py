@@ -615,8 +615,11 @@ def apply_policy_overrides(policy: dict, env: Mapping[str, str] | None = None) -
     merged["ML_PREDICT_THRESHOLD"] = read_predict_threshold(env=source, default=merged.get("ML_PREDICT_THRESHOLD"))
 
     # Preserve-10 virtual-balance divisor (for simulating cent-account on standard account)
+    # micro_live accepts no environment overrides (ADR 0013), so the divisor is ignored there.
     raw_divisor = source.get("FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR", "").strip()
-    if raw_divisor:
+    if raw_divisor and str(merged.get("MODE_ID", "")).strip().lower() == "micro_live":
+        logger.warning("FX_PRESERVE10_VIRTUAL_BALANCE_DIVISOR is ignored for micro_live")
+    elif raw_divisor:
         try:
             parsed = float(raw_divisor)
             if parsed >= 1:
