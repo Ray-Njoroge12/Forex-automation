@@ -32,23 +32,29 @@ from ml.meta_labeler.training_pipeline import _persist_baseline_checkpoint
 META_COLUMNS = ("binary_label", "realized_r", "regime", "symbol", "strategy_id")
 
 
-def _trade_candidate(trade: dict[str, Any], by_symbol: dict[str, list[Any]]):
-    """The approved candidate behind ``trade``.
+class ReplayDatasetError(ValueError):
+    """A trade has no unique exact candidate, or its features cannot be built."""
 
-    Fills happen at the next bar open, which is the decision time unless the
-    feed has a gap; so the match is the latest candidate of the same symbol
-    with ``decision_time <= entry_time`` (equal in the normal case). No other
-    candidate of that symbol can sit between approval and fill: a symbol with a
-    pending entry is skipped until it fills.
+
+def _key(symbol: Any, when: Any) -> tuple[str, pd.Timestamp]:
+    return str(symbol), pd.Timestamp(when).tz_convert("UTC")
+
+
+def _trade_candidate(trade: dict[str, Any], index: dict[tuple[str, pd.Timestamp], list[Any]]):
+    """The candidate behind ``trade``: same symbol and ``decision_time == entry_time``.
+
+    Only an exact, unique match is accepted. A gapped fill (entry after the
+    decision time) or an ambiguous key raises, so a realized label is never
+    attached to another candidate's features.
     """
-    entry = pd.Timestamp(trade["entry_time"])
-    best = None
-    for cand in by_symbol.get(str(trade["symbol"]), ()):
-        if pd.Timestamp(cand.decision_time) <= entry:
-            best = cand
-        else:
-            break
-    return best
+    key = _key(trade["symbol"], trade["entry_time"])
+    matches = index.get(key, [])
+    if not matches:
+        raise ReplayDatasetError(f"trade {trade.get('trade_id', '?')}: no candidate at {key[0]} {key[1].isoformat()}")
+    if len(matches) > 1:
+        raise ReplayDatasetError(
+            f"trade {trade.get('trade_id', '?')}: {len(matches)} candidates at {key[0]} {key[1].isoformat()}")
+    return matches[0]
 
 
 def build_replay_dataset(
@@ -61,33 +67,29 @@ def build_replay_dataset(
     """Rows: ``FEATURE_ORDER`` + ``binary_label`` (net ``r_multiple > 0``) + ``realized_r``
     + ``regime`` + ``symbol`` + ``strategy_id``; index = decision time (UTC).
 
-    Trades whose features cannot be built are left out and counted in
-    ``df.attrs["skipped"]``.
+    Every trade must map to exactly one candidate with the same symbol and
+    ``decision_time == entry_time``, and its features must build; otherwise
+    ``ReplayDatasetError`` is raised (no trade is silently left out).
     """
     from backtesting.unified_replay import PointInTimeFeed
 
-    by_symbol: dict[str, list[Any]] = defaultdict(list)
-    for cand in sorted(candidates, key=lambda c: pd.Timestamp(c.decision_time)):
-        by_symbol[cand.symbol].append(cand)
+    by_key: dict[tuple[str, pd.Timestamp], list[Any]] = defaultdict(list)
+    for cand in candidates:
+        by_key[_key(cand.symbol, cand.decision_time)].append(cand)
 
     feed = PointInTimeFeed(frames)
     rows: list[np.ndarray] = []
     meta: list[dict[str, Any]] = []
     index: list[pd.Timestamp] = []
-    skipped = 0
     for trade in result.trades:
-        cand = _trade_candidate(trade, by_symbol)
-        if cand is None:
-            skipped += 1
-            continue
+        cand = _trade_candidate(trade, by_key)
         decision_time = pd.Timestamp(cand.decision_time).tz_convert("UTC")
         feed.set_time(decision_time)
         try:
             vector = shadow_features(feed.fetch_ohlc, cand.symbol, str(cand.regime.get("regime", "")),
                                      decision_time.isoformat(), config)
-        except (ShadowMarketDataUnavailable, ShadowFeatureBuildFailed):
-            skipped += 1
-            continue
+        except (ShadowMarketDataUnavailable, ShadowFeatureBuildFailed) as exc:
+            raise ReplayDatasetError(f"trade {trade.get('trade_id', '?')}: features not built: {exc}") from exc
         realized = float(trade["r_multiple"])
         rows.append(vector.values)
         meta.append({"binary_label": int(realized > 0), "realized_r": realized,
@@ -100,7 +102,6 @@ def build_replay_dataset(
     df = pd.concat([features, pd.DataFrame(meta, columns=list(META_COLUMNS))], axis=1)
     df.index = pd.DatetimeIndex(index, tz="UTC", name="decision_time") if index else \
         pd.DatetimeIndex([], tz="UTC", name="decision_time")
-    df.attrs["skipped"] = skipped
     return df
 
 

@@ -6,6 +6,9 @@ that fixture's handful of trades.
 """
 from __future__ import annotations
 
+import dataclasses
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -22,8 +25,15 @@ from backtesting.unified_replay import (
 from config_microcapital import get_policy_config
 from core.file_bridge_connection import FileBridgeConnection
 from ml.features import FEATURE_ORDER
-from ml.meta_labeler.replay_dataset import build_replay_dataset, train_from_replay_dataset
-from ml.meta_labeler.shadow_runtime import MetaLabelerShadowRuntime, ShadowRuntimeConfig, shadow_features
+from ml.meta_labeler import replay_dataset
+from ml.meta_labeler.replay_dataset import ReplayDatasetError, build_replay_dataset, train_from_replay_dataset
+from ml.meta_labeler.shadow_runtime import (
+    MetaLabelerShadowRuntime,
+    ShadowFeatureBuildFailed,
+    ShadowMarketDataUnavailable,
+    ShadowRuntimeConfig,
+    shadow_features,
+)
 from tests.replay_fixtures import FIXTURE_SYMBOLS, write_fixture_csvs
 from tests.test_contract_engine import NOW_FIXED, _golden_bridge
 
@@ -53,7 +63,7 @@ def replay(tmp_path_factory):
 def test_replay_dataset_has_one_row_per_trade_with_live_features(replay):
     frames, candidates, result = replay
     df = build_replay_dataset(candidates, result, frames)
-    assert len(df) == len(result.trades) and df.attrs["skipped"] == 0
+    assert len(df) == len(result.trades)
     assert list(df.columns) == [*FEATURE_ORDER, "binary_label", "realized_r", "regime", "symbol", "strategy_id"]
     assert isinstance(df.index, pd.DatetimeIndex) and str(df.index.tz) == "UTC"
     assert not df[list(FEATURE_ORDER)].isna().any().any()
@@ -67,6 +77,46 @@ def test_replay_dataset_has_one_row_per_trade_with_live_features(replay):
         feed.set_time(ts)
         live = shadow_features(feed.fetch_ohlc, row["symbol"], row["regime"], ts.isoformat(), ShadowRuntimeConfig())
         np.testing.assert_array_equal(row[list(FEATURE_ORDER)].to_numpy(dtype=np.float32), live.values)
+
+
+def test_replay_dataset_rejects_an_earlier_non_equal_candidate(replay):
+    """A trade entering 15 min after its candidate's decision time is not matched to that candidate."""
+    frames, candidates, result = replay
+    trade = dict(result.trades[0])
+    entry = pd.Timestamp(trade["entry_time"])
+    trade["entry_time"] = (entry + pd.Timedelta(minutes=15)).isoformat()
+    shifted = (trade["symbol"], pd.Timestamp(trade["entry_time"]))
+    kept = [c for c in candidates if (c.symbol, pd.Timestamp(c.decision_time)) != shifted]
+    assert any(c.symbol == trade["symbol"] and pd.Timestamp(c.decision_time) == entry for c in kept)
+    with pytest.raises(ReplayDatasetError, match="no candidate"):
+        build_replay_dataset(kept, SimpleNamespace(trades=[trade]), frames)
+
+
+def test_replay_dataset_rejects_duplicate_exact_keys(replay):
+    frames, candidates, result = replay
+    trade = result.trades[0]
+    match = next(c for c in candidates if c.symbol == trade["symbol"]
+                 and pd.Timestamp(c.decision_time) == pd.Timestamp(trade["entry_time"]))
+    duplicated = [*candidates, dataclasses.replace(match, strategy_id="other_strategy")]
+    with pytest.raises(ReplayDatasetError, match="2 candidates"):
+        build_replay_dataset(duplicated, result, frames)
+
+
+@pytest.mark.parametrize("failure", [ShadowFeatureBuildFailed("nan feature"), ShadowMarketDataUnavailable("no bars")])
+def test_replay_dataset_feature_failure_fails_the_build(replay, monkeypatch, failure):
+    """A feature failure on any trade raises instead of shrinking the training set."""
+    frames, candidates, result = replay
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == len(result.trades):
+            raise failure
+        return shadow_features(*args, **kwargs)
+
+    monkeypatch.setattr(replay_dataset, "shadow_features", flaky)
+    with pytest.raises(ReplayDatasetError, match="features not built"):
+        build_replay_dataset(candidates, result, frames)
 
 
 def test_replay_features_equal_live_bridge_features_at_the_same_decision_time(tmp_path):
