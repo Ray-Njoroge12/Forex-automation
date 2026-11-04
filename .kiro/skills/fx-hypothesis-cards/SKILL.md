@@ -41,7 +41,7 @@ Common rejection rule: reject the active value if its dev `expectancy_r` is lowe
 
 - Six majors. Thresholds in price units behave differently on JPY pairs (H-004); ask for the by-symbol breakdown.
 - Completed bars only; replay and live share the agent code, so a card's mechanism must cite the agent line it relies on.
-- Cards only cover research overrides under `AGENT_THRESHOLDS` and exit modes. Locked SRS constants are read from `config_microcapital.py` and are not ablated or changed through cards.
+- Cards cover research overrides under `AGENT_THRESHOLDS`, exit modes and, since stage D, whole strategies registered in `core/strategy/` (H-006, H-007, H-009; `run_replay --strategy <id>`, template in the README). Locked SRS constants are read from `config_microcapital.py` and are not ablated or changed through cards.
 - Always `USE_MT5_MOCK=1`. Never `main.py --mode demo`, never an MT5 `trade_*` tool, never the terminal bridge folder.
 
 ## Pitfalls
