@@ -116,3 +116,61 @@ I did not evaluate Exness, XM or other brokers popular in Kenya. Several brokers
 | 8. Compare live fills to the demo with R7 and R8 before any increase | Live cost within the replay's 1.5x assumption | Review the reports |
 
 Each step uses tools that already exist.
+
+---
+
+## 7. Prop-firm considerations (second pass, 2026-11-04)
+
+Recorded for later decisions. Nothing here is a recommendation to buy. Sources are linked; affiliate-funded comparison sites are marked.
+
+### 7.1 What "funded" means
+
+- A funded prop account is usually **simulated**. The firm pays rewards from fee revenue, and fills are the firm's own, not a real broker's ([propfirmhero](https://propfirmhero.com/prop-trading-course/simulated-vs-live-accounts), [myfxbook](https://www.myfxbook.com/articles/what-is-a-funded-account-in-prop-trading/16)). A prop account therefore does not replace a broker demo as the last test before real money.
+- There is no capital to put up, but there is a **challenge fee**. FTMO 2-Step costs EUR 89 to EUR 1,080 by account size ([proptradingvibes](https://proptradingvibes.com/blog/ftmo-account-sizes-pricing)); the fee is refunded with the first reward on the 2-Step only ([FTMO](https://ftmo.com/en/faq/what-fees-do-you-charge-and-are-they-recurrent/)).
+- Industry data covering 100,000+ traders at 10 firms puts passing at about 14% and ever being paid at about 7% ([FPFX Tech via fortunly](https://fortunly.com/statistics/prop-firm-challenge-pass-rate-statistics/)).
+
+### 7.2 Zero-cost option
+
+FTMO Free Trial: 14 days, simulated, on MT4, MT5 or cTrader, up to a $200,000 account, as many trials as you like (one at a time). Profit target 5% (2-Step phase 1 is 10%) and 2 minimum trading days. A rule breach ends it at no cost ([FTMO](https://ftmo.com/en/ftmo-free-trial/)). It pays nothing. Its value to this project is integration testing: whether the MT5 account reports demo mode, symbol names, hedging, commissions.
+
+### 7.3 MT5 availability and Kenya
+
+- MetaQuotes cut off most grey-label MT5 setups for prop firms in 2024; MT5 survives at firms with their own licence or a broker deal ([fundedtrading.com](https://fundedtrading.com/best-mt5-prop-firms/), affiliate site). Firms listed there with MT5: FXIFY, FundedNext, Alpha Capital Group, E8 Markets, Blueberry Funded, Maven, FunderPro, Funded Trading Plus, The5ers, Instant Funding. Availability changes; check each firm's own platform page.
+- PropFirmMatch lists 33 firms open to Kenyan traders, including FTMO, FundedNext, The5ers, E8 Markets, Alpha Capital, FundingPips, Maven, Instant Funding and Funded Trading Plus ([propfirmmatch](https://propfirmmatch.com/prop-firm-lists/countries/kenya)).
+- Kenya is not on FTMO's CFD restriction list in a third-party capture dated 2026-09-07; it is excluded from FTMO Futures ([fundingtraders](https://fundingtraders.com/blog/ftmo-banned-countries-list/), a competitor's page). FTMO's own page timed out when fetched; **confirm on ftmo.com**.
+
+### 7.4 Rules that matter for this system
+
+| Topic | Finding | Source |
+| --- | --- | --- |
+| Loss limits | FTMO 2-Step: 5% max daily loss, 10% static max loss; daily limit counts equity including open positions and resets at midnight CET | [FTMO academy](https://academy.ftmo.com/lesson/maximum-daily-loss/), [stonkjournal](https://stonkjournal.com/articles/ftmo-review) |
+| EAs | FTMO allows algorithmic trading and EAs; a third-party EA shared with other traders can lead to denial of the funded account; hyperactive EAs and third-party account access are forbidden | [FTMO](https://ftmo.com/en/faq/which-instruments-can-i-trade-and-what-strategies-am-i-allowed-to-use/) |
+| Consistency | FTMO added a best-day consistency rule in October 2026 (50% on 1-Step, 30% on Instant) | [alphaexcapital](https://www.alphaexcapital.com/prop-trading/ftmo-faqs), third-party |
+| Recommended risk | FTMO suggests 1% to 1.5% per trade (a best practice, not a limit) | [FTMO](https://ftmo.com/en/blog/why-ftmo-monitors-certain-patterns-in-trading-behaviour/) |
+| Other firms | FundedNext: EAs allowed on accounts under $50,000, no strategy limits stated. The5ers High Stakes: 6% trailing drawdown and a 2-minute news window. E8: 5-minute news ban on funded accounts, best-day rule 35 to 40%. Alpha Capital: 2-minute average trade duration rule. FunderPro: static 10% drawdown but a 2026 Trustpilot warning | [FundedNext](https://help.fundednext.com/en/articles/8020763-is-ea-allowed-in-fundednext), [fundedtrading.com](https://fundedtrading.com/best-mt5-prop-firms/) |
+
+### 7.5 Would this strategy pass?
+
+Simulation of 6,406 replay trades resampled by day against FTMO-style rules (+10% target, 5% daily loss from start-of-day equity, 10% static max loss); 6,000 attempts per row. Script and output: `fx_ai_engine/artifacts/research/small-account-sim/prop_challenge_sim.py`, `output_prop_challenge.txt`.
+
+| Risk per trade | P(pass) in 30 days | Main failure |
+| --- | --- | --- |
+| 0.5% | 0% | max-loss breach 84% |
+| 1.0% | 0.5% | daily-loss breach 71% |
+| 1.5% | 1.3% | daily-loss breach 88% |
+| 3.2% (locked SRS risk) | 4.7% | daily-loss breach 88% |
+
+Both phases at 1.0% risk: about 0.01%. Control: the same trades shifted to zero expectancy would pass 32% to 44% of attempts at 0.5% to 1.0% risk. The shortfall is the -0.35R edge, not the rule set. The simulation ignores the engine's own halts and uses the replay's 7 trades a day.
+
+### 7.6 Integration considerations (open)
+
+1. **Demo flag.** `RequireDemoAccount` and the demo-start check decide on `ACCOUNT_TRADE_MODE`. A firm's simulated MT5 account may report demo or real. Not verified for any firm; the free trial shows it in `status.json`.
+2. **Limits.** The locked SRS limits (3.2% risk, 8% daily, 20% drawdown) exceed firm limits. A prop policy mode would need about 0.5% to 1% risk, a 3% daily stop and a 6% to 7% drawdown halt. Protected change; owner approval and an SRS addendum.
+3. **Reset clock.** FTMO's daily loss resets at midnight CET; the engine resets on UTC.
+4. **Equity vs closed P&L.** FTMO's daily loss includes floating P&L. Whether the Hard Risk Engine's daily stop does has not been checked.
+5. **Account hygiene.** Single device and connection without VPNs is advised at some firms, and third-party access is forbidden. Run the terminal on your own machine or VPS and read each firm's terms.
+6. **Payouts to Kenya.** Method, fees and timing not verified.
+
+### 7.7 Sequence if this route is pursued
+
+Fix the strategy in replay first. Then use the free trial to test integration. Only after a release passes the replay gate, buy the cheapest challenge at the firm tested, with the prop policy mode in place.

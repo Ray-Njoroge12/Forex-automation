@@ -1,0 +1,19 @@
+6406 trades, 845 trading days, 201 ISO weeks, mean R -0.348
+
+=== 24-HOUR RESULTS: one UTC trading day from a fresh $10, every historical weekday (N=845) ===
+A standard acct, core SRS 3.2%       mean $9.95 median $10.00 p5 $9.61 p95 $10.00 | up  3.1% flat/no-trade 80.2% down 16.7% | reach $20 in a day 0.00% (best $11.23, worst $9.12) | trades/day 0.25 | daily-stop hit 0.4%
+B cent acct, core SRS 3.2%           mean $9.57 median $9.41 p5 $9.03 p95 $10.65 | up 18.3% flat/no-trade  0.0% down 81.7% | reach $20 in a day 0.00% (best $12.86, worst $8.87) | trades/day 4.34 | daily-stop hit 32.2%
+C cent acct, Preserve-$10 ($0.50)    mean $9.44 median $9.23 p5 $8.58 p95 $10.93 | up 17.5% flat/no-trade  0.0% down 82.5% | reach $20 in a day 0.00% (best $14.25, worst $8.12) | trades/day 3.20 | daily-stop hit 3.7%
+
+=== TIME TO REACH $20 (+$10), week-block bootstrap of real history, 250 trading days, 3000 paths ===
+A standard acct, core SRS 3.2%       P($20 by day 30)   0.0% | by 90   0.0% | by 250   0.0% | median day if reached nan | drawdown-halted  0.5% | median end $9.38 | ended above $10 8.1%
+B cent acct, core SRS 3.2%           P($20 by day 30)   0.0% | by 90   0.0% | by 250   0.0% | median day if reached nan | drawdown-halted 82.8% | median end $7.99 | ended above $10 3.3%
+C cent acct, Preserve-$10 ($0.50)    P($20 by day 30)   0.0% | by 90   0.0% | by 250   0.0% | median day if reached nan | drawdown-halted 66.9% | median end $7.09 | ended above $10 4.6%
+
+=== HYPOTHETICAL: same trades, expectancy shifted (NOT the current strategy) ===
+E~~0.00R  B cent acct, core SRS 3.2%           24h mean $9.99 P(>$10) 39.1% | P($20 by 30d)   0.4% by 90d   0.9% by 250d   1.4% | median day 50.0 | halted 26.9%
+E~~0.00R  C cent acct, Preserve-$10 ($0.50)    24h mean $9.96 P(>$10) 35.5% | P($20 by 30d)   0.1% by 90d   0.4% by 250d   0.6% | median day 51.5 | halted 13.5%
+E~~+0.30R B cent acct, core SRS 3.2%           24h mean $10.43 P(>$10) 58.5% | P($20 by 30d)   5.6% by 90d  12.7% by 250d  19.8% | median day 65.0 | halted 0.1%
+E~~+0.30R C cent acct, Preserve-$10 ($0.50)    24h mean $10.45 P(>$10) 49.9% | P($20 by 30d)   2.6% by 90d   4.0% by 250d   5.3% | median day 32.0 | halted 0.1%
+E~~+0.60R B cent acct, core SRS 3.2%           24h mean $10.88 P(>$10) 72.9% | P($20 by 30d)  17.9% by 90d  30.6% by 250d  41.5% | median day 40.0 | halted 0.0%
+E~~+0.60R C cent acct, Preserve-$10 ($0.50)    24h mean $10.94 P(>$10) 61.8% | P($20 by 30d)   5.6% by 90d  10.0% by 250d  14.7% | median day 53.5 | halted 0.0%

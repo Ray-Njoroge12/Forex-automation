@@ -1,0 +1,20 @@
+trades 6406, trading days 915, trades/day 7.0, mean R -0.348
+
+Phase 1 (+10% target, 5% daily, 10% static max loss)
+risk/trade | horizon | P(pass) P(daily breach) P(max-loss breach) P(timeout)
+   0.5%   |  30 days | 0.000   0.158   0.841   0.002
+   0.5%   | 120 days | 0.000   0.168   0.832   0.000
+   1.0%   |  30 days | 0.005   0.707   0.288   0.000
+   1.0%   | 120 days | 0.004   0.714   0.282   0.000
+   1.5%   |  30 days | 0.013   0.879   0.107   0.000
+   1.5%   | 120 days | 0.013   0.874   0.113   0.000
+   3.2%   |  30 days | 0.047   0.875   0.077   0.000
+   3.2%   | 120 days | 0.054   0.868   0.078   0.000
+
+Both phases (10% then 5%), 120-day horizon each
+  risk 0.5%: P(phase1) 0.000 x P(phase2) 0.004 = 0.0000
+  risk 1.0%: P(phase1) 0.004 x P(phase2) 0.034 = 0.0001
+
+Control: same trades shifted to ~zero expectancy (+0.35R each)
+  risk 0.5%, 120 days: P(pass) 0.444, daily 0.147, maxloss 0.371, timeout 0.037
+  risk 1.0%, 120 days: P(pass) 0.317, daily 0.525, maxloss 0.158, timeout 0.000

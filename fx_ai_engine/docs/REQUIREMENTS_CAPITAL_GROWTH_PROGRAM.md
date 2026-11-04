@@ -2,6 +2,8 @@
 
 Date: 2026-04-10
 Status: Baseline v1.0 (assumption-driven, implementation-ready)
+
+> **Update 2026-11-04.** Replay evidence now exists and the strategy loses about 0.35R per trade after costs. Modelled on the real replay trades, a $10 account holds about $9.4 to $9.6 after 24 hours and never reached $20; a standard account cannot size the strategy at $10 at all. See `2026-11-04-ten-dollar-account-growth-model.md`. The milestone table and normalization rules below are unchanged and unvalidated.
 Scope: Requirements and delivery blueprint for a phase-based capital growth program starting from assumed capital of $10, implemented on the current FX AI Engine architecture.
 
 Default decision policy:
