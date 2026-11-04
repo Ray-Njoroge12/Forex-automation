@@ -6,13 +6,13 @@ Updated: 2026-11-04. Every agent (Kiro, Claude Code, Codex) reads this before st
 
 | Item | State |
 | --- | --- |
-| Branch | `hardening/2026-11` (pushed). `main` is behind; nothing merged yet. Development wave in progress on `dev/development-wave` (worktree `.worktrees/development-wave`, plan `.agents/tasks/development-wave/plan.md`); stages A and B done, not yet merged. |
+| Branch | `hardening/2026-11` (pushed). `main` is behind; nothing merged yet. Development wave in progress on `dev/development-wave` (worktree `.worktrees/development-wave`, plan `.agents/tasks/development-wave/plan.md`); stages A, B and C done, not yet merged. |
 | Plan | `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md` (phases 0–7, gates G0–G6) |
 | Decisions | `docs/decisions/0001-development-plan-defaults.md` (owner chose defaults; demo account only), `0002-validation-wave1-research-tooling.md`, `0003-development-wave-integration.md` (one tool per job, codex review) |
 | Account | MetaQuotes-Demo `5058284077`, balance 101,609.81 after one closed engine trade |
 | Engine | Stopped. launchd agents (watchdog, calendar, keep-awake) uninstalled on 2026-11-03 at owner request |
 | EA on chart | Build `2026.11.03-2`. Build `-3` (exit close_time in UTC) compiled and deployed to `MQL5/Experts` but needs re-attaching. Build `2026.11.04-1` (adds `calendar_complete`) compiled in staging on `dev/development-wave` only; deploy after review + owner approval (ADR 0003) |
-| Tests | 455 passing on `dev/development-wave` after stage B (`455 passed in 40.26s`; 388 after stage A, 353 at base), `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` from `fx_ai_engine/`, Python 3.12 venv |
+| Tests | 467 passing on `dev/development-wave` after stage C (`467 passed in 44.46s`; 455 after stage B, 388 after stage A, 353 at base), `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` from `fx_ai_engine/`, Python 3.12 venv |
 
 ## Phase and gate status
 
@@ -23,9 +23,10 @@ Updated: 2026-11-04. Every agent (Kiro, Claude Code, Codex) reads this before st
 | 2 Edge evidence | Replay built; **G2 failed: no edge** | See "Phase 2 result" below |
 | Dev wave A: points of error | Done on `dev/development-wave` (needs review + owner approval; touches `main.py`) | Known issues 1–5 below fixed with tests; long-job runbook `fx_ai_engine/docs/runbooks/long-jobs.md` |
 | Dev wave B: integrate parallel work | Done on `dev/development-wave` (needs second-model review + owner approval; touches `mt5_ea/FX_Execution.mq5`) | Research package and codex hardening merged; `run_replay` gates every report (R1/R2), adds R4 cost stress and R5 Monte Carlo; `backtesting/bias_checks.py` removed; ADR 0003 |
+| Dev wave C: Phase 4 split | Done on `dev/development-wave` (needs different-model review + owner approval; touches `main.py`) | Contract tests committed first (`42d2331`: `tests/test_contract_engine.py` incl. golden decision record `tests/fixtures/contract/decision_cycle_golden.json`, `tests/test_contract_database.py`), then `database/db.py` split (`3bdadd9`) and `main.py` split (`108da00`); contract tests and golden file unchanged by the moves |
 | 2b Strategy redesign | Not started (required before Phase 6) | — |
 | 3 SRS v1.1 | Not started | Needs Phase 2b numbers; D3 default says lower risk to 1.0–1.5% |
-| 4 Structure/ops | Not started | `main.py` 2,300 lines, `db.py` 1,550 lines |
+| 4 Structure/ops | S1, S2 done on `dev/development-wave`; S3–S5 not started | S1: `main.py` 2,395 → 1,116 lines (composition root + Engine delegates) with `application/{decision_cycle,market_data_service,feedback_service,engine_runtime}.py`. S2: `database/db.py` 1,582 → 78-line façade over `database/connection.py`, `migrations.py`, `repositories/{trades,risk,config}.py`. Public imports unchanged |
 | 5 AI shadow | Not started | Meta-labeler scaffolding exists in `ml/` |
 | 6 30-day demo | Blocked by 2b, 3, G1 | — |
 
@@ -56,6 +57,7 @@ Numbers are kept so earlier references stay valid.
 8. **SRS acceptance gates inconsistent** (average R ≥ 2.0 over all trades is unreachable at 2.2R targets; 3.2% risk incompatible with the 15% drawdown gate). Resolve in SRS v1.1.
 9. **Daily calendar refresh skips the completeness certification** (owner decision, ADR 0003). `validation/refresh_mt5_calendar.py` installs an archived copy, so the `calendar_complete` check (only for `market/calendar.json`) does not run on that path. Left unchanged so the refresh keeps working with EA `-2`/`-3`; recommended: verify the bridge `status.json` certification before archiving, shipped together with EA build `2026.11.04-1`.
 10. **EA build `2026.11.04-1` not deployed.** Until it is attached, installing the bridge `market/calendar.json` directly with `validation.update_market_context` fails (`MT5 calendar query completeness is unverified`).
+11. **Repository interfaces not built** (August audit §2, deferred). Application code still calls `database.db` functions directly; there is no in-memory repository for replay tests. Not needed for stage C's behaviour-preserving split.
 
 ## Operating rules learned
 
@@ -63,3 +65,4 @@ Numbers are kept so earlier references stay valid.
 - Development and testing are separate waves. Do not leave long replays or the live engine running unattended unless the owner starts a test wave.
 - Heavy jobs: detached, `nice`, at most 2–3 worker processes, a completion flag file, and a check that no child processes remain afterwards.
 - Only the EA places orders. MT5 MCP trade tools stay blocked.
+- Test seams after the Phase 4 split: point tests at a temp DB by patching `database.connection.get_conn` or `database.connection.DB_PATH` (the `database.db` copies are not read at call time); patch alerts on `application.feedback_service` and `update_health_status` on `application.engine_runtime`. `main.insert_account_metrics` still covers `_record_consecutive_loss_update`.
