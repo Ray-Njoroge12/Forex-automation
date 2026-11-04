@@ -13,6 +13,12 @@ Usage:
         set FX_ALLOW_NON_SRS_POLICY=1
         set FX_POLICY_MODE=legacy_micro_capital
         python main.py --mode demo
+    Micro live percent-risk mode (CORE_SRS_CONFIG with BASE_RISK_PCT 0.015):
+        set FX_ALLOW_NON_SRS_POLICY=1   (required on mock and demo)
+        set FX_POLICY_MODE=micro_live
+        python main.py --mode demo
+        A real account runs micro_live only through `python main.py --mode live`.
+        No env override applies to micro_live values.
 """
 
 from __future__ import annotations
@@ -186,15 +192,25 @@ PRESERVE_10_CONFIG = {
     "VIRTUAL_BALANCE_DIVISOR": 100,
 }
 
+MICRO_LIVE_CONFIG = {
+    **CORE_SRS_CONFIG,
+    "MODE_ID": "micro_live",
+    "MODE_LABEL": "Micro live",
+    "EVIDENCE_LABEL": "Micro live percent-risk",
+    "BASE_RISK_PCT": 0.015,
+}
+
 MODE_CONFIGS = {
     CORE_SRS_CONFIG["MODE_ID"]: CORE_SRS_CONFIG,
     LEGACY_MICRO_CAPITAL_CONFIG["MODE_ID"]: LEGACY_MICRO_CAPITAL_CONFIG,
     PRESERVE_10_CONFIG["MODE_ID"]: PRESERVE_10_CONFIG,
+    MICRO_LIVE_CONFIG["MODE_ID"]: MICRO_LIVE_CONFIG,
 }
 
 NON_SRS_MODE_IDS = {
     LEGACY_MICRO_CAPITAL_CONFIG["MODE_ID"],
     PRESERVE_10_CONFIG["MODE_ID"],
+    MICRO_LIVE_CONFIG["MODE_ID"],
 }
 
 OVERRIDE_ENABLED_MODE_IDS = {
