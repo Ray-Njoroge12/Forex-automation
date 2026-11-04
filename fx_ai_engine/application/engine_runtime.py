@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from core.health import update_health_status
 from core.mt5_bridge import MT5Connection
-from database.db import insert_account_metrics
 
 # Same logger name as before the split so log routing is unchanged.
 logger = logging.getLogger("fx_ai_engine.main")
@@ -70,7 +69,7 @@ def run(engine, mode: str, iterations: int = 0) -> None:
                 engine._update_account_state()
                 engine.mock_feedback.clear_account_snapshot()
 
-        insert_account_metrics(engine.account_status, evidence_context=engine.evidence_context)
+        engine.repository.insert_account_metrics(engine.account_status, evidence_context=engine.evidence_context)
         engine._consecutive_losses_dirty = False
         engine.metrics.inc("decision_cycles")
 

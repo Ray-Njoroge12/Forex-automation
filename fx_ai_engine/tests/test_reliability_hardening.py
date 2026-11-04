@@ -38,7 +38,7 @@ def test_snapshot_age_seconds_returns_none_for_invalid_timestamp() -> None:
 def test_record_consecutive_loss_update_persists_immediately(monkeypatch) -> None:
     writes: list[int] = []
     monkeypatch.setattr(
-        "main.insert_account_metrics",
+        "database.repositories.risk.insert_account_metrics",
         lambda status, *, evidence_context: writes.append(status.consecutive_losses),
     )
 
@@ -59,7 +59,7 @@ def test_record_consecutive_loss_update_keeps_dirty_when_checkpoint_fails(monkey
     def _raise(*args, **kwargs):
         raise RuntimeError("db unavailable")
 
-    monkeypatch.setattr("main.insert_account_metrics", _raise)
+    monkeypatch.setattr("database.repositories.risk.insert_account_metrics", _raise)
 
     engine = Engine.__new__(Engine)
     engine.account_status = AccountStatus(consecutive_losses=2)

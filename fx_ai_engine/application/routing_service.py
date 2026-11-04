@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Mapping
 from uuid import uuid4
 
+from application.repository import RiskRepository
 from bridge.signal_router import SignalRouteError, SignalRouter
 from core.account_status import AccountStatus
 from core.policy.envelope import attach_execution_envelope, canonical_policy_hash
-from database.db import transition_trade_reservation, try_create_trade_reservation
 
 
 class ReservationRejected(RuntimeError):
@@ -24,8 +24,16 @@ class RoutedReservation:
 class RoutingService:
     """Atomically reserves portfolio capacity before publishing an executable signal."""
 
-    def __init__(self, router: SignalRouter, policy: Mapping[str, object], *, ttl_seconds: int = 120):
+    def __init__(
+        self,
+        router: SignalRouter,
+        policy: Mapping[str, object],
+        *,
+        repository: RiskRepository,
+        ttl_seconds: int = 120,
+    ):
         self.router = router
+        self.repository = repository
         self.policy = dict(policy)
         self.ttl_seconds = max(1, int(ttl_seconds))
 
@@ -37,7 +45,7 @@ class RoutingService:
     ) -> RoutedReservation:
         now = datetime.now(timezone.utc)
         reservation_id = f"RSV_{uuid4().hex}"
-        decision = try_create_trade_reservation(
+        decision = self.repository.try_create_trade_reservation(
             reservation_id=reservation_id,
             trade_id=str(payload["trade_id"]),
             symbol=str(payload["symbol"]),
@@ -61,7 +69,7 @@ class RoutingService:
         try:
             self.router.send(executable)
         except SignalRouteError as exc:
-            transition_trade_reservation(
+            self.repository.transition_trade_reservation(
                 reservation_id,
                 "EXECUTION_UNCERTAIN" if exc.pending_written else "RELEASED",
                 "ROUTER_SEND_UNCERTAIN" if exc.pending_written else "ROUTER_SEND_FAILED",
@@ -70,7 +78,7 @@ class RoutingService:
         except Exception:
             # An unexpected failure may have occurred after publication. Only
             # SignalRouteError can attest that no pending file was written.
-            transition_trade_reservation(reservation_id, "EXECUTION_UNCERTAIN", "ROUTER_SEND_UNCERTAIN")
+            self.repository.transition_trade_reservation(reservation_id, "EXECUTION_UNCERTAIN", "ROUTER_SEND_UNCERTAIN")
             raise
-        transition_trade_reservation(reservation_id, "ROUTED", "ROUTED_TO_MT5")
+        self.repository.transition_trade_reservation(reservation_id, "ROUTED", "ROUTED_TO_MT5")
         return RoutedReservation(reservation_id=reservation_id, payload=executable)

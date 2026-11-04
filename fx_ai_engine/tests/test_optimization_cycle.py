@@ -19,6 +19,7 @@ from core.policy.envelope import attach_execution_envelope, validate_execution_e
 from core.schemas import SchemaError, validate_execution_feedback
 from database import connection as db_connection
 from database import db as db_mod
+from database.repositories.sqlite import SqliteEngineRepository
 from validation import update_market_context
 from validation.prepare_replay_dataset import write_manifest
 from validation.readiness_preflight import run_preflight
@@ -63,7 +64,7 @@ def test_same_cycle_reservations_enforce_position_and_exposure_caps(tmp_path, mo
     _patch_database(tmp_path, monkeypatch)
     policy = get_policy_config(mode_id="core_srs")
     router = SignalRouter(tmp_path / "pending", tmp_path / "locks")
-    service = RoutingService(router, policy)
+    service = RoutingService(router, policy, repository=SqliteEngineRepository())
     account = AccountStatus(balance=10_000.0, equity=10_000.0)
 
     service.reserve_and_route(_payload("T1", "EURUSD"), account_status=account)
@@ -82,7 +83,9 @@ def test_same_cycle_reservations_enforce_position_and_exposure_caps(tmp_path, mo
 def test_reservation_rejects_projected_exposure_before_position_cap(tmp_path, monkeypatch) -> None:
     _patch_database(tmp_path, monkeypatch)
     policy = get_policy_config(mode_id="core_srs")
-    service = RoutingService(SignalRouter(tmp_path / "pending", tmp_path / "locks"), policy)
+    service = RoutingService(
+        SignalRouter(tmp_path / "pending", tmp_path / "locks"), policy, repository=SqliteEngineRepository()
+    )
     account = AccountStatus(balance=10_000.0, equity=10_000.0)
     service.reserve_and_route(_payload("T1", "EURUSD", 0.032), account_status=account)
     with pytest.raises(ReservationRejected, match="RESERVATION_MAX_EXPOSURE"):
@@ -112,7 +115,9 @@ def test_unexpected_router_failure_retains_capacity(tmp_path, monkeypatch) -> No
         def send(self, payload):
             raise RuntimeError("unknown publication outcome")
 
-    service = RoutingService(FailingRouter(), get_policy_config(mode_id="core_srs"))
+    service = RoutingService(
+        FailingRouter(), get_policy_config(mode_id="core_srs"), repository=SqliteEngineRepository()
+    )
     with pytest.raises(RuntimeError, match="unknown publication outcome"):
         service.reserve_and_route(_payload("T1", "EURUSD"), account_status=AccountStatus(balance=10000, equity=10000))
     with db_mod.get_conn() as conn:

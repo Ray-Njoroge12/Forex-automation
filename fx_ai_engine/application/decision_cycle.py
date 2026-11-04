@@ -3,6 +3,7 @@
 The order of stages is the SRS decision flow: Regime -> Technical -> Adversarial
 -> Portfolio Manager -> Hard Risk Engine -> [ML shadow/canary] -> reservation
 -> Signal Router. Functions take the engine as their first argument.
+Persistence goes through ``engine.repository`` (``application.repository``).
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ from core.filters.calendar_filter import is_news_blackout
 from core.filters.session_filter import get_active_session, is_tradeable_session
 from core.schemas import technical_signal_to_payload
 from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
-from database.db import mark_trade_execution_uncertain
 from ml.meta_labeler.shadow_runtime import evaluate_canary_decision, preserve_primary_route_decision
 
 # Same logger name as before the split so log routing is unchanged.
@@ -598,7 +598,7 @@ def run_decision_cycle(engine) -> None:
             stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
             orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
             for trade_id in stale_trade_ids:
-                mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
+                engine.repository.mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
                 engine._insert_risk_event(
                     "PRESERVE_10_BRIDGE_UNCERTAIN",
                     "BLOCK",
@@ -606,7 +606,7 @@ def run_decision_cycle(engine) -> None:
                     trade_id,
                 )
             for trade_id in orphan_trade_ids:
-                mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
+                engine.repository.mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
                 engine._insert_risk_event(
                     "PRESERVE_10_BRIDGE_UNCERTAIN",
                     "BLOCK",
@@ -622,7 +622,7 @@ def run_decision_cycle(engine) -> None:
             stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
             orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
             for trade_id in stale_trade_ids:
-                mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
+                engine.repository.mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
                 engine._insert_risk_event(
                     "BRIDGE_EXECUTION_UNCERTAIN",
                     "BLOCK",
@@ -630,7 +630,7 @@ def run_decision_cycle(engine) -> None:
                     trade_id,
                 )
             for trade_id in orphan_trade_ids:
-                mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
+                engine.repository.mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
                 engine._insert_risk_event(
                     "BRIDGE_EXECUTION_UNCERTAIN",
                     "BLOCK",

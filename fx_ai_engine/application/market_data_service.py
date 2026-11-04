@@ -13,12 +13,6 @@ from core.filters.calendar_filter import load_calendar
 from core.filters.macro_filter import load_rate_differential_metadata, load_rate_differentials
 from core.state_sync import update_account_status_from_snapshot
 from core.timeframes import TIMEFRAME_M15
-from database.db import (
-    get_engine_runtime_state,
-    get_latest_account_metric,
-    get_open_trade_ledger,
-    set_engine_runtime_state,
-)
 
 # Same logger name as before the split so log routing is unchanged.
 logger = logging.getLogger("fx_ai_engine.main")
@@ -112,11 +106,11 @@ def update_account_state(engine) -> None:
         if engine._consecutive_losses_dirty and "consecutive_losses" not in snapshot:
             snapshot["consecutive_losses"] = engine.account_status.consecutive_losses
 
-        persisted_state = get_latest_account_metric(
+        persisted_state = engine.repository.get_latest_account_metric(
             evidence_stream=engine.evidence_context.evidence_stream,
             account_scope=engine.evidence_context.account_scope,
         )
-        trade_ledger = get_open_trade_ledger(
+        trade_ledger = engine.repository.get_open_trade_ledger(
             evidence_stream=engine.evidence_context.evidence_stream,
             account_scope=engine.evidence_context.account_scope,
         )
@@ -189,7 +183,7 @@ def is_new_m15_candle(engine) -> bool:
 def load_last_m15_candles(engine) -> dict[str, datetime]:
     """Seed the per-symbol seen-candle map so a restart does not re-run the current bar."""
     try:
-        raw = get_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, evidence_context=engine.evidence_context)
+        raw = engine.repository.get_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, evidence_context=engine.evidence_context)
     except Exception:
         logger.warning("Could not read persisted M15 candle state; the current bar may be re-evaluated", exc_info=True)
         return {}
@@ -219,6 +213,6 @@ def store_last_m15_candles(engine) -> None:
         {symbol: candle.isoformat() for symbol, candle in sorted(engine._last_m15_candle_by_symbol.items())}
     )
     try:
-        set_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, payload, evidence_context=engine.evidence_context)
+        engine.repository.set_engine_runtime_state(LAST_M15_CANDLE_STATE_KEY, payload, evidence_context=engine.evidence_context)
     except Exception:
         logger.warning("Could not persist M15 candle state; a restart may re-evaluate this bar", exc_info=True)

@@ -2,6 +2,7 @@
 
 Functions take the engine as their first argument. They call other engine
 steps through the engine's methods so per-instance overrides keep working.
+Persistence goes through ``engine.repository`` (``application.repository``).
 """
 from __future__ import annotations
 
@@ -10,17 +11,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
 from core.alerts import alert_trade_execution, alert_trade_exit
-from database.db import (
-    apply_execution_feedback,
-    feedback_receipt_exists,
-    get_trade_by_identifiers,
-    has_unresolved_execution_feedback,
-    list_open_trades,
-    record_feedback_receipt,
-    transition_trade_reservation_by_trade_id,
-    update_trade_execution_result,
-    update_trade_exit_result,
-)
 
 # Same logger name as before the split so log routing is unchanged.
 logger = logging.getLogger("fx_ai_engine.main")
@@ -188,7 +178,7 @@ def _estimate_recovered_r_multiple(
 def enforce_execution_feedback_integrity(engine) -> None:
     quarantine = engine.feedback.feedback_dir / "quarantine"
     try:
-        unresolved = has_unresolved_execution_feedback(engine.evidence_context)
+        unresolved = engine.repository.has_unresolved_execution_feedback(engine.evidence_context)
     except Exception:
         logger.exception("Cannot verify execution feedback integrity")
         unresolved = True
@@ -264,7 +254,7 @@ def fetch_broker_closure_summary(
 
 def recover_missing_trade_closures_from_broker(engine) -> None:
     engine._broker_recovery_error = False
-    open_trades = list_open_trades(
+    open_trades = engine.repository.list_open_trades(
         evidence_stream=engine.evidence_context.evidence_stream,
         account_scope=engine.evidence_context.account_scope,
     )
@@ -308,7 +298,7 @@ def recover_missing_trade_closures_from_broker(engine) -> None:
             broker_summary.get("trade_ticket") or trade.get("trade_ticket") or recovered_position_ticket
         )
 
-        update_trade_execution_result(
+        engine.repository.update_trade_execution_result(
             {
                 "trade_id": trade_id,
                 "ticket": recovered_trade_ticket,
@@ -323,7 +313,7 @@ def recover_missing_trade_closures_from_broker(engine) -> None:
         )
 
         recovered_r = _estimate_recovered_r_multiple(trade, broker_summary)
-        matched_trade = update_trade_exit_result(
+        matched_trade = engine.repository.update_trade_exit_result(
             {
                 "trade_id": trade_id,
                 "ticket": recovered_trade_ticket,
@@ -363,8 +353,9 @@ def consume_feedback(engine) -> None:
         for path, payload in engine.feedback.collect_execution_feedback():
             dedupe_key = _execution_feedback_dedupe_key(payload)
             try:
-                outcome = apply_execution_feedback(payload, dedupe_key=dedupe_key,
-                                                   source_file=path.name, evidence_context=engine.evidence_context)
+                outcome = engine.repository.apply_execution_feedback(
+                    payload, dedupe_key=dedupe_key, source_file=path.name, evidence_context=engine.evidence_context
+                )
             except Exception:
                 engine._execution_feedback_error = True
                 logger.exception(
@@ -398,7 +389,7 @@ def consume_feedback(engine) -> None:
         # Collect trade exit artifacts first; keep unmatched finals for later retry.
         for path, payload in engine.feedback.collect_trade_exits():
             dedupe_key = _exit_feedback_dedupe_key(payload)
-            if feedback_receipt_exists(
+            if engine.repository.feedback_receipt_exists(
                 "exit",
                 dedupe_key,
                 evidence_context=engine.evidence_context,
@@ -411,7 +402,7 @@ def consume_feedback(engine) -> None:
             payload = _normalise_legacy_exit_close_time(payload, engine.bridge)
             is_final_exit = payload.get("is_final_exit") is not False
             try:
-                matched_trade = update_trade_exit_result(
+                matched_trade = engine.repository.update_trade_exit_result(
                     payload,
                     evidence_context=engine.evidence_context,
                 )
@@ -432,7 +423,7 @@ def consume_feedback(engine) -> None:
                 continue
 
             try:
-                record_feedback_receipt(
+                engine.repository.record_feedback_receipt(
                     "exit",
                     dedupe_key,
                     trade_id=str(payload.get("trade_id", "") or ""),
@@ -454,14 +445,14 @@ def consume_feedback(engine) -> None:
                 engine.feedback.delete_artifact(path)
                 continue
 
-            transition_trade_reservation_by_trade_id(
+            engine.repository.transition_trade_reservation_by_trade_id(
                 str(payload.get("trade_id", "")),
                 "CLOSED",
                 str(payload.get("status", "CLOSED")),
             )
 
             pnl = float(payload.get("profit_loss", 0.0))
-            trade_row = get_trade_by_identifiers(
+            trade_row = engine.repository.get_trade_by_identifiers(
                 trade_id=payload.get("trade_id"),
                 position_ticket=payload.get("position_ticket") or payload.get("ticket"),
                 trade_ticket=payload.get("ticket"),

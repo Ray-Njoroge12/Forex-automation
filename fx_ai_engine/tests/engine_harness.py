@@ -10,7 +10,13 @@ from core.metrics import init_metrics
 from core.observability import init_tracing
 
 
-def make_file_bridge_engine(bridge_dir: Path, monkeypatch, *, clock: Callable[[], datetime] | None = None):
+def make_file_bridge_engine(
+    bridge_dir: Path,
+    monkeypatch,
+    *,
+    clock: Callable[[], datetime] | None = None,
+    repository=None,
+):
     import main
     from application import engine_runtime, feedback_service
 
@@ -21,4 +27,6 @@ def make_file_bridge_engine(bridge_dir: Path, monkeypatch, *, clock: Callable[[]
     monkeypatch.setattr(feedback_service, "alert_trade_execution", lambda *a, **k: None)
     conn = FileBridgeConnection(bridge_dir, clock=clock or (lambda: datetime.now(timezone.utc)))
     assert conn.connect(retry_count=1), conn.last_error
-    return main.Engine(conn, init_tracing("test"), init_metrics(), use_mock=False, run_mode="demo")
+    return main.Engine(
+        conn, init_tracing("test"), init_metrics(), use_mock=False, run_mode="demo", repository=repository
+    )

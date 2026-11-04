@@ -23,6 +23,7 @@ from config_microcapital import (
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.mock_feedback_simulator import MockFeedbackSimulator
 from bridge.signal_router import SignalRouter
+from application.repository import EngineRepository
 from application.routing_service import RoutingService
 from core.account_status import AccountStatus
 from core.bridge_utils import get_mt5_bridge_path
@@ -51,12 +52,7 @@ from core.observability import init_tracing
 from core.risk.hard_risk_engine import HardRiskEngine
 from core.risk.reset_scheduler import ResetScheduler
 from database.db import (
-    get_latest_account_metric,
     initialize_schema,
-    insert_decision_funnel_event,
-    insert_risk_event,
-    insert_account_metrics,
-    insert_trade_proposal,
     migrate_add_decision_funnel_events,
     migrate_add_evidence_partition_columns,
     migrate_add_feedback_receipts,
@@ -69,8 +65,8 @@ from database.db import (
     migrate_mark_stale_trades,
     migrate_phase8_columns,
     run_all_migrations,
-    insert_ml_shadow_event,
 )
+from database.repositories.sqlite import SqliteEngineRepository
 # Engine responsibilities live in application/* (Phase 4 split). main.py is the
 # composition root: start-up approvals, Engine wiring and one-line delegates.
 # Names that moved are re-exported here so existing imports keep working.
@@ -218,11 +214,12 @@ def _insert_risk_event_with_context(
     trade_id: str | None = None,
     *,
     evidence_context=None,
+    repository: EngineRepository,
 ) -> None:
     if severity in ("BLOCK", "CRITICAL"):
         alert_risk_halt(rule_name, reason, severity)
     try:
-        insert_risk_event(
+        repository.insert_risk_event(
             rule_name,
             severity,
             reason,
@@ -232,7 +229,7 @@ def _insert_risk_event_with_context(
     except TypeError as exc:
         if "evidence_context" not in str(exc):
             raise
-        insert_risk_event(rule_name, severity, reason, trade_id)
+        repository.insert_risk_event(rule_name, severity, reason, trade_id)
 
 
 def _insert_funnel_event_with_context(
@@ -245,9 +242,10 @@ def _insert_funnel_event_with_context(
     details: str = "",
     trade_id: str | None = None,
     evidence_context=None,
+    repository: EngineRepository,
 ) -> None:
     try:
-        insert_decision_funnel_event(
+        repository.insert_decision_funnel_event(
             decision_time=decision_time,
             stage=stage,
             outcome=outcome,
@@ -260,7 +258,7 @@ def _insert_funnel_event_with_context(
     except TypeError as exc:
         if "evidence_context" not in str(exc):
             raise
-        insert_decision_funnel_event(
+        repository.insert_decision_funnel_event(
             decision_time=decision_time,
             stage=stage,
             outcome=outcome,
@@ -540,6 +538,11 @@ def evaluate_preserve_10_startup_approval(
 
 
 class Engine:
+    # Persistence for every engine step (application.repository.EngineRepository).
+    # The class-level SQLite default also covers engines built with
+    # Engine.__new__ in tests; __init__ and main() inject the instance used.
+    repository: EngineRepository = SqliteEngineRepository()
+
     def __init__(
         self,
         bridge: MT5Connection,
@@ -549,8 +552,10 @@ class Engine:
         *,
         run_mode: str,
         policy: Mapping[str, object] | None = None,
+        repository: EngineRepository | None = None,
     ):
         self.bridge = bridge
+        self.repository = SqliteEngineRepository() if repository is None else repository
         self.tracer = tracer
         self.metrics = metrics
         self.use_mock = use_mock
@@ -615,7 +620,7 @@ class Engine:
             lock_dir=self.bridge_path / "active_locks",
             require_database_dedup=True,
         )
-        self.routing_service = RoutingService(self.router, self.policy)
+        self.routing_service = RoutingService(self.router, self.policy, repository=self.repository)
         self.feedback = ExecutionFeedbackReader(
             feedback_dir=self.bridge_path / "feedback",
             exits_dir=self.bridge_path / "exits",
@@ -723,7 +728,7 @@ class Engine:
 
     def _insert_trade_proposal(self, technical, *, status: str, reason_code: str, risk_percent: float, market_regime: str, **kwargs) -> None:
         try:
-            insert_trade_proposal(
+            self.repository.insert_trade_proposal(
                 technical,
                 status=status,
                 reason_code=reason_code,
@@ -735,7 +740,7 @@ class Engine:
         except TypeError as exc:
             if "evidence_context" not in str(exc):
                 raise
-            insert_trade_proposal(
+            self.repository.insert_trade_proposal(
                 technical,
                 status=status,
                 reason_code=reason_code,
@@ -751,6 +756,7 @@ class Engine:
             reason,
             trade_id,
             evidence_context=self.evidence_context,
+            repository=self.repository,
         )
 
     def _insert_funnel_event(
@@ -774,6 +780,7 @@ class Engine:
                 details=details,
                 trade_id=trade_id,
                 evidence_context=self.evidence_context,
+                repository=self.repository,
             )
         except Exception as exc:
             logger.warning("Failed to persist funnel event stage=%s symbol=%s error=%s", stage, symbol, exc)
@@ -789,7 +796,7 @@ class Engine:
         shadow_decision,
     ) -> None:
         try:
-            insert_ml_shadow_event(
+            self.repository.insert_ml_shadow_event(
                 decision_time=decision_time,
                 symbol=symbol,
                 trade_id=trade_id,
@@ -808,7 +815,7 @@ class Engine:
         except TypeError as exc:
             if "evidence_context" not in str(exc):
                 raise
-            insert_ml_shadow_event(
+            self.repository.insert_ml_shadow_event(
                 decision_time=decision_time,
                 symbol=symbol,
                 trade_id=trade_id,
@@ -892,7 +899,7 @@ class Engine:
     def _ensure_consecutive_losses_seeded(self) -> None:
         if self._consecutive_losses_seeded:
             return
-        persisted_state = get_latest_account_metric(
+        persisted_state = self.repository.get_latest_account_metric(
             evidence_stream=self.evidence_context.evidence_stream,
             account_scope=self.evidence_context.account_scope,
         )
@@ -915,7 +922,7 @@ class Engine:
 
         try:
             self.account_status.updated_at = datetime.now(timezone.utc)
-            insert_account_metrics(
+            self.repository.insert_account_metrics(
                 self.account_status,
                 evidence_context=self.evidence_context,
             )
@@ -992,6 +999,7 @@ def main(argv: list[str] | None = None) -> int:
     load_runtime_env()
 
     run_all_migrations()
+    repository = SqliteEngineRepository()
 
     use_mock = os.getenv("USE_MT5_MOCK") == "1"
     # MT5_CONNECTION=file_bridge reads EA exports from the bridge folder instead
@@ -1059,6 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
                 severity,
                 f"{policy_approval.reason_code} {policy_approval.details}",
                 evidence_context=startup_evidence_context,
+                repository=repository,
             )
             if policy_approval.approved:
                 logger.warning(
@@ -1085,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
                 severity,
                 f"{startup_approval.reason_code} {startup_approval.details}",
                 evidence_context=startup_evidence_context,
+                repository=repository,
             )
             if startup_approval.approved:
                 logger.info(
@@ -1101,7 +1111,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
 
         try:
-            engine = Engine(bridge, tracer, metrics, use_mock=use_mock, run_mode=args.mode, policy=policy)
+            engine = Engine(
+                bridge, tracer, metrics, use_mock=use_mock, run_mode=args.mode, policy=policy, repository=repository
+            )
         except RuntimeError as exc:
             logger.error("Engine initialization failed: %s", exc)
             return 2
