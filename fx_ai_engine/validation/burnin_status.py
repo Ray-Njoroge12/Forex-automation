@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     health = _health()
     print("Engine:", "DOWN (no health response)" if health is None else
           f"{health.get('status')} heartbeat={health.get('last_heartbeat')} halted={health.get('is_trading_halted')} "
-          f"open_positions={health.get('open_positions')} balance={health.get('account_balance')}")
+          f"open_positions={health.get('open_positions')} balance_usd={health.get('account_balance')}")
 
     days = q("SELECT COUNT(DISTINCT substr(timestamp,1,10)) FROM decision_funnel_events WHERE timestamp>=?", since)[0][0]
     print(f"Days with decision cycles since {since}: {days} (G1 needs 5 trading days)")
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  ", row)
 
     closed = q("SELECT COUNT(*), COALESCE(SUM(profit_loss),0), COALESCE(AVG(r_multiple),0) FROM trades WHERE status LIKE 'CLOSED_%'")[0]
-    print(f"Closed trades: {closed[0]}  net P/L: {closed[1]:.2f}  mean R: {closed[2]:.2f}")
+    print(f"Closed trades: {closed[0]}  net P/L (USD): {closed[1]:.2f}  mean R: {closed[2]:.2f}")
 
     conflicts = q("SELECT COUNT(*) FROM execution_feedback_conflicts WHERE resolved_at IS NULL")[0][0]
     uncertain = q("SELECT COUNT(*) FROM trade_reservations WHERE state='EXECUTION_UNCERTAIN'")[0][0]

@@ -34,7 +34,7 @@ from backtesting.replay_execution import QuoteBar, market_entry
 from backtesting.unified_replay import COST_SCENARIOS, SYMBOLS, CostModel, pip_size, pip_value_usd_per_lot
 from research.common import ARTIFACTS, parse_ts, run_id, write_json
 from research.demo_records import (
-    DEFAULT_STREAM, EA_MAGIC, Deal, guard_output_dir, load_deals, load_execution_feedback, load_feedback_files,
+    DEFAULT_STREAM, EA_MAGIC, Deal, guard_output_dir, resolve_units, load_deals, load_execution_feedback, load_feedback_files,
     load_funnel, load_m15, load_thresholds, load_trades, open_ro,
 )
 
@@ -455,15 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-stream", default=DEFAULT_STREAM)
     parser.add_argument("--cost-scenario", default="base", choices=sorted(COST_SCENARIOS))
     parser.add_argument("--thresholds", type=Path, default=None)
+    parser.add_argument("--account-currency", default=None,
+                        help="account currency of the bridge copies (default: status.json beside deals, else USD)")
+    parser.add_argument("--symbols", type=Path, default=None,
+                        help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
     out = guard_output_dir(args.out or ARTIFACTS / "r7" / run_id())
     thresholds, thresholds_sha = load_thresholds(args.thresholds)
     cost = COST_SCENARIOS[args.cost_scenario]
-    deals, deals_meta = load_deals(args.deals)
+    units = resolve_units(args.deals, args.account_currency, args.symbols)
+    deals, deals_meta = load_deals(args.deals, units)
     m15 = load_m15(args.bars_dir)
-    feedback = load_feedback_files(args.feedback_dir) if args.feedback_dir else None
+    feedback = load_feedback_files(args.feedback_dir, units) if args.feedback_dir else None
     conn = open_ro(args.db)
     try:
         rows = reconcile(conn, deals, m15, feedback_files=feedback, evidence_stream=args.evidence_stream, cost=cost)
@@ -478,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
               "bar_symbols": sorted(m15), "feedback_dir": str(args.feedback_dir) if args.feedback_dir else None,
               "thresholds": str(args.thresholds) if args.thresholds else "research/live_vs_replay_thresholds.json",
               "thresholds_sha256_16": thresholds_sha}
+    if not units.is_default:
+        inputs["units"] = units.describe()
     write_json(out / "fill_reconciliation.json", {**report, "inputs": inputs, "rows": rows})
     md = render_markdown(report, rows)
     (out / "fill_reconciliation.md").write_text(md, encoding="utf-8")

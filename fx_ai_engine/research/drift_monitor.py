@@ -217,14 +217,14 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_live(db: Path, evidence_stream: str, exits_dir: Path | None, deals_path: Path
-              ) -> tuple[list[str], list[float], dict[str, Any]]:
+def load_live(db: Path, evidence_stream: str, exits_dir: Path | None, deals_path: Path,
+              units: dr.AccountUnits | None = None) -> tuple[list[str], list[float], dict[str, Any]]:
     """Live net R (demo_records.R_DEFINITION) of closed strategy trades in final-exit-time order."""
-    exits = dr.load_exits(exits_dir) if exits_dir else None
-    deals = dr.load_deals(deals_path)[0]
+    exits = dr.load_exits(exits_dir, units) if exits_dir else None
+    deals = dr.load_deals(deals_path, units)[0]
     conn = dr.open_ro(db)
     try:
-        closed = dr.closed_trades(conn, evidence_stream, exits=exits, deals=deals)
+        closed = dr.closed_trades(conn, evidence_stream, exits=exits, deals=deals, units=units)
         max_id = conn.execute("SELECT MAX(id) FROM trades").fetchone()[0]
     finally:
         conn.close()
@@ -302,12 +302,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gate-verdict", type=Path, default=None, help="R2 verdict.json for the replay")
     parser.add_argument("--evidence-stream", default=dr.DEFAULT_STREAM)
     parser.add_argument("--thresholds", type=Path, default=None)
+    parser.add_argument("--account-currency", default=None,
+                        help="account currency of the bridge copies (default: status.json beside deals, else USD)")
+    parser.add_argument("--symbols", type=Path, default=None,
+                        help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
 
     out = dr.guard_output_dir(args.out or ARTIFACTS / "r8" / run_id())
     cfg, version, sha = load_config(args.thresholds)
-    ids, live_r, live_meta = load_live(args.db, args.evidence_stream, args.exits_dir, args.deals)
+    units = dr.resolve_units(args.deals, args.account_currency, args.symbols)
+    ids, live_r, live_meta = load_live(args.db, args.evidence_stream, args.exits_dir, args.deals, units)
     replay_r = load_replay(args.replay_trades_csv)
     report = drift_report(replay_r, live_r, cfg, live_ids=ids)
     report["thresholds_version"] = version
@@ -322,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
         "replay_trade_count": len(replay_r),
         "thresholds": str(args.thresholds) if args.thresholds else "research/live_vs_replay_thresholds.json",
     }
+    if not units.is_default:
+        report["inputs"]["units"] = units.describe()
     write_json(out / "drift_monitor.json", report)
     md = render_markdown(report)
     (out / "drift_monitor.md").write_text(md, encoding="utf-8")
