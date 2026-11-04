@@ -65,7 +65,10 @@ def _parse_utc(value: object) -> datetime:
     raw = str(value or "").strip()
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(raw)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise FileBridgeDataError("invalid timestamp") from exc
     if parsed.tzinfo is None:
         raise FileBridgeDataError(f"timestamp without timezone: {value!r}")
     return parsed.astimezone(timezone.utc)
@@ -148,6 +151,18 @@ class FileBridgeConnection(MT5Connection):
         if not isinstance(snapshot, dict):
             raise FileBridgeDataError("account snapshot is not an object")
         self._require_fresh(snapshot.get("timestamp"), ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS, "account snapshot")
+        status = self._status()
+        login, server = status.get("login"), status.get("server")
+        if (type(login) is not int or login <= 0 or not isinstance(server, str) or not server.strip()
+                or type(snapshot.get("login")) is not int or snapshot.get("login") != login
+                or snapshot.get("server") != server):
+            raise FileBridgeDataError("account identity differs between status and account snapshot")
+        if self.connected and (self.login != login or self.server != server):
+            raise FileBridgeDataError("terminal account changed since connection")
+        if snapshot.get("account_authenticated") is not True or snapshot.get("terminal_connected") is not True:
+            raise FileBridgeDataError("account snapshot does not confirm authentication and connectivity")
+        if type(snapshot.get("account_is_demo")) is not bool or snapshot.get("account_is_demo") != status.get("account_is_demo"):
+            raise FileBridgeDataError("account type differs between status and account snapshot")
         for key in ("balance", "equity", "margin_free", "floating_pnl"):
             if not _finite_number(snapshot.get(key)):
                 raise FileBridgeDataError(f"account snapshot {key} is not a finite number")
@@ -167,9 +182,11 @@ class FileBridgeConnection(MT5Connection):
         for attempt in range(max(1, retry_count)):
             try:
                 status = self._status()
-                login = int(status.get("login") or 0)
-                if login <= 0:
+                login = status.get("login")
+                if type(login) is not int or login <= 0:
                     raise FileBridgeDataError("EA reports no authenticated account")
+                if not isinstance(status.get("server"), str) or not status["server"].strip():
+                    raise FileBridgeDataError("EA reports no account server")
                 self.login = login
                 self.server = str(status.get("server") or "")
                 self.connected = True
@@ -244,18 +261,20 @@ class FileBridgeConnection(MT5Connection):
         if not isinstance(managed, list) or not isinstance(unmanaged, list):
             self._fail("FILE_BRIDGE_POSITIONS_UNAVAILABLE", "snapshot lacks position ticket lists")
             return None
-        try:
-            tickets = {int(t) for t in managed + unmanaged}
-        except (TypeError, ValueError):
-            self._fail("FILE_BRIDGE_POSITIONS_UNAVAILABLE", "snapshot ticket lists are not integers")
+        entries = managed + unmanaged
+        count = snapshot.get("open_positions_count")
+        if (type(count) is not int or count < 0
+                or any(type(ticket) is not int or ticket <= 0 for ticket in entries)):
+            self._fail("FILE_BRIDGE_POSITIONS_UNAVAILABLE", "invalid position count or ticket")
             return None
-        if len(tickets) != int(snapshot.get("open_positions_count", -1)):
+        tickets = set(entries)
+        if len(tickets) != len(entries) or len(tickets) != count:
             self._fail(
                 "FILE_BRIDGE_POSITIONS_INCONSISTENT",
                 f"tickets={len(tickets)} open_positions_count={snapshot.get('open_positions_count')}",
             )
             return None
-        return sorted(t for t in tickets if t > 0)
+        return sorted(tickets)
 
     # ------------------------------------------------------------------
     # History
@@ -327,8 +346,11 @@ class FileBridgeConnection(MT5Connection):
     # ------------------------------------------------------------------
     def _load_bars(self, symbol: str, tf_name: str) -> pd.DataFrame:
         status = self._status()
-        expected = status.get("latest_closed_bars", {}).get(symbol, {}).get(tf_name)
-        if not isinstance(expected, int) or expected <= 0:
+        latest = status.get("latest_closed_bars")
+        if not isinstance(latest, dict) or not isinstance(latest.get(symbol), dict):
+            raise FileBridgeDataError(f"EA has no closed {tf_name} bar for {symbol}")
+        expected = latest[symbol].get(tf_name)
+        if type(expected) is not int or expected <= 0:
             raise FileBridgeDataError(f"EA has no closed {tf_name} bar for {symbol}")
         payload = self._read_json(self.market_dir / f"bars_{symbol}_{tf_name}.json")
         if not isinstance(payload, dict) or payload.get("schema_version") != 1:
@@ -345,6 +367,8 @@ class FileBridgeConnection(MT5Connection):
             if not isinstance(row, list) or len(row) != len(BAR_COLUMNS) or not all(_finite_number(v) for v in row):
                 raise FileBridgeDataError("malformed bar row")
             t, o, h, low, c = row[0], row[1], row[2], row[3], row[4]
+            if type(t) is not int or t <= 0:
+                raise FileBridgeDataError("bar time must be a positive integer")
             if min(o, h, low, c) <= 0 or h < max(o, c) or low > min(o, c):
                 raise FileBridgeDataError(f"inconsistent OHLC at time={t}")
             if previous is not None and t <= previous:

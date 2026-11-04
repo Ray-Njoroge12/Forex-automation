@@ -24,7 +24,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.03-3"
+#define EA_VERSION "2026.11.04-1"
 
 CTrade trade;
 
@@ -36,6 +36,7 @@ ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
 datetime g_last_bar_export[EXPORT_SYMBOLS][EXPORT_TFS];
 string   g_calendar_generated_at = "";
 int      g_calendar_event_count = -1;
+bool     g_calendar_complete = false;
 
 // Per-position trade management parameters (indexed by slot 0..MAX_POS-1)
 #define MAX_POS 10
@@ -334,6 +335,7 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) ? "true" : "false") + ",";
    payload += "\"calendar_generated_at\":\"" + g_calendar_generated_at + "\",";
    payload += "\"calendar_high_impact_events\":" + IntegerToString(g_calendar_event_count) + ",";
+   payload += "\"calendar_complete\":" + (g_calendar_complete ? "true" : "false") + ",";
    payload += "\"latest_closed_bars\":{";
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
@@ -436,6 +438,8 @@ void WriteDealHistory(const long offset)
 // validation.update_market_context installs. The operator reviews and installs it.
 void WriteCalendarExport(const long offset)
 {
+   // A prior successful file is not evidence that this refresh succeeded.
+   g_calendar_complete = false;
    string currencies[] = {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF"};
    datetime serverNow = TimeTradeServer();
    if(serverNow <= 0)
@@ -448,7 +452,9 @@ void WriteCalendarExport(const long offset)
    for(int c = 0; c < ArraySize(currencies); c++)
    {
       MqlCalendarValue values[];
-      if(!CalendarValueHistory(values, from, to, NULL, currencies[c]))
+      ResetLastError();
+      int received = CalendarValueHistory(values, from, to, NULL, currencies[c]);
+      if(received < 0 || received != ArraySize(values))
       {
          failed = true;
          LogDebug("CalendarValueHistory failed for " + currencies[c] + " err=" + (string)GetLastError());
@@ -458,7 +464,10 @@ void WriteCalendarExport(const long offset)
       {
          MqlCalendarEvent ev;
          if(!CalendarEventById(values[j].event_id, ev))
+         {
+            failed = true;
             continue;
+         }
          if(ev.importance != CALENDAR_IMPORTANCE_HIGH)
             continue;
          bool exactTime = (ev.time_mode == CALENDAR_TIMEMODE_DATETIME);
@@ -479,12 +488,16 @@ void WriteCalendarExport(const long offset)
       }
    }
    payload += "]";
-   if(failed && count == 0)
-      return; // keep the previous export rather than publishing an empty calendar
+   if(failed)
+   {
+      LogDebug("Calendar refresh incomplete; retaining previous export without certifying it");
+      return;
+   }
    if(PublishAtomic(MarketFolder() + "\\calendar.json", payload))
    {
       g_calendar_generated_at = IsoTimestampUtc();
       g_calendar_event_count = count;
+      g_calendar_complete = true;
    }
 }
 
