@@ -51,7 +51,7 @@
     },
     {
       "name": "economic calendar (31 events)",
-      "path": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave3/fx_ai_engine/data/economic_calendar.json",
+      "path": "data/economic_calendar.json",
       "sha256_16": "702b077b9758e135"
     },
     {
@@ -216,6 +216,6 @@
     }
   ],
   "metadata": {
-    "run_utc": "2026-11-04T07:35:09Z"
+    "run_utc": "2026-11-04T07:49:09Z"
   }
 }

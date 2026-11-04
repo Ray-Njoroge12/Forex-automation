@@ -164,6 +164,13 @@ def test_two_runs_identical_apart_from_metadata(fixture_dir, tmp_path):
     assert (tmp_path / "a" / "postmortem_2026-W45.md").read_text() == (tmp_path / "b" / "postmortem_2026-W45.md").read_text()
 
 
+def test_default_calendar_recorded_as_project_relative_path(fixture_dir):
+    fx = fixture_dir
+    rep = tp.run(fx / "trading_state.db", fx / "deals.json", fx / "bars", exits_dir=fx / "exits")
+    cal = [s for s in rep["sources"] if s["name"].startswith("economic calendar")]
+    assert [s["path"] for s in cal] == ["data/economic_calendar.json"]
+
+
 def test_module_has_no_llm_or_network_imports():
     source = Path(tp.__file__).read_text(encoding="utf-8")
     pattern = re.compile(r"^\s*(import|from)\s+(openai|anthropic|requests|urllib)\b", re.MULTILINE)

@@ -13,7 +13,7 @@ Rules-based and deterministic classification of closed demo trades by probable c
 | M15 bars (6 files) | `artifacts/research/wave3-real/inputs` | 99181ccfbabb4765 |
 | exit files (1) | `artifacts/research/wave3-real/inputs/exits` | 6789181e812096c6 |
 | feedback files (11) | `artifacts/demo-evidence/2026-11-03/run_160754` | d0035a2618ac858c |
-| economic calendar (31 events) | `/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave3/fx_ai_engine/data/economic_calendar.json` | 702b077b9758e135 |
+| economic calendar (31 events) | `data/economic_calendar.json` | 702b077b9758e135 |
 | thresholds | `research/live_vs_replay_thresholds.json` | 04b13538c8afd78e |
 
 Thresholds: version 1, sha256_16 04b13538c8afd78e: execution_entry_adverse_pips=1.0, execution_exit_adverse_pips=1.0, execution_latency_seconds=60, news_before_entry_minutes=30, news_after_exit_minutes=15, cost_r_fraction=0.25, regime_adx_margin=2.0, min_trades_for_pattern=10.

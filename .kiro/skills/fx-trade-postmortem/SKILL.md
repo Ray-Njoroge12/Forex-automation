@@ -15,7 +15,7 @@ USE_MT5_MOCK=1 ../.venv/bin/python -m research.trade_postmortem --db ../tmp/wave
 ```
 On real demo data, use copies only: a read-only snapshot of the state DB (`research.demo_records.snapshot_db` opens the live DB with `mode=ro`) and `cp` copies of `market/deals.json`, `market/bars_*_M15.json` and `exits/exit_*.json`:
 ```
-USE_MT5_MOCK=1 ../.venv/bin/python -m research.trade_postmortem --db ../tmp/wave3-real/trading_state_snapshot.db --deals artifacts/research/wave3-real/inputs/deals.json --bars-dir artifacts/research/wave3-real/inputs --exits-dir artifacts/research/wave3-real/inputs/exits --out artifacts/research/wave3-real/r9
+USE_MT5_MOCK=1 ../.venv/bin/python -m research.trade_postmortem --db ../tmp/wave3-real/trading_state_snapshot.db --deals artifacts/research/wave3-real/inputs/deals.json --bars-dir artifacts/research/wave3-real/inputs --exits-dir artifacts/research/wave3-real/inputs/exits --feedback-dir artifacts/demo-evidence/2026-11-03/run_160754 --out artifacts/research/wave3-real/r9
 ```
 Options: `--week 2026-W45` (one week; default is every week with a closed trade), `--calendar` (default `data/economic_calendar.json`), `--feedback-dir` (EA `execution_*.json` copies), `--evidence-stream` (default `runtime_mt5_core_srs`), `--thresholds` (default `research/live_vs_replay_thresholds.json`). Outputs `postmortem_<week>.md` per week and `postmortem.json` (every week and trade, the thresholds used, and a metadata block holding the run time). With no closed trades it writes `postmortem_none.md`.
 ## The rules and where their data comes from

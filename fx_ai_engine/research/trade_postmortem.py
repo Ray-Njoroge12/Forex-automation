@@ -467,7 +467,9 @@ def run(db: Path, deals_path: Path, bars_dir: Path, *, exits_dir: Path | None = 
         {"name": f"M15 bars ({n_bars} files)", "path": str(bars_dir), "sha256_16": bars_sha},
         {"name": f"exit files ({n_exits})", "path": str(exits_dir) if exits_dir else None, "sha256_16": exits_sha},
         {"name": f"feedback files ({n_fb})", "path": str(feedback_dir) if feedback_dir else None, "sha256_16": fb_sha},
-        {"name": f"economic calendar ({len(events)} events)", "path": str(calendar), "sha256_16": _sha16_file(calendar)},
+        {"name": f"economic calendar ({len(events)} events)",
+         "path": "data/economic_calendar.json" if Path(calendar) == DEFAULT_CALENDAR else str(calendar),
+         "sha256_16": _sha16_file(calendar)},
         {"name": "thresholds", "path": str(thresholds) if thresholds else "research/live_vs_replay_thresholds.json",
          "sha256_16": sha},
     ]
