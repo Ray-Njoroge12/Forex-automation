@@ -1,0 +1,142 @@
+{
+  "tool": "r8_drift_monitor",
+  "note": "Live demo R sequence placed inside bands simulated from the replay R distribution (research.monte_carlo.resample); thresholds from research/live_vs_replay_thresholds.json.",
+  "report_only": "Report only: no halt or veto authority; INVESTIGATE asks a human to look.",
+  "cfg": {
+    "min_live_trades": 25,
+    "method": "block",
+    "block_length": 5,
+    "runs": 10000,
+    "seed": 11,
+    "cum_r_low_percentile": 5.0,
+    "cum_r_high_percentile": 99.0,
+    "max_dd_r_high_percentile": 95.0,
+    "loss_streak_high_percentile": 95.0
+  },
+  "n_live": 1,
+  "min_live_trades": 25,
+  "replay_trades": 6406,
+  "replay_mean_r": -0.3476,
+  "live_mean_r": 0.4926,
+  "verdict": "INCONCLUSIVE",
+  "reason": "N_LIVE_BELOW_MIN (1 < 25)",
+  "flags": [],
+  "flags_informational": true,
+  "flag_table": [
+    {
+      "flag": "CUM_R_BELOW_BAND",
+      "metric": "cum_r",
+      "rule": "100*P(sim <= live) < cum_r_low_percentile",
+      "threshold_percentile": 5.0,
+      "live_rank": 73.66,
+      "fired": false,
+      "note": null
+    },
+    {
+      "flag": "CUM_R_ABOVE_BAND",
+      "metric": "cum_r",
+      "rule": "100*P(sim < live) > cum_r_high_percentile",
+      "threshold_percentile": 99.0,
+      "live_rank": 73.66,
+      "fired": false,
+      "note": "check recording (live results better than almost every simulated path)"
+    },
+    {
+      "flag": "DRAWDOWN_ABOVE_BAND",
+      "metric": "max_dd_r",
+      "rule": "100*P(sim < live) > max_dd_r_high_percentile",
+      "threshold_percentile": 95.0,
+      "live_rank": 0.0,
+      "fired": false,
+      "note": null
+    },
+    {
+      "flag": "LOSS_STREAK_ABOVE_BAND",
+      "metric": "loss_streak",
+      "rule": "100*P(sim < live) > loss_streak_high_percentile",
+      "threshold_percentile": 95.0,
+      "live_rank": 0.0,
+      "fired": false,
+      "note": null
+    }
+  ],
+  "metrics": {
+    "cum_r": {
+      "live": 0.4926,
+      "simulated": {
+        "p5": -1.2732,
+        "p25": -1.1383,
+        "p50": -1.0677,
+        "p75": 0.5286,
+        "p95": 1.5034
+      },
+      "live_rank": 73.66,
+      "live_rank_strict": 73.66
+    },
+    "max_dd_r": {
+      "live": 0.0,
+      "simulated": {
+        "p5": 0.0,
+        "p25": 0.0,
+        "p50": 1.0677,
+        "p75": 1.1383,
+        "p95": 1.2732
+      },
+      "live_rank": 36.96,
+      "live_rank_strict": 0.0
+    },
+    "loss_streak": {
+      "live": 0.0,
+      "simulated": {
+        "p5": 0.0,
+        "p25": 0.0,
+        "p50": 1.0,
+        "p75": 1.0,
+        "p95": 1.0
+      },
+      "live_rank": 36.96,
+      "live_rank_strict": 0.0
+    }
+  },
+  "bands": [
+    {
+      "k": 1,
+      "trade_id": "AI_20261103_163004_0564f3",
+      "live_r": 0.4926,
+      "p5": -1.2732,
+      "p25": -1.1383,
+      "p50": -1.0677,
+      "p75": 0.5286,
+      "p95": 1.5034,
+      "live_cum_r": 0.4926,
+      "live_rank": 73.66
+    }
+  ],
+  "thresholds_version": 1,
+  "thresholds_sha256_16": "04b13538c8afd78e",
+  "replay_gate": {
+    "path": null,
+    "verdict": null,
+    "evidence_status": "NOT_EVIDENCE",
+    "note": "replay distribution not gated by R2 (NOT EVIDENCE)"
+  },
+  "inputs": {
+    "db": "../tmp/wave3-real/trading_state_snapshot.db",
+    "evidence_stream": "runtime_mt5_core_srs",
+    "closed_trades": 1,
+    "without_r_multiple": 0,
+    "exit_time_unverified": 0,
+    "without_exit_time": 0,
+    "sources": {
+      "bridge_exit_copy": 1
+    },
+    "max_trades_id_read": 23,
+    "exits_dir": "artifacts/research/wave3-real/inputs/exits",
+    "deals": "artifacts/research/wave3-real/inputs/deals.json",
+    "deals_sha256_16": "53d74b95df197c5f",
+    "replay_trades_csv": "../tmp/wave3-real/baseline__policy__edge__base_trades.csv",
+    "replay_trades_sha256_16": "2547c2ca3b247509",
+    "replay_trade_count": 6406,
+    "thresholds": "research/live_vs_replay_thresholds.json"
+  }
+}
