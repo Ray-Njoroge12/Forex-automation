@@ -1724,7 +1724,8 @@ bool ParseStrictCount(const string token, int &out)
 // Orders recorded for the current UTC day. A missing file means 0. A file that
 // exists but cannot be read or fails strict schema validation (valid UTC date,
 // whole-number count, non-empty last_trade_id), or an unavailable clock, returns
-// false (fail closed). Only a valid file from an earlier day counts as rollover.
+// false (fail closed). Only a valid file from an earlier day counts as rollover; a
+// valid file dated after today also returns false.
 bool ReadLiveOrderCount(int &count, string &lastTradeId)
 {
    count = 0;
@@ -1747,6 +1748,10 @@ bool ReadLiveOrderCount(int &count, string &lastTradeId)
    if(!ExtractJsonString(content, "orders", ordersToken) || !ParseStrictCount(ordersToken, orders))
       return false;
    if(!ExtractJsonString(content, "last_trade_id", storedTradeId) || storedTradeId == "")
+      return false;
+   // A stored date later than today (clock rolled back, damaged file) is not a rollover.
+   // YYYY-MM-DD strings order the same way as the dates.
+   if(StringCompare(day, today) > 0)
       return false;
    if(day != today)
       return true;
@@ -2120,6 +2125,16 @@ void ProcessPendingSignal()
       }
    }
 
+   // The kill switch may have been created after the admission gate. Check again before any
+   // state changes, so a blocked order does not use a daily-cap slot. No request was sent.
+   if(KillSwitchPresent())
+   {
+      LogDebug("Live guard reject: kill switch file present before order counter: " + KillSwitchPath() + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
    // Count the order for today's cap before the submission marker exists, so a counter
    // failure cannot leave a marker that later reads as EXECUTION_UNCERTAIN. Fails closed.
    string counterReason = "";
@@ -2143,6 +2158,19 @@ void ProcessPendingSignal()
    if(!ReadTextFile(submissionMarker, markerContents) || markerContents != tradeId)
    {
       LogDebug("Cannot verify submission marker; order not sent: " + tradeId);
+      return;
+   }
+
+   // Last kill-switch check before the irreversible send. The counter already holds this
+   // trade id (it counts order intents, so the slot stays used) and the marker exists, so
+   // remove the marker: no request was sent, and the signal is rejected definitively.
+   if(KillSwitchPresent())
+   {
+      if(!FileDelete(submissionMarker))
+         LogDebug("WARNING: Failed to delete submission marker after kill switch reject: " + submissionMarker + " err=" + (string)GetLastError());
+      LogDebug("Live guard reject: kill switch file present at send boundary: " + KillSwitchPath() + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
       return;
    }
 

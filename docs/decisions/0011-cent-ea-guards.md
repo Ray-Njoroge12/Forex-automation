@@ -30,7 +30,8 @@ Date: 2026-11-04. Status: built on branch `cent/ea-track`, not merged, not deplo
 - On a real account (`ACCOUNT_TRADE_MODE != DEMO`) a signal is processed only if `RequireDemoAccount` is false, `AllowLiveAccount` is true, `LiveMaxLotPerOrder > 0`, `LiveMaxOrdersPerDay > 0`, and `<RootFolder>\KILL_SWITCH` does not exist. Otherwise: feedback `REJECTED_LIVE_GUARD`, signal deleted, and the exact reason in `ea_debug.log` (`Live guard reject: ...`).
 - The kill switch also blocks new orders on a demo account, so it can be tested there. It is read only in the signal path. It never closes a position and does not touch `ManageOpenPositions`, the closed-position sweep or exit finalisation.
 - Lot ceiling: when `LiveMaxLotPerOrder > 0` and the final lot is above it, the lot becomes the ceiling stepped down to the broker lot step (`floor(cap / step + 1e-9) * step`; the epsilon avoids `0.03 / 0.01` evaluating to 2.999...). It never raises a lot. If the stepped-down lot is below the broker minimum the signal is rejected `REJECTED_LIVE_GUARD`.
-- Daily order cap: `feedback/live_orders_day.json` holds `{"utc_day":"YYYY-MM-DD","orders":N,"last_trade_id":"..."}`. The count is read before the gate and incremented (atomic publish, then read back and compared) after the preflight and before the submission marker is written. Any read, write or verification failure, or an unavailable clock, rejects with `REJECTED_LIVE_GUARD` (fail closed). The file is validated strictly on every read: `utc_day` must be a real `YYYY-MM-DD` date, `orders` must be digits only (no sign, point or space, at most 9 digits), and `last_trade_id` must be non-empty. Anything else is a read failure, not a rollover. Only a valid file from an earlier day resets the count to 0. The count is per trade id: the admission gate lets a signal whose trade id is the one already counted today pass the cap check, and `RecordLiveOrderIntent` does not count it again. So if the counter reaches the cap and the submission-marker write then fails, the retry of that same signal is still processed, and a different signal is rejected. It counts order intents, not fills: an order that ends `EXECUTION_UNCERTAIN` or is rejected by the broker still uses one slot. The file name does not start with `execution_`, which the Python bridge globs.
+- Daily order cap: `feedback/live_orders_day.json` holds `{"utc_day":"YYYY-MM-DD","orders":N,"last_trade_id":"..."}`. The count is read at admission and incremented (atomic publish, then read back and compared) after the preflight and before the submission marker is written. Any read, write or verification failure, or an unavailable clock, rejects with `REJECTED_LIVE_GUARD` (fail closed). The file is validated strictly on every read: `utc_day` must be a real `YYYY-MM-DD` date, `orders` must be digits only (no sign, point or space, at most 9 digits), and `last_trade_id` must be non-empty. Anything else is a read failure, not a rollover. Only a valid file from an earlier day resets the count to 0. A valid file dated after today (clock rolled back, damaged file) is a read failure too, so it cannot reopen the cap. The count is per trade id: the admission gate lets a signal whose trade id is the one already counted today pass the cap check, and `RecordLiveOrderIntent` does not count it again. So if the counter reaches the cap and the submission-marker write then fails, the retry of that same signal is still processed, and a different signal is rejected. It counts order intents, not fills: an order that ends `EXECUTION_UNCERTAIN` or is rejected by the broker still uses one slot. The file name does not start with `execution_`, which the Python bridge globs.
+- The kill switch is checked three times in the signal path: in the admission gate, again after the preflight and before the counter is touched (a blocked order then uses no cap slot), and a last time after the submission marker is verified, immediately before the `CTrade` calls. If the last check trips, the EA deletes the marker, logs `kill switch file present at send boundary`, writes `REJECTED_LIVE_GUARD` and consumes the signal; no request was sent. The counter already holds that trade id and is not rolled back, so that one slot stays used (it counts intents, and an over-count only reduces risk). If the marker cannot be deleted the EA logs a warning and still rejects, since the signal file is gone and nothing reads an orphan marker. A switch created after the last check cannot be stopped; that window is the few lines between the check and `CTrade`.
 - `status.json` gains `live_guard`: `account_real`, `require_demo`, `allow_live`, `max_lot`, `max_orders_per_day`, `orders_today` (`-1` when the counter file exists but cannot be read), `kill_switch`.
 
 ### Readings chosen where the task text was silent
@@ -52,19 +53,19 @@ Date: 2026-11-04. Status: built on branch `cent/ea-track`, not merged, not deplo
 
 ## Verification
 
-Build `2026.11.04-2`, staging compile with `scripts/mt5/compile_ea.sh` (no `--deploy`), after the review-fix pass (strict counter schema, same-trade retry through the cap gate):
+Build `2026.11.04-2`, staging compile with `scripts/mt5/compile_ea.sh` (no `--deploy`), after the second review-fix pass (future-dated counter fails closed, kill switch re-checked before the counter and at the send boundary):
 
 ```
-Result: 0 errors, 0 warnings, 6769 ms elapsed, cpu='X64 Regular'
-30a4f2996352a544ad2d300b19a6e66617febb2b1491e2685f450809a6f3c787  fx_ai_engine/mt5_ea/FX_Execution.mq5
-2921ebf631a39b601e4c20f8b9e795117864e4bb0e60f7866ac03a27becdee85  fx_ai_engine/artifacts/mt5-build/FX_Execution.ex5
+Result: 0 errors, 0 warnings, 8594 ms elapsed, cpu='X64 Regular'
+27a410354da6f9318c87faa6bcf0523eac5a8901ab1539f8f60c2bd4fd49cd4c  fx_ai_engine/mt5_ea/FX_Execution.mq5
+b67640e1a4777466399e579a73c752bd4254367a5a0905a7a0c185039b389f9c  fx_ai_engine/artifacts/mt5-build/FX_Execution.ex5
 ```
 
-The first review round covered source `249d194a...` and `.ex5` `027548da...`; both are superseded by the hashes above.
+The first review round covered source `249d194a...` and `.ex5` `027548da...`; the second covered source `30a4f299...` and `.ex5` `2921ebf6...`. Both are superseded by the hashes above.
 
 The unmodified source also compiled with 0 errors and 0 warnings before the changes (source `04f5c72a...`). The compile log is `fx_ai_engine/artifacts/mt5-build/compile.txt` (not committed). Nothing was deployed, attached or restarted, and no matrix case was run.
 
-Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` gives 633 passed (581 before). New: `tests/test_ea_cent_guards.py` (46 source-guard tests, including `test_empty_suffix_leaves_exported_names_unchanged` and `test_envelope_checks_unchanged`) and `tests/test_ea_demo_matrix_cases.py` (6 tests). `validation/ea_demo_matrix.py` gains `build_cent_guard_cases` (7 cases: `suffix_resolved`, `symbol_missing`, `account_mode_netting`, `kill_switch`, `live_lot_ceiling`, `live_lot_below_minimum`, `live_daily_cap`) and writes `required_terminal_setup` for all 14 cases in `manifest.json`. `build_demo_matrix` still returns the original seven.
+Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` gives 634 passed (581 before). New: `tests/test_ea_cent_guards.py` (47 source-guard tests, including `test_empty_suffix_leaves_exported_names_unchanged` and `test_envelope_checks_unchanged`) and `tests/test_ea_demo_matrix_cases.py` (6 tests). `validation/ea_demo_matrix.py` gains `build_cent_guard_cases` (7 cases: `suffix_resolved`, `symbol_missing`, `account_mode_netting`, `kill_switch`, `live_lot_ceiling`, `live_lot_below_minimum`, `live_daily_cap`) and writes `required_terminal_setup` for all 14 cases in `manifest.json`. `build_demo_matrix` still returns the original seven.
 
 ### Verified only by compile plus source guards (owner must verify on the terminal after deploying)
 
@@ -72,7 +73,8 @@ Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` g
 - `REJECTED_SYMBOL`, `REJECTED_ACCOUNT_MODE` and `REJECTED_LIVE_GUARD` feedback reaching Python.
 - That MetaQuotes-Demo reports `hedging` (the new guard rejects every signal otherwise).
 - The real-account path with all live conditions met.
-- The counter file across an EA restart and a UTC day change.
+- The counter file across an EA restart and a UTC day change, and that a future-dated counter file rejects.
+- That creating `KILL_SWITCH` between admission and send rejects with `REJECTED_LIVE_GUARD` (a race; the source guards assert the checks and their order only).
 - The kill switch leaving open positions managed. The `kill_switch` matrix case now requires the `valid` case's position to be open and managed, and passes that part only if `ea_debug.log` shows a management line for the ticket after the file was created; without a price trigger it is inconclusive.
 - The strict counter parse (`IsValidUtcDay`, `ParseStrictCount`) on real MQL5 string and date behaviour, and the same-trade retry through the cap gate. The source guards assert structure and order only.
 - The lot ceiling step-down against a real lot step.

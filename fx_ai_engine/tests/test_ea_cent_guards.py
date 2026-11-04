@@ -490,6 +490,10 @@ def test_order_counter_schema_is_validated_strictly_before_rollover(source):
     assert body.index('storedTradeId == ""') < body.index("if(day != today)")
     assert "ExtractJsonDouble" not in body  # StringToDouble accepts malformed text as 0
     assert body.index("if(day != today)") < body.index("count = orders;")
+    # a stored date later than today fails closed instead of reading as rollover
+    future = body.index("if(StringCompare(day, today) > 0)")
+    assert body.index('storedTradeId == ""') < future < body.index("if(day != today)")
+    assert "return false;" in body[future:][:80]
     day = _function_body(source, "IsValidUtcDay")
     assert "StringLen(day) != 10" in day
     assert "c != '-'" in day and "c < '0' || c > '9'" in day
@@ -559,7 +563,8 @@ def test_kill_switch_never_touches_position_management(source):
             assert token not in body, f"{name} references {token}"
     assert "PositionClose(" not in source.replace("PositionClosePartial(", "")
     callers = [m.start() for m in re.finditer(r"KillSwitchPresent\(\)", _mask(source))]
-    assert len(callers) == 3  # definition, LiveGuardAllowsSignal, BuildLiveGuardJson
+    # definition, LiveGuardAllowsSignal, BuildLiveGuardJson, and the two re-checks in ProcessPendingSignal
+    assert len(callers) == 5
 
 
 def test_trade_functions_are_only_reached_after_the_guards(source):
@@ -573,3 +578,29 @@ def test_trade_functions_are_only_reached_after_the_guards(source):
         "if(!RecordLiveOrderIntent(",
     ):
         assert body.index(gate) < first_send, gate
+
+
+def test_kill_switch_is_rechecked_before_the_counter_and_at_the_send_boundary(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    masked = _mask(body)
+    positions = [m.start() for m in re.finditer(r"KillSwitchPresent\(\)", masked)]
+    assert len(positions) == 2
+    before_counter, at_send = positions
+    record = body.index("RecordLiveOrderIntent(tradeId, counterReason)")
+    marker_verify = body.index("Cannot verify submission marker; order not sent")
+    send_comment = body.index("--- Determine execution method based on order_type ---")
+    first_send = min(body.index(call) for call in ("trade.Buy(", "trade.Sell(", "trade.BuyLimit(", "trade.SellLimit("))
+    # first re-check: after the preflight, before any counter or marker state changes
+    assert body.index("PreflightMarketOrder(symbol") < before_counter < record
+    # second re-check: after the marker is verified, immediately before the CTrade calls
+    assert marker_verify < at_send < send_comment < first_send
+    first = body[before_counter : body.index("return;", before_counter)]
+    assert '"REJECTED_LIVE_GUARD"' in first and "FileDelete(filePath);" in first
+    assert "submissionMarker" not in first  # no marker exists yet
+    second = body[at_send : body.index("return;", at_send)]
+    assert "FileDelete(submissionMarker)" in second  # marker removed: no request was sent
+    assert '"REJECTED_LIVE_GUARD"' in second and "FileDelete(filePath);" in second
+    assert "kill switch file present at send boundary" in second
+    # nothing between the second re-check and the first CTrade call except the order-type branch
+    between = body[send_comment:first_send]
+    assert "WriteTextFile" not in between and "RecordLiveOrderIntent" not in between
