@@ -167,6 +167,16 @@ class FakeBridge:
         return self._is_demo
 
 
+def risk_events(connection, rule_name: str | None = None) -> list[dict[str, Any]]:
+    """Rows of risk_events from the isolated test database (oldest first)."""
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT rule_name, severity, reason, evidence_stream, account_scope FROM risk_events ORDER BY id"
+        ).fetchall()
+    events = [dict(row) for row in rows]
+    return [e for e in events if rule_name is None or e["rule_name"] == rule_name]
+
+
 def folder_state(root: Path) -> dict[str, tuple[int, int]]:
     """Listing plus size and mtime of every file and folder, to prove nothing was written."""
     state: dict[str, tuple[int, int]] = {}
