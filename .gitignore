@@ -54,3 +54,6 @@ NUL
 
 # Per-agent git worktrees
 .worktrees/
+
+# Large replay datasets (manifests and coverage stay tracked)
+fx_ai_engine/artifacts/datasets/**/*.csv
