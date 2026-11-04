@@ -9,7 +9,8 @@ description: Run the R1 lookahead and recursive-bias audit (research.bias_audit)
 
 - Before quoting any replay number, and again whenever `core/agents/**`, `core/indicators/**` or `backtesting/unified_replay.py` changes.
 - When a new history export or bridge bar export becomes available; real-frame warm-up results need at least 2,000 bars per timeframe.
-- As part of the R2 gate (`fx-replay-authenticity-gate` runs it for you). Run it on its own when you need the detail.
+- As part of the R2 gate (`fx-replay-authenticity-gate` and `backtesting.run_replay` run it for you). Run it on its own when you need the detail.
+- This is the only look-ahead and warm-up tool. The older `backtesting/bias_checks.py` was removed (ADR 0003); its 2026-11-03 output `artifacts/datasets/mt5_2026-11-03/bias_checks.json` is kept as historical evidence.
 
 ## Commands
 

@@ -170,3 +170,12 @@ CREATE TABLE IF NOT EXISTS trade_lifecycle_events (
 
 CREATE INDEX IF NOT EXISTS idx_trade_lifecycle_trade_time
     ON trade_lifecycle_events(trade_id, created_at);
+
+CREATE TABLE IF NOT EXISTS engine_runtime_state (
+    evidence_stream TEXT NOT NULL,
+    account_scope TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (evidence_stream, account_scope, key)
+);

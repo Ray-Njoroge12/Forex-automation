@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import time
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -23,8 +22,8 @@ from config_microcapital import (
 )
 from bridge.execution_feedback import ExecutionFeedbackReader
 from bridge.mock_feedback_simulator import MockFeedbackSimulator
-from bridge.signal_router import SignalRouteError, SignalRouter
-from application.routing_service import ReservationRejected, RoutingService
+from bridge.signal_router import SignalRouter
+from application.routing_service import RoutingService
 from core.account_status import AccountStatus
 from core.bridge_utils import get_mt5_bridge_path
 from core.agents.adversarial_agent import AdversarialAgent
@@ -34,44 +33,30 @@ from core.agents.technical_agent import TechnicalAgent
 from core.credentials import CredentialsError, load_mt5_credentials_from_env
 from core.evidence import build_runtime_evidence_context
 from core.env_loader import load_runtime_env
-from core.filters.calendar_filter import CalendarEvent, is_news_blackout, load_calendar
-from core.filters.macro_filter import load_rate_differential_metadata, load_rate_differentials
-from core.filters.session_filter import get_active_session, is_tradeable_session
-from core.data_quality.freshness import evaluate_calendar_freshness, evaluate_rate_differential_freshness
 from core.sentiment.sentiment_agent import SentimentAgent
 from ml.signal_ranker import SignalRanker
 from ml.meta_labeler.shadow_runtime import (
     MetaLabelerShadowRuntime,
-    evaluate_canary_decision,
-    preserve_primary_route_decision,
     resolve_canary_runtime_config,
 )
 from core.logging_utils import configure_logging
 
 load_runtime_env()
-from core.alerts import alert_risk_halt, alert_trade_execution, alert_trade_exit
-from core.health import start_health_api, update_health_status
+from core.alerts import alert_risk_halt
+from core.health import start_health_api
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
 from core.file_bridge_connection import FileBridgeConnection
 from core.observability import init_tracing
 from core.risk.hard_risk_engine import HardRiskEngine
 from core.risk.reset_scheduler import ResetScheduler
-from core.schemas import technical_signal_to_payload
-from core.state_sync import update_account_status_from_snapshot
-from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
 from database.db import (
-    feedback_receipt_exists,
     get_latest_account_metric,
-    get_open_trade_ledger,
     initialize_schema,
     insert_decision_funnel_event,
     insert_risk_event,
     insert_account_metrics,
     insert_trade_proposal,
-    get_trade_by_identifiers,
-    list_open_trades,
-    mark_trade_execution_uncertain,
     migrate_add_decision_funnel_events,
     migrate_add_evidence_partition_columns,
     migrate_add_feedback_receipts,
@@ -83,106 +68,47 @@ from database.db import (
     migrate_add_trade_lifecycle_events,
     migrate_mark_stale_trades,
     migrate_phase8_columns,
-    record_feedback_receipt,
     run_all_migrations,
     insert_ml_shadow_event,
-    update_trade_execution_result,
-    apply_execution_feedback,
-    has_unresolved_execution_feedback,
-    update_trade_exit_result,
-    transition_trade_reservation_by_trade_id,
+)
+# Engine responsibilities live in application/* (Phase 4 split). main.py is the
+# composition root: start-up approvals, Engine wiring and one-line delegates.
+# Names that moved are re-exported here so existing imports keep working.
+from application import decision_cycle, engine_runtime, feedback_service, market_data_service
+from application.decision_cycle import (  # noqa: F401
+    _format_pre_route_feasibility_event,
+    _format_strategic_risk_event,
+    _normalize_pre_route_feasibility_details,
+    _policy_evidence_suffix,
+    _with_policy_evidence,
+)
+from application.engine_runtime import _demo_account_verified  # noqa: F401
+from application.feedback_service import (  # noqa: F401
+    _estimate_recovered_r_multiple,
+    _execution_feedback_dedupe_key,
+    _exit_feedback_dedupe_key,
+    _normalise_legacy_exit_close_time,
+    _parse_timestamp_utc,
+    _pip_size,
+    _safe_int,
+)
+from application.market_data_service import (  # noqa: F401
+    LAST_M15_CANDLE_STATE_KEY,
+    MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS,
+    SYMBOLS,
+    _live_trade_mgmt_option_c_enabled,
+    _snapshot_age_seconds,
 )
 
 logger = logging.getLogger("fx_ai_engine.main")
 
-
-def _demo_account_verified(bridge: MT5Connection, *, use_mock: bool) -> bool:
-    """Demo mode must never operate against a live or unverified account."""
-    if use_mock:
-        return True
-    try:
-        return bridge.is_demo_account() is True
-    except Exception:
-        logger.exception("Unable to verify MT5 account type")
-        return False
-
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF"]
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
 PRESERVE_10_REFERENCE_BALANCE_USD = 10.0
-MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS = 30
 
 
 def _predict_threshold() -> float:
     return read_predict_threshold()
-
-
-def _parse_timestamp_utc(value: object) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    if raw.endswith("Z"):
-        raw = f"{raw[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        parsed = None
-    if parsed is not None:
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-
-    # Backward compatibility for legacy EA payloads like "YYYY-MM-DD HH:MM:SS".
-    for timestamp_format in ("%Y-%m-%d %H:%M:%S",):
-        try:
-            parsed_legacy = datetime.strptime(raw, timestamp_format)
-            return parsed_legacy.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-
-    return None
-
-
-def _snapshot_age_seconds(
-    snapshot: Mapping[str, object],
-    *,
-    now_utc: datetime,
-) -> float | None:
-    snapshot_time_utc = _parse_timestamp_utc(snapshot.get("timestamp"))
-    if snapshot_time_utc is None:
-        return None
-    return (now_utc - snapshot_time_utc).total_seconds()
-
-
-def _execution_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
-    ticket = _safe_int(payload.get("ticket"))
-    return "|".join(
-        (
-            str(payload.get("trade_id", "") or ""),
-            str(ticket),
-            str(payload.get("status", "") or ""),
-            str(payload.get("close_time", "") or ""),
-        )
-    )
-
-
-def _exit_feedback_dedupe_key(payload: Mapping[str, object]) -> str:
-    ticket = _safe_int(payload.get("position_ticket") or payload.get("ticket"))
-    return "|".join(
-        (
-            str(payload.get("trade_id", "") or ""),
-            str(ticket),
-            str(payload.get("status", "") or ""),
-            str(payload.get("close_time", "") or ""),
-        )
-    )
-
-
-def _safe_int(value: object, *, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 @dataclass(frozen=True)
@@ -213,24 +139,6 @@ def _policy_runtime_approve(reason_code: str, details: str) -> RuntimePolicyAppr
 
 def _policy_runtime_reject(reason_code: str, details: str) -> RuntimePolicyApprovalDecision:
     return RuntimePolicyApprovalDecision(False, reason_code, details)
-
-
-def _policy_evidence_suffix(policy: Mapping[str, object]) -> str:
-    return f"[mode={policy['MODE_ID']} evidence={policy['EVIDENCE_LABEL']}]"
-
-
-def _with_policy_evidence(policy: Mapping[str, object], details: str) -> str:
-    return f"{details} {_policy_evidence_suffix(policy)}"
-
-
-def _normalize_pre_route_feasibility_details(feasibility) -> str:
-    details = str(feasibility.details)
-    if not feasibility.can_assess:
-        return details.replace(
-            "symbol execution contract unavailable",
-            "contract data is unavailable",
-        )
-    return f"{details}; trade blocked before MT5 routing"
 
 
 def evaluate_runtime_policy_approval(
@@ -363,90 +271,6 @@ def _insert_funnel_event_with_context(
         )
 
 
-def _format_pre_route_feasibility_event(
-    policy: Mapping[str, object],
-    feasibility,
-) -> str:
-    outcome = "blocked before MT5 routing" if not feasibility.can_assess else "refused before MT5 routing"
-    mode_label = str(policy.get("MODE_LABEL") or policy.get("MODE_ID") or "Policy")
-    return _with_policy_evidence(
-        policy,
-        f"{mode_label} pre-route feasibility {outcome}: {_normalize_pre_route_feasibility_details(feasibility)}",
-    )
-
-
-def _format_strategic_risk_event(
-    policy: Mapping[str, object],
-    eligibility,
-) -> str:
-    outcome = "blocked before downstream routing checks" if not eligibility.can_assess else "rejected as non-deployable"
-    mode_label = str(policy.get("MODE_LABEL") or policy.get("MODE_ID") or "Policy")
-    return _with_policy_evidence(
-        policy,
-        f"{mode_label} strategic-risk eligibility {outcome}: {eligibility.details}",
-    )
-
-
-def _pip_size(symbol: str) -> float:
-    return 0.01 if symbol.endswith("JPY") else 0.0001
-
-
-def _estimate_recovered_r_multiple(
-    trade_row: Mapping[str, object],
-    broker_summary: Mapping[str, object],
-) -> float | None:
-    symbol = str(trade_row.get("symbol") or broker_summary.get("symbol") or "").strip().upper()
-    direction = str(trade_row.get("direction") or broker_summary.get("direction") or "").strip().upper()
-    if not symbol or direction not in {"BUY", "SELL"}:
-        return None
-
-    try:
-        stop_pips = float(trade_row.get("stop_loss") or 0.0)
-        entry_price = float(broker_summary.get("entry_price") or 0.0)
-        close_price = float(broker_summary.get("close_price") or 0.0)
-    except (TypeError, ValueError):
-        return None
-    if stop_pips <= 0 or entry_price <= 0:
-        return None
-
-    stop_distance = stop_pips * _pip_size(symbol)
-    if stop_distance <= 0:
-        return None
-
-    close_legs = broker_summary.get("close_legs")
-    if isinstance(close_legs, list) and close_legs:
-        try:
-            initial_volume = float(broker_summary.get("lot_size") or trade_row.get("lot_size") or 0.0)
-        except (TypeError, ValueError):
-            initial_volume = 0.0
-
-        weighted_r_sum = 0.0
-        closed_volume = 0.0
-        for leg in close_legs:
-            if not isinstance(leg, Mapping):
-                continue
-            try:
-                leg_price = float(leg.get("price") or 0.0)
-                leg_volume = float(leg.get("volume") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if leg_price <= 0 or leg_volume <= 0:
-                continue
-            price_move = leg_price - entry_price if direction == "BUY" else entry_price - leg_price
-            weighted_r_sum += (price_move / stop_distance) * leg_volume
-            closed_volume += leg_volume
-
-        denominator = initial_volume if initial_volume > 0 else closed_volume
-        if denominator > 0 and closed_volume > 0:
-            return round(weighted_r_sum / denominator, 8)
-
-    if close_price <= 0:
-        return None
-
-    price_move = close_price - entry_price if direction == "BUY" else entry_price - close_price
-    return round(price_move / stop_distance, 8)
-
-
 def _read_preserve_10_commission_per_lot_usd(
     env: Mapping[str, str] | None = None,
 ) -> tuple[float | None, str | None]:
@@ -507,14 +331,6 @@ def _enforce_demo_only_experiment_account_gate(
         account_status,
     )
     return gated
-
-
-def _live_trade_mgmt_option_c_enabled(policy: Mapping[str, object]) -> bool:
-    experiments = policy.get("EXPERIMENTS", {})
-    if not isinstance(experiments, Mapping):
-        return False
-    cfg = experiments.get("LIVE_TRADE_MGMT_OPTION_C", {})
-    return isinstance(cfg, Mapping) and bool(cfg.get("enabled", False))
 
 
 def evaluate_preserve_10_startup_approval(
@@ -820,22 +636,7 @@ class Engine:
             self.mock_feedback.clear_account_snapshot()
 
         # Load static data files once at startup.
-        _data_dir = os.path.join(os.path.dirname(__file__), "data")
-        self._calendar_events: list[CalendarEvent] = load_calendar(
-            os.path.join(_data_dir, "economic_calendar.json")
-        )
-        self._calendar_quality = evaluate_calendar_freshness(self._calendar_events)
-        rate_path = os.path.join(_data_dir, "rate_differentials.json")
-        self._rate_quality = evaluate_rate_differential_freshness(
-            load_rate_differential_metadata(rate_path)
-        )
-        self._rate_diffs = load_rate_differentials(rate_path) if self._rate_quality.approved else {}
-        if not self._rate_quality.approved:
-            logger.warning(
-                "Macro modifier disabled: %s %s",
-                self._rate_quality.reason_code,
-                self._rate_quality.details,
-            )
+        market_data_service.load_market_context(self, os.path.join(os.path.dirname(__file__), "data"))
 
         # Shared sentiment agent (lazy model load, 15-min cache per symbol).
         # Only active when USE_SENTIMENT=1.
@@ -915,7 +716,9 @@ class Engine:
         )
 
         self.last_m15_candle: datetime | None = None
-        self._last_m15_candle_by_symbol: dict[str, datetime] = {}
+        self._last_m15_candle_by_symbol: dict[str, datetime] = self._load_last_m15_candles()
+        if self._last_m15_candle_by_symbol:
+            self.last_m15_candle = max(self._last_m15_candle_by_symbol.values())
         self._ensure_consecutive_losses_seeded()
 
     def _insert_trade_proposal(self, technical, *, status: str, reason_code: str, risk_percent: float, market_regime: str, **kwargs) -> None:
@@ -1068,15 +871,7 @@ class Engine:
         self._fail_closed_bridge_uncertainty(reason)
 
     def _enforce_execution_feedback_integrity(self) -> None:
-        quarantine = self.feedback.feedback_dir / "quarantine"
-        try:
-            unresolved = has_unresolved_execution_feedback(self.evidence_context)
-        except Exception:
-            logger.exception("Cannot verify execution feedback integrity")
-            unresolved = True
-        if (getattr(self, "_execution_feedback_error", False) or getattr(self, "_broker_recovery_error", False) or unresolved
-                or (quarantine.exists() and any(quarantine.glob("execution_*.json")))):
-            self._fail_closed_bridge_uncertainty("unresolved execution feedback requires reconciliation")
+        feedback_service.enforce_execution_feedback_integrity(self)
 
     def _validate_bridge_path(self, bridge_path: Path) -> None:
         required = ["pending_signals", "feedback", "exits", "active_locks"]
@@ -1092,97 +887,7 @@ class Engine:
         )
 
     def _update_account_state(self) -> None:
-        with self.tracer.start_as_current_span("update_account_state") as span:
-            now_utc = datetime.now(timezone.utc)
-            snapshot = self.feedback.read_account_snapshot()
-            if snapshot is not None and snapshot.get("snapshot_source") == "mock_feedback_simulator" and not self.use_mock:
-                logger.warning("Ignoring mock-generated account snapshot while running in non-mock mode")
-                snapshot = None
-            if snapshot is not None:
-                snapshot = dict(snapshot)
-                snapshot_age_seconds = _snapshot_age_seconds(snapshot, now_utc=now_utc)
-                if snapshot_age_seconds is None or snapshot_age_seconds > MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS:
-                    logger.warning(
-                        "Ignoring stale feedback account snapshot timestamp=%s age_seconds=%s max_age_seconds=%s",
-                        snapshot.get("timestamp"),
-                        "n/a" if snapshot_age_seconds is None else f"{snapshot_age_seconds:.1f}",
-                        MAX_ACCOUNT_SNAPSHOT_AGE_SECONDS,
-                    )
-                    snapshot = None
-
-            if snapshot is not None and self._is_snapshot_stale_after_broker_close(snapshot):
-                latest_close = self._latest_broker_close_time_utc.isoformat() if self._latest_broker_close_time_utc else "n/a"
-                logger.info(
-                    "Ignoring stale feedback account snapshot timestamp=%s latest_broker_close=%s",
-                    snapshot.get("timestamp"),
-                    latest_close,
-                )
-                snapshot = None
-
-            if snapshot is None:
-                snapshot = self.bridge.get_account_snapshot() or {}
-
-            if (
-                _live_trade_mgmt_option_c_enabled(self.policy)
-                and snapshot
-                and not snapshot.get("error")
-                and int(snapshot.get("open_positions_count", 0) or 0) > 0
-                and "management_state_restored" not in snapshot
-            ):
-                snapshot["management_state_restored"] = False
-                snapshot["management_state_error"] = (
-                    "management restore health unavailable from EA account_snapshot"
-                )
-
-            if self._consecutive_losses_dirty and "consecutive_losses" not in snapshot:
-                snapshot["consecutive_losses"] = self.account_status.consecutive_losses
-
-            persisted_state = get_latest_account_metric(
-                evidence_stream=self.evidence_context.evidence_stream,
-                account_scope=self.evidence_context.account_scope,
-            )
-            trade_ledger = get_open_trade_ledger(
-                evidence_stream=self.evidence_context.evidence_stream,
-                account_scope=self.evidence_context.account_scope,
-            )
-
-            update_account_status_from_snapshot(
-                self.account_status,
-                snapshot,
-                persisted_state=persisted_state,
-                trade_ledger=trade_ledger,
-                now_utc=now_utc,
-            )
-            if snapshot and not snapshot.get("error"):
-                self._consecutive_losses_seeded = True
-
-            if not self.account_status.state_reconciled:
-                if self.account_status.state_reconciliation_reason != self._last_reconciliation_reason:
-                    self._insert_risk_event(
-                        "STATE_RECONCILIATION_FAILED",
-                        "BLOCK",
-                        self.account_status.state_reconciliation_reason,
-                    )
-                    logger.warning(
-                        "Account state reconciliation failed: %s",
-                        self.account_status.state_reconciliation_reason,
-                    )
-                self._last_reconciliation_reason = self.account_status.state_reconciliation_reason
-            elif self._last_reconciliation_reason:
-                self._insert_risk_event("STATE_RECONCILED", "INFO", "Account state reconciled")
-                logger.info("Account state reconciled after previous mismatch.")
-                self._last_reconciliation_reason = ""
-
-            if self.reset_scheduler.should_reset_daily():
-                self.account_status.daily_loss_percent = 0.0
-            if self.reset_scheduler.should_reset_weekly():
-                self.account_status.weekly_loss_percent = 0.0
-
-            span.set_attribute("open_positions", self.account_status.open_positions_count)
-            span.set_attribute("drawdown_percent", self.account_status.drawdown_percent)
-
-        self.metrics.set_gauge("open_positions", self.account_status.open_positions_count)
-        self.metrics.set_gauge("open_risk_percent", self.account_status.open_risk_percent)
+        market_data_service.update_account_state(self)
 
     def _ensure_consecutive_losses_seeded(self) -> None:
         if self._consecutive_losses_seeded:
@@ -1220,30 +925,10 @@ class Engine:
             self._consecutive_losses_dirty = True
 
     def _record_broker_close_time(self, close_time_value: object) -> None:
-        close_time_utc = _parse_timestamp_utc(close_time_value)
-        if close_time_utc is None:
-            return
-        now_utc = datetime.now(timezone.utc)
-        if close_time_utc > now_utc + timedelta(seconds=60):
-            # EA builds before 2026.11.03-3 labelled broker server time as UTC.
-            # A future close time would make every fresh snapshot look stale.
-            logger.warning(
-                "Broker close_time %s is in the future; clamping to now (server-time label?)",
-                close_time_utc.isoformat(),
-            )
-            close_time_utc = now_utc
-        if self._latest_broker_close_time_utc is None or close_time_utc > self._latest_broker_close_time_utc:
-            self._latest_broker_close_time_utc = close_time_utc
+        feedback_service.record_broker_close_time(self, close_time_value)
 
     def _is_snapshot_stale_after_broker_close(self, snapshot: Mapping[str, object]) -> bool:
-        if not snapshot or snapshot.get("error"):
-            return False
-        if self._latest_broker_close_time_utc is None:
-            return False
-        snapshot_time_utc = _parse_timestamp_utc(snapshot.get("timestamp"))
-        if snapshot_time_utc is None:
-            return False
-        return snapshot_time_utc < self._latest_broker_close_time_utc
+        return feedback_service.is_snapshot_stale_after_broker_close(self, snapshot)
 
     def _fetch_broker_closure_summary(
         self,
@@ -1251,908 +936,33 @@ class Engine:
         local_position_ticket: int,
         trade_id: str,
     ) -> dict[str, object] | None:
-        broker_summary: dict[str, object] | None = None
-        if local_position_ticket > 0:
-            try:
-                broker_summary = self.bridge.get_position_history_summary(local_position_ticket)
-            except Exception as exc:
-                logger.warning(
-                    "Failed fetching broker history for position_ticket=%s trade_id=%s: %s",
-                    local_position_ticket,
-                    trade_id,
-                    exc,
-                )
-
-        if broker_summary is None and trade_id:
-            try:
-                broker_summary = self.bridge.get_trade_history_summary(trade_id)
-            except Exception as exc:
-                if local_position_ticket > 0:
-                    logger.warning(
-                        "Failed fetching broker history by trade_id=%s after position lookup miss/failure: %s",
-                        trade_id,
-                        exc,
-                    )
-                else:
-                    logger.warning(
-                        "Failed fetching broker history for trade_id=%s without stored tickets: %s",
-                        trade_id,
-                        exc,
-                    )
-        return broker_summary
+        return feedback_service.fetch_broker_closure_summary(
+            self, local_position_ticket=local_position_ticket, trade_id=trade_id
+        )
 
     def _recover_missing_trade_closures_from_broker(self) -> None:
-        self._broker_recovery_error = False
-        open_trades = list_open_trades(
-            evidence_stream=self.evidence_context.evidence_stream,
-            account_scope=self.evidence_context.account_scope,
-        )
-        if not open_trades:
-            return
-
-        try:
-            tickets = self.bridge.get_open_position_tickets()
-            if tickets is None:
-                raise RuntimeError("broker position query unavailable")
-            open_position_tickets = set(tickets)
-        except Exception as exc:
-            self._broker_recovery_error = True
-            logger.warning("Failed reading broker open positions during lifecycle recovery: %s", exc)
-            return
-
-        for trade in open_trades:
-            local_position_ticket = int(trade.get("position_ticket") or trade.get("trade_ticket") or 0)
-            trade_id = str(trade.get("trade_id") or "").strip()
-            if local_position_ticket > 0 and local_position_ticket in open_position_tickets:
-                continue
-
-            broker_summary = self._fetch_broker_closure_summary(
-                local_position_ticket=local_position_ticket,
-                trade_id=trade_id,
-            )
-            if not broker_summary and not trade_id:
-                continue
-
-            if not broker_summary or not broker_summary.get("close_time"):
-                continue
-
-            trade_id = str(trade_id or broker_summary.get("trade_id") or "").strip()
-            if not trade_id:
-                continue
-
-            recovered_position_ticket = int(
-                broker_summary.get("position_ticket") or local_position_ticket or 0
-            )
-            recovered_trade_ticket = int(
-                broker_summary.get("trade_ticket") or trade.get("trade_ticket") or recovered_position_ticket
-            )
-
-            update_trade_execution_result(
-                {
-                    "trade_id": trade_id,
-                    "ticket": recovered_trade_ticket,
-                    "position_ticket": recovered_position_ticket,
-                    "status": "EXECUTED",
-                    "entry_price": float(broker_summary.get("entry_price") or trade.get("entry_price") or 0.0),
-                    "lot_size": float(broker_summary.get("lot_size") or trade.get("lot_size") or 0.0),
-                    "slippage": 0.0,
-                    "spread_at_entry": 0.0,
-                    "execution_time": broker_summary.get("execution_time"),
-                }
-            )
-
-            recovered_r = _estimate_recovered_r_multiple(trade, broker_summary)
-            matched_trade = update_trade_exit_result(
-                {
-                    "trade_id": trade_id,
-                    "ticket": recovered_trade_ticket,
-                    "position_ticket": recovered_position_ticket,
-                    "status": broker_summary.get("status", "CLOSED"),
-                    "profit_loss": float(broker_summary.get("profit_loss") or 0.0),
-                    "r_multiple": recovered_r,
-                    "close_time": broker_summary.get("close_time"),
-                },
-                evidence_context=self.evidence_context,
-            )
-            if not matched_trade:
-                continue
-
-            pnl = float(broker_summary.get("profit_loss") or 0.0)
-            self._record_consecutive_loss_update(pnl)
-            self._record_broker_close_time(broker_summary.get("close_time"))
-
-            self.router.release_lock(trade_id)
-            recovery_reason = (
-                "Recovered missing trade exit from MT5 broker history "
-                f"trade_id={trade_id} position_ticket={recovered_position_ticket} profit_loss={pnl:.2f}"
-            )
-            self._insert_risk_event(
-                "TRADE_LIFECYCLE_RECOVERED",
-                "WARN",
-                recovery_reason,
-                trade_id,
-            )
-            logger.warning(recovery_reason)
+        feedback_service.recover_missing_trade_closures_from_broker(self)
 
     def _consume_feedback(self) -> None:
-        with self.tracer.start_as_current_span("consume_feedback"):
-            self._execution_feedback_error = False
-            # Collect execution artifacts first; delete only after durable DB success.
-            for path, payload in self.feedback.collect_execution_feedback():
-                dedupe_key = _execution_feedback_dedupe_key(payload)
-                try:
-                    outcome = apply_execution_feedback(payload, dedupe_key=dedupe_key,
-                                                       source_file=path.name, evidence_context=self.evidence_context)
-                except Exception:
-                    self._execution_feedback_error = True
-                    logger.exception(
-                        "Failed to apply execution feedback; deferring source=%s trade_id=%s",
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-
-                if outcome in {"unmatched", "conflict"}:
-                    self._execution_feedback_error = True
-                    logger.warning(
-                        "Execution feedback %s; deferring source=%s trade_id=%s",
-                        outcome,
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-                if outcome == "applied" and payload.get("status") == "EXECUTED":
-                    alert_trade_execution(
-                        str(payload.get("trade_id", "")),
-                        str(payload.get("symbol", "")),
-                        str(payload.get("direction", "")),
-                        float(payload.get("lot_size", 0.0)),
-                        float(payload.get("entry_price", 0.0)),
-                    )
-                if payload.get("status") not in {"REJECTED_ORDER_SEND", "EXECUTION_UNCERTAIN"}:
-                    self.router.release_lock(str(payload.get("trade_id", "")))
-                self.feedback.delete_artifact(path)
-
-            # Collect trade exit artifacts first; keep unmatched finals for later retry.
-            for path, payload in self.feedback.collect_trade_exits():
-                dedupe_key = _exit_feedback_dedupe_key(payload)
-                if feedback_receipt_exists(
-                    "exit",
-                    dedupe_key,
-                    evidence_context=self.evidence_context,
-                ):
-                    self.feedback.delete_artifact(path)
-                    continue
-
-                is_final_exit = payload.get("is_final_exit") is not False
-                try:
-                    matched_trade = update_trade_exit_result(
-                        payload,
-                        evidence_context=self.evidence_context,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to apply trade-exit feedback; deferring source=%s trade_id=%s",
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-
-                if is_final_exit and not matched_trade:
-                    logger.warning(
-                        "Trade-exit feedback matched no trade row; deferring source=%s trade_id=%s",
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-
-                try:
-                    record_feedback_receipt(
-                        "exit",
-                        dedupe_key,
-                        trade_id=str(payload.get("trade_id", "") or ""),
-                        ticket=_safe_int(payload.get("position_ticket") or payload.get("ticket")),
-                        status=str(payload.get("status", "") or ""),
-                        close_time=str(payload.get("close_time", "") or ""),
-                        source_file=path.name,
-                        evidence_context=self.evidence_context,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to persist trade-exit feedback receipt; deferring source=%s trade_id=%s",
-                        path,
-                        payload.get("trade_id", ""),
-                    )
-                    continue
-
-                if not is_final_exit:
-                    self.feedback.delete_artifact(path)
-                    continue
-
-                transition_trade_reservation_by_trade_id(
-                    str(payload.get("trade_id", "")),
-                    "CLOSED",
-                    str(payload.get("status", "CLOSED")),
-                )
-
-                pnl = float(payload.get("profit_loss", 0.0))
-                trade_row = get_trade_by_identifiers(
-                    trade_id=payload.get("trade_id"),
-                    position_ticket=payload.get("position_ticket") or payload.get("ticket"),
-                    trade_ticket=payload.get("ticket"),
-                    evidence_context=self.evidence_context,
-                )
-                trade_for_alert = trade_row or payload
-                alert_trade_exit(
-                    str(trade_for_alert.get("trade_id", "")),
-                    str(trade_for_alert.get("symbol", "")),
-                    pnl,
-                    r_multiple=_estimate_recovered_r_multiple(trade_for_alert, payload),
-                )
-                self._record_consecutive_loss_update(pnl)
-                self._record_broker_close_time(payload.get("close_time"))
-                self.feedback.delete_artifact(path)
+        feedback_service.consume_feedback(self)
 
     def _is_new_m15_candle(self) -> bool:
-        saw_new_candle = False
-        latest_candle = self.last_m15_candle
+        return market_data_service.is_new_m15_candle(self)
 
-        for symbol in SYMBOLS:
-            df = self.bridge.fetch_ohlc_data(symbol, TIMEFRAME_M15, 2)
-            if df.empty:
-                continue
+    def _load_last_m15_candles(self) -> dict[str, datetime]:
+        return market_data_service.load_last_m15_candles(self)
 
-            current = df.index[-1].to_pydatetime().replace(tzinfo=timezone.utc)
-            previous = self._last_m15_candle_by_symbol.get(symbol)
-            if previous is None or current > previous:
-                self._last_m15_candle_by_symbol[symbol] = current
-                saw_new_candle = True
-
-            if latest_candle is None or current > latest_candle:
-                latest_candle = current
-
-        if latest_candle is not None:
-            self.last_m15_candle = latest_candle
-
-        return saw_new_candle
+    def _store_last_m15_candles(self) -> None:
+        market_data_service.store_last_m15_candles(self)
 
     def _evaluate_symbol(self, sym: str, decision_time: datetime, session_name: str | None) -> None:
-        logger.debug("Evaluating symbol %s", sym)
-        now_utc = decision_time
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="SESSION",
-            outcome="PASS",
-            reason_code="SESSION_ACTIVE",
-            symbol=sym,
-            details=f"session={session_name}",
-        )
-        if is_news_blackout(sym, now_utc, self._calendar_events):
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="NEWS",
-                outcome="REJECT",
-                reason_code="NEWS_BLACKOUT",
-                symbol=sym,
-                details="high-impact event blackout window",
-            )
-            self._insert_risk_event(
-                "NEWS_BLACKOUT", "INFO",
-                f"symbol={sym} — high-impact event blackout window",
-            )
-            return
-
-        sym_agents = self.agents[sym]
-        regime = sym_agents["regime"].evaluate(TIMEFRAME_H1)
-        if regime.regime in {"TRENDING_BULL", "TRENDING_BEAR"}:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="REGIME",
-                outcome="PASS",
-                reason_code=regime.reason_code,
-                symbol=sym,
-                details=sym_agents["regime"].last_details,
-            )
-        else:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="REGIME",
-                outcome="REJECT",
-                reason_code=regime.reason_code,
-                symbol=sym,
-                details=sym_agents["regime"].last_details,
-            )
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="TECHNICAL",
-                outcome="SKIP",
-                reason_code="TECH_SKIPPED_REGIME_REJECTED",
-                symbol=sym,
-                details=(
-                    f"regime={regime.regime} regime_reason={regime.reason_code} "
-                    f"trend_state={regime.trend_state}"
-                ),
-            )
-            return
-        technical = sym_agents["technical"].evaluate(regime, TIMEFRAME_M15, TIMEFRAME_H1)
-
-        if technical is None:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="TECHNICAL",
-                outcome="REJECT",
-                reason_code=sym_agents["technical"].last_reason_code,
-                symbol=sym,
-                details=sym_agents["technical"].last_details,
-            )
-            return
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="TECHNICAL",
-            outcome="PASS",
-            reason_code=technical.reason_code,
-            symbol=sym,
-            details=sym_agents["technical"].last_details,
-            trade_id=technical.trade_id,
-        )
-
-        strategic = self._strategic_risk_eligibility(
-            technical.symbol,
-            technical.stop_pips,
-        )
-        if strategic is not None and (not strategic.can_assess or not strategic.approved):
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="STRATEGIC_RISK",
-                outcome="REJECT",
-                reason_code=strategic.reason_code,
-                symbol=sym,
-                details=strategic.details,
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=strategic.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event(
-                "STRATEGIC_RISK",
-                "WARN",
-                _format_strategic_risk_event(self.policy, strategic),
-                technical.trade_id,
-            )
-            self.metrics.inc("trades_rejected")
-            return
-        if strategic is not None:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="STRATEGIC_RISK",
-                outcome="PASS",
-                reason_code=strategic.reason_code,
-                symbol=sym,
-                details=strategic.details,
-                trade_id=technical.trade_id,
-            )
-
-        adversarial = sym_agents["adversarial"].evaluate(
-            technical, self.account_status, TIMEFRAME_M15
-        )
-        if not adversarial.approved:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ADVERSARIAL",
-                outcome="REJECT",
-                reason_code=adversarial.reason_code,
-                symbol=sym,
-                details=adversarial.details,
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=adversarial.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event("PORTFOLIO_GATE", "WARN", adversarial.details, technical.trade_id)
-            self.metrics.inc("trades_rejected")
-            return
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="ADVERSARIAL",
-            outcome="PASS",
-            reason_code=adversarial.reason_code,
-            symbol=sym,
-            details=adversarial.details,
-            trade_id=technical.trade_id,
-        )
-
-        portfolio = self.portfolio_manager.evaluate(
-            technical, adversarial, self.account_status,
-            open_symbols=self.account_status.open_symbols,
-            regime=regime,
-        )
-
-        if not portfolio.approved:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="PORTFOLIO",
-                outcome="REJECT",
-                reason_code=portfolio.reason_code,
-                symbol=sym,
-                details=portfolio.details,
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=portfolio.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event("PORTFOLIO_GATE", "WARN", portfolio.details, technical.trade_id)
-            self.metrics.inc("trades_rejected")
-            return
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="PORTFOLIO",
-            outcome="PASS",
-            reason_code=portfolio.reason_code,
-            symbol=sym,
-            details=portfolio.details,
-            trade_id=technical.trade_id,
-        )
-
-        risk = self.hard_risk.validate(self.account_status, portfolio.final_risk_percent)
-        if not risk.approved:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="HARD_RISK",
-                outcome="REJECT",
-                reason_code=risk.reason_code,
-                symbol=sym,
-                details=risk.details,
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=risk.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event("HARD_RISK", "BLOCK", risk.details, technical.trade_id)
-            self.metrics.inc("risk_blocks")
-            self.metrics.inc("trades_rejected")
-            return
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="HARD_RISK",
-            outcome="PASS",
-            reason_code=risk.reason_code,
-            symbol=sym,
-            details=risk.details,
-            trade_id=technical.trade_id,
-        )
-
-        # ML ranker gate — only active once a model has been trained.
-        active_session = get_active_session(now_utc)
-        is_london = 1 if active_session == "london" else 0
-        is_ny = 1 if active_session == "newyork" else 0
-        rate_diff = self._rate_diffs.get(sym, 0.0)
-        ranker_features = {
-            "regime_confidence": regime.confidence,
-            "rsi": technical.rsi_at_entry,
-            "atr_ratio": regime.atr_ratio,
-            "spread_pips": technical.spread_entry,
-            "is_london_session": float(is_london),
-            "is_newyork_session": float(is_ny),
-            "rate_differential": rate_diff,
-            "stop_pips": technical.stop_pips,
-            "risk_reward": technical.risk_reward,
-            "direction_buy": 1.0 if technical.direction == "BUY" else 0.0,
-            "rsi_slope": technical.rsi_slope,
-        }
-        ranker_prob = self.ranker.predict_proba(ranker_features)
-        primary_gate_route = not (self.ranker_loaded and ranker_prob < self.predict_threshold)
-
-        shadow_decision = None
-        if self.shadow_runtime.enabled:
-            shadow_decision = self.shadow_runtime.evaluate(
-                symbol=sym,
-                trade_id=technical.trade_id,
-                regime_label=regime.regime,
-                decision_time=decision_time,
-                technical_timestamp_utc=technical.timestamp_utc,
-            )
-            primary_gate_route = preserve_primary_route_decision(
-                primary_gate_route,
-                shadow_decision.outcome,
-            )
-            self._insert_ml_shadow_event(
-                decision_time=decision_time,
-                symbol=sym,
-                trade_id=technical.trade_id,
-                stage="POST_HARD_RISK",
-                primary_gate_outcome="ROUTE" if primary_gate_route else "REJECT",
-                shadow_decision=shadow_decision,
-            )
-
-        canary_decision = evaluate_canary_decision(
-            self.canary_config,
-            stage="POST_HARD_RISK",
-            shadow_enabled=self.shadow_runtime.enabled,
-            shadow_outcome=(shadow_decision.outcome if shadow_decision is not None else "DISABLED"),
-            primary_gate_route=primary_gate_route,
-        )
-        if self.canary_config.enabled or self.canary_config.kill_switch:
-            canary_outcome = "REJECT" if canary_decision.block_route else ("PASS" if canary_decision.enforced else "BYPASS")
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ML_CANARY",
-                outcome=canary_outcome,
-                reason_code=canary_decision.reason_code,
-                symbol=sym,
-                details=canary_decision.details,
-                trade_id=technical.trade_id,
-            )
-        if canary_decision.block_route:
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=canary_decision.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event(
-                "ML_CANARY",
-                "BLOCK",
-                canary_decision.details,
-                technical.trade_id,
-            )
-            self.metrics.inc("trades_rejected")
-            return
-
-        if not self.ranker_loaded:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ML_RANKER",
-                outcome="BYPASS",
-                reason_code="ML_RANKER_MODEL_UNAVAILABLE",
-                symbol=sym,
-                details="bypass_untrained_model",
-                trade_id=technical.trade_id,
-            )
-            self._insert_risk_event(
-                "ML_RANKER",
-                "INFO",
-                "bypass_untrained_model",
-                technical.trade_id,
-            )
-        elif not primary_gate_route:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ML_RANKER",
-                outcome="REJECT",
-                reason_code="ML_RANKER_LOW_PROB",
-                symbol=sym,
-                details=f"prob={ranker_prob:.3f} threshold={self.predict_threshold}",
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code="ML_RANKER_LOW_PROB",
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event(
-                "ML_RANKER", "INFO",
-                f"prob={ranker_prob:.3f} < threshold={self.predict_threshold}",
-                technical.trade_id,
-            )
-            self.metrics.inc("trades_rejected")
-            return
-        else:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ML_RANKER",
-                outcome="PASS",
-                reason_code="ML_RANKER_APPROVED",
-                symbol=sym,
-                details=f"prob={ranker_prob:.3f} threshold={self.predict_threshold}",
-                trade_id=technical.trade_id,
-            )
-
-        # Apply loss-streak throttle from hard risk engine.
-        final_risk = round(portfolio.final_risk_percent * risk.risk_throttle_multiplier, 8)
-
-        feasibility = self._pre_route_feasibility(
-            technical.symbol,
-            final_risk,
-            technical.stop_pips,
-        )
-        if feasibility is not None and (not feasibility.can_assess or not feasibility.approved):
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="PRE_ROUTE_FEASIBILITY",
-                outcome="REJECT",
-                reason_code=feasibility.reason_code,
-                symbol=sym,
-                details=feasibility.details,
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=feasibility.reason_code,
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event(
-                "PRE_ROUTE_FEASIBILITY",
-                "WARN",
-                _format_pre_route_feasibility_event(self.policy, feasibility),
-                technical.trade_id,
-            )
-            self.metrics.inc("trades_rejected")
-            return
-        if feasibility is not None:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="PRE_ROUTE_FEASIBILITY",
-                outcome="PASS",
-                reason_code=feasibility.reason_code,
-                symbol=sym,
-                details=feasibility.details,
-                trade_id=technical.trade_id,
-            )
-
-        payload = technical_signal_to_payload(technical, final_risk)
-        try:
-            self.routing_service.reserve_and_route(payload, account_status=self.account_status)
-        except ReservationRejected as exc:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="RESERVATION",
-                outcome="REJECT",
-                reason_code=str(exc),
-                symbol=sym,
-                details="portfolio capacity unavailable after counting pending reservations",
-                trade_id=technical.trade_id,
-            )
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code=str(exc),
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event("PORTFOLIO_RESERVATION", "BLOCK", str(exc), technical.trade_id)
-            self.metrics.inc("trades_rejected")
-            return
-        except SignalRouteError as exc:
-            self._insert_funnel_event(
-                decision_time=decision_time,
-                stage="ROUTER",
-                outcome="REJECT",
-                reason_code="ROUTER_SEND_UNCERTAIN" if exc.pending_written else "ROUTER_SEND_FAILED",
-                symbol=sym,
-                details=str(exc),
-                trade_id=technical.trade_id,
-            )
-            if self.policy["MODE_ID"] != "preserve_10":
-                raise
-            if exc.pending_written:
-                self._insert_trade_proposal(
-                    technical,
-                    status="EXECUTION_UNCERTAIN",
-                    reason_code="ROUTER_SEND_UNCERTAIN",
-                    risk_percent=final_risk,
-                    market_regime=regime.regime,
-                    regime_confidence=regime.confidence,
-                    atr_ratio=regime.atr_ratio,
-                    is_london_session=is_london,
-                    is_newyork_session=is_ny,
-                    rate_differential=rate_diff,
-                )
-                self._fail_closed_preserve_10_bridge(
-                    f"bridge publish uncertainty for trade_id={technical.trade_id}"
-                )
-                self._insert_risk_event(
-                    "PRESERVE_10_BRIDGE_UNCERTAIN",
-                    "BLOCK",
-                    str(exc),
-                    technical.trade_id,
-                )
-                return
-
-            self._insert_trade_proposal(
-                technical,
-                status="REJECTED",
-                reason_code="ROUTER_SEND_FAILED",
-                risk_percent=0.0,
-                market_regime=regime.regime,
-            )
-            self._insert_risk_event(
-                "PRESERVE_10_BRIDGE_FAILURE",
-                "BLOCK",
-                str(exc),
-                technical.trade_id,
-            )
-            self.metrics.inc("trades_rejected")
-            return
-
-        self._insert_funnel_event(
-            decision_time=decision_time,
-            stage="ROUTER",
-            outcome="ROUTED",
-            reason_code="ROUTED_TO_MT5",
-            symbol=sym,
-            details=f"risk_percent={final_risk:.8f}",
-            trade_id=technical.trade_id,
-        )
-
-        self._insert_trade_proposal(
-            technical,
-            status="PENDING",
-            reason_code="ROUTED_TO_MT5",
-            risk_percent=final_risk,
-            market_regime=regime.regime,
-            regime_confidence=regime.confidence,
-            atr_ratio=regime.atr_ratio,
-            is_london_session=is_london,
-            is_newyork_session=is_ny,
-            rate_differential=rate_diff,
-        )
-        self.metrics.inc("trades_routed")
+        decision_cycle.evaluate_symbol(self, sym, decision_time, session_name)
 
     def _decision_cycle(self) -> None:
-        logger.info("Starting decision cycle for %d symbols", len(SYMBOLS))
-        with self.tracer.start_as_current_span("decision_cycle"):
-            now_utc = datetime.now(timezone.utc)
-            self._calendar_quality = evaluate_calendar_freshness(
-                self._calendar_events,
-                now_utc=now_utc,
-            )
-            if not self._calendar_quality.approved:
-                self._insert_risk_event(
-                    self._calendar_quality.reason_code,
-                    "BLOCK",
-                    self._calendar_quality.details,
-                )
-                return
-            if not is_tradeable_session(now_utc):
-                for sym in SYMBOLS:
-                    self._insert_funnel_event(
-                        decision_time=now_utc,
-                        stage="SESSION",
-                        outcome="REJECT",
-                        reason_code="SESSION_INACTIVE",
-                        symbol=sym,
-                        details=f"hour={now_utc.hour} session={get_active_session(now_utc)}",
-                    )
-                self._insert_risk_event(
-                    "SESSION_INACTIVE", "INFO",
-                    f"hour={now_utc.hour} UTC — outside London/NY session",
-                )
-                return
-
-            # Remove only stale/orphaned pending artifacts; keep valid pending signals.
-            cleanup = self.router.cleanup_stale(max_age_seconds=600)
-            if self.policy["MODE_ID"] == "preserve_10":
-                stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
-                orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
-                for trade_id in stale_trade_ids:
-                    mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
-                    self._insert_risk_event(
-                        "PRESERVE_10_BRIDGE_UNCERTAIN",
-                        "BLOCK",
-                        "stale pending signal quarantined; execution truth is uncertain",
-                        trade_id,
-                    )
-                for trade_id in orphan_trade_ids:
-                    mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
-                    self._insert_risk_event(
-                        "PRESERVE_10_BRIDGE_UNCERTAIN",
-                        "BLOCK",
-                        "orphan router lock quarantined; execution truth is uncertain",
-                        trade_id,
-                    )
-                if stale_trade_ids or orphan_trade_ids:
-                    self._fail_closed_preserve_10_bridge(
-                        "preserve-first bridge uncertainty detected during router housekeeping"
-                    )
-                    return
-            else:
-                stale_trade_ids = tuple(cleanup.stale_pending_trade_ids)
-                orphan_trade_ids = tuple(cleanup.orphan_lock_trade_ids)
-                for trade_id in stale_trade_ids:
-                    mark_trade_execution_uncertain(trade_id, "ROUTER_PENDING_UNCERTAIN")
-                    self._insert_risk_event(
-                        "BRIDGE_EXECUTION_UNCERTAIN",
-                        "BLOCK",
-                        "stale pending signal quarantined; execution truth is uncertain",
-                        trade_id,
-                    )
-                for trade_id in orphan_trade_ids:
-                    mark_trade_execution_uncertain(trade_id, "ROUTER_LOCK_UNCERTAIN")
-                    self._insert_risk_event(
-                        "BRIDGE_EXECUTION_UNCERTAIN",
-                        "BLOCK",
-                        "orphan router lock quarantined; execution truth is uncertain",
-                        trade_id,
-                    )
-                if stale_trade_ids or orphan_trade_ids:
-                    self._fail_closed_bridge_uncertainty(
-                        "bridge uncertainty detected during router housekeeping"
-                    )
-                    return
-
-            session_name = get_active_session(now_utc)
-            for sym in SYMBOLS:
-                self._evaluate_symbol(sym, now_utc, session_name)
+        decision_cycle.run_decision_cycle(self)
 
     def run(self, mode: str, iterations: int = 0) -> None:
-        count = 0
-        while True:
-            if mode == "demo" and not _demo_account_verified(self.bridge, use_mock=self.use_mock):
-                logger.error("Demo account verification failed; stopping before processing or routing signals")
-                self._fail_closed_bridge_uncertainty("demo account unverified or changed")
-                return
-            update_health_status(
-                status="running",
-                account_balance=self.account_status.balance,
-                is_trading_halted=self.account_status.is_trading_halted,
-                open_positions=self.account_status.open_positions_count,
-                mode=mode
-            )
-            self._consume_feedback()
-            self._recover_missing_trade_closures_from_broker()
-            self._update_account_state()
-
-            self._enforce_execution_feedback_integrity()
-
-            if self.account_status.is_stale(max_age_seconds=180):
-                self.account_status.is_trading_halted = True
-                if not self._stale_episode_active:
-                    self._stale_episode_active = True
-                    last_upd = self.account_status.updated_at.isoformat()
-                    now_str = datetime.now(timezone.utc).isoformat()
-                    msg = f"Account state stale. Last update: {last_upd}, Current: {now_str}"
-                    self._insert_risk_event("STATE_STALE", "BLOCK", msg)
-                    logger.warning(msg)
-                    self.metrics.inc("state_stale")
-            elif self._stale_episode_active:
-                self._stale_episode_active = False
-                self._insert_risk_event("STATE_RECOVERED", "INFO", "Account state refreshed; trading unhalted")
-                logger.info("Account state recovered after stale episode.")
-
-            if self._is_new_m15_candle() and not self.account_status.is_trading_halted:
-                self._decision_cycle()
-
-            if self.mock_feedback is not None:
-                simulated = self.mock_feedback.process_pending(account_status=self.account_status)
-                if simulated > 0:
-                    self._consume_feedback()
-                    self._recover_missing_trade_closures_from_broker()
-                    self._update_account_state()
-                    self.mock_feedback.clear_account_snapshot()
-
-            insert_account_metrics(self.account_status, evidence_context=self.evidence_context)
-            self._consecutive_losses_dirty = False
-            self.metrics.inc("decision_cycles")
-
-            count += 1
-            if mode == "smoke":
-                if count >= 1:
-                    break
-            elif iterations > 0 and count >= iterations:
-                break
-
-            time.sleep(5)
+        engine_runtime.run(self, mode, iterations)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

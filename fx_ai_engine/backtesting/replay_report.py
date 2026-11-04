@@ -1,4 +1,8 @@
-"""Metrics, walk-forward windows, Monte Carlo and markdown for unified replay results (plan E5)."""
+"""Metrics, walk-forward windows and markdown for unified replay results (plan E5).
+
+Monte Carlo for reports is ``research.monte_carlo.risk_sweep`` (R5); cost stress is
+``research.cost_stress`` (R4). See ADR 0003.
+"""
 from __future__ import annotations
 
 import math
@@ -102,7 +106,12 @@ def windows(trades: Sequence[Mapping[str, Any]], months: int = 6) -> list[dict[s
 def monte_carlo_drawdown(r_values: Sequence[float], *, risk_per_trade: float = 0.032, trades: int = 30,
                          runs: int = 20000, throttle: Mapping[int, float] | None = None,
                          seed: int = 11) -> dict[str, Any]:
-    """Bootstrap the replay's realised R distribution through the SRS loss throttle."""
+    """Bootstrap the replay's realised R distribution through the SRS loss throttle.
+
+    Kept only as R5's legacy i.i.d. reference kernel (``research.monte_carlo.risk_sweep``
+    reports it as ``legacy_iid_reference``). Reports use ``risk_sweep``, which adds the
+    block bootstrap, the SRS halts and the risk grid (ADR 0003).
+    """
     r_values = [float(x) for x in r_values]
     if not r_values:
         return {}
@@ -171,11 +180,22 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         out.append("### By entry hour (UTC)\n" + _table(sec["by_hour"], "hour"))
         out.append("### Walk-forward windows (half-years)\n")
         out.append(_table({w["window"]: {k: v for k, v in w.items() if k != "window"} for w in sec["windows"]}, "window"))
-        if sec.get("monte_carlo"):
-            mc = sec["monte_carlo"]
-            out.append(f"### Monte Carlo (bootstrap of realised R, {mc['trades_per_run']} trades, risk {mc['risk_per_trade']:.1%})\n"
-                       f"P(max DD > 15%) {mc['p_max_dd_gt_15pct']:.0%}, P(max DD > 20%) {mc['p_max_dd_gt_20pct']:.0%}, "
-                       f"median max DD {mc['median_max_dd']:.1%}, P(below start) {mc['p_final_below_start']:.0%}\n")
+        cs = sec.get("cost_stress") or {}
+        if cs.get("rows") and not cs.get("no_trades"):
+            levels = ", ".join(f"{row['multiple']:g}x {row['expectancy_r']:+.3f}R" for row in cs["rows"])
+            out.append(f"### Cost stress (R4, fixed trade set, spread+slippage+commission scaled)\n"
+                       f"Expectancy {levels}; break-even multiple {cs['breakeven_label']}\n")
+        mc = sec.get("monte_carlo") or {}
+        if mc.get("rows"):
+            base = mc["limits"]["base_risk_pct"]
+            out.append(f"### Monte Carlo (R5 resample of realised R at risk {base:.1%}; full risk sweep in the JSON)\n")
+            out.append("| method | trades | P(DD halt) | P(loss-streak halt) | P(max DD > acceptance) | median max DD |\n"
+                       "| --- | --- | --- | --- | --- | --- |")
+            for row in (r for r in mc["rows"] if r["risk"] == base):
+                out.append(f"| {row['method']} | {row['trades']} | {row['p_drawdown_halt']:.3f} | "
+                           f"{row['p_loss_streak_halt']:.3f} | {row['p_max_dd_gt_acceptance']:.3f} | "
+                           f"{row['max_drawdown']['p50']:.1%} |")
+            out.append("")
     out.append("## Decision funnel\n" + _table({k: {"count": v} for k, v in report["decisions"].items()}, "outcome"))
     out.append("## Candidate funnel (stage 1)\n")
     for sym, f in report["candidate_funnel"].items():

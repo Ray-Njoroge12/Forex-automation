@@ -1,6 +1,8 @@
 # Validation wave 1: integration notes for run_replay.py
 
-Branch `research/validation-wave1` adds the `research/` package without editing `backtesting/run_replay.py`, `unified_replay.py` or `replay_report.py`; another session owns those files. These are the changes the run_replay owner would make to wire the tools in. Nothing below has been applied.
+**Status: applied (ADR 0003, branch `dev/development-wave`).** (a)–(c) and (e) are wired into `backtesting/run_replay.py` as written, with R1 cached through `backtesting/replay_cache.py` (kind `r1_bias_audit`). For (d) the second option was taken: per-section `recost_trades(..., (1.0, 1.5, 2.0, 3.0), scale_commission=True)`; no `stress_3x` scenario was added. Tests: `tests/test_run_replay_gate.py`.
+
+Branch `research/validation-wave1` adds the `research/` package without editing `backtesting/run_replay.py`, `unified_replay.py` or `replay_report.py`; another session owns those files. These are the changes the run_replay owner would make to wire the tools in.
 
 (a) **Gate every replay result.** In `run_replay.main`, after `result = simulate(...)`:
 

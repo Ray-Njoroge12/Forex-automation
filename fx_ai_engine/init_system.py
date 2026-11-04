@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 
+from database import connection as db_connection
 from database import db as db_mod
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -31,12 +32,12 @@ def create_directory_structure(base_path: Path) -> None:
 def initialize_database(db_path: Path) -> None:
     """Initialise the current schema and every idempotent migration."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    previous_path = db_mod.DB_PATH
-    db_mod.DB_PATH = db_path
+    previous_path = db_connection.DB_PATH
+    db_connection.DB_PATH = db_path
     try:
         db_mod.run_all_migrations()
     finally:
-        db_mod.DB_PATH = previous_path
+        db_connection.DB_PATH = previous_path
     logging.info("Database initialized successfully at: %s", db_path)
 
 

@@ -130,6 +130,45 @@ def test_connect_fails_closed_on_stale_status(bridge):
     assert conn.last_error.code == "FILE_BRIDGE_NOT_READY"
 
 
+@pytest.mark.parametrize("timestamp", ["not-a-timestamp", None, "2026-15-42T12:00:00Z"])
+def test_invalid_status_timestamp_fails_closed(bridge, timestamp):
+    path = bridge / "market" / "status.json"
+    payload = json.loads(path.read_text())
+    payload["generated_at"] = timestamp
+    path.write_text(json.dumps(payload))
+    conn = _conn(bridge)
+    assert not conn.connect(retry_count=1)
+    assert conn.last_error.code == "FILE_BRIDGE_NOT_READY"
+
+
+@pytest.mark.parametrize("field,value", [("login", 17), ("server", "Other-Demo"),
+                                         ("account_authenticated", False), ("terminal_connected", False),
+                                         ("account_is_demo", False)])
+def test_account_snapshot_mismatch_fails_closed(bridge, field, value):
+    path = bridge / "feedback" / "account_snapshot.json"
+    payload = json.loads(path.read_text())
+    payload[field] = value
+    path.write_text(json.dumps(payload))
+    conn = _conn(bridge)
+    assert conn.connect(retry_count=1)
+    assert conn.is_demo_account() is None
+    assert "error" in conn.get_account_snapshot()
+    assert conn.get_open_position_tickets() is None
+
+
+def test_account_change_after_connection_is_rejected(bridge):
+    conn = _conn(bridge)
+    assert conn.connect(retry_count=1)
+    status_path = bridge / "market" / "status.json"
+    snapshot_path = bridge / "feedback" / "account_snapshot.json"
+    for path in (status_path, snapshot_path):
+        payload = json.loads(path.read_text())
+        payload["login"] = 123
+        path.write_text(json.dumps(payload))
+    assert conn.is_demo_account() is None
+    assert "error" in conn.get_account_snapshot()
+
+
 def test_fetch_ohlc_returns_mt5_shaped_frame(bridge):
     conn = _conn(bridge)
     df = conn.fetch_ohlc_data("EURUSD", 15, 3)
@@ -150,6 +189,52 @@ def test_fetch_ohlc_fails_closed_when_export_lags_terminal(bridge):
     assert "lags the terminal" in df.attrs["error"]["message"]
 
 
+def _shift_status_bar(bridge: Path, symbol: str, tf: str, delta_seconds: int) -> None:
+    status_path = bridge / "market" / "status.json"
+    status = json.loads(status_path.read_text())
+    status["latest_closed_bars"][symbol][tf] += delta_seconds
+    status_path.write_text(json.dumps(status))
+
+
+def test_fetch_ohlc_accepts_bar_export_one_bar_ahead_of_status(bridge):
+    """Bar-boundary race: the bar file is written on close, status.json up to 5 s earlier."""
+    _shift_status_bar(bridge, "EURUSD", "M15", -900)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert not df.empty, df.attrs.get("error")
+    assert int(df.index[-1].timestamp()) == _last_closed("M15")
+
+
+def test_fetch_ohlc_rejects_bar_export_two_bars_ahead_of_status(bridge):
+    _shift_status_bar(bridge, "EURUSD", "M15", -1800)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "more than one bar ahead" in df.attrs["error"]["message"]
+
+
+def test_fetch_ohlc_rejects_misaligned_bar_export(bridge):
+    _shift_status_bar(bridge, "EURUSD", "M15", -60)
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "more than one bar ahead" in df.attrs["error"]["message"]
+
+
+def test_fetch_ohlc_rejects_one_bar_ahead_export_that_has_not_closed(bridge):
+    """The accepted extra bar must still have closed (close <= now + tolerance)."""
+    path = bridge / "market" / "bars_EURUSD_M15.json"
+    payload = json.loads(path.read_text())
+    unclosed = payload["bars"][-1][0] + 900  # the bar that is still forming at NOW
+    payload["bars"].append([unclosed, 1.1000, 1.1010, 1.0990, 1.1005, 100, 12])
+    path.write_text(json.dumps(payload))
+    df = _conn(bridge).fetch_ohlc_data("EURUSD", 15, 3)
+    assert df.empty
+    assert "ends in the future" in df.attrs["error"]["message"]
+
+
+def test_server_utc_offset_seconds_from_fresh_status(bridge):
+    assert _conn(bridge).server_utc_offset_seconds() == 7200
+    assert _conn(bridge, NOW + timedelta(minutes=5)).server_utc_offset_seconds() is None
+
+
 def test_fetch_ohlc_rejects_inconsistent_ohlc(bridge):
     path = bridge / "market" / "bars_EURUSD_H1.json"
     payload = json.loads(path.read_text())
@@ -164,6 +249,27 @@ def test_fetch_ohlc_rejects_unsupported_timeframe(bridge):
     df = _conn(bridge).fetch_ohlc_data("EURUSD", 1, 5)
     assert df.empty
     assert df.attrs["error"]["code"] == "FILE_BRIDGE_TIMEFRAME_UNSUPPORTED"
+
+
+@pytest.mark.parametrize("latest", [[], {"EURUSD": []}, {"EURUSD": {"M15": True}}])
+def test_malformed_latest_bar_status_fails_closed(bridge, latest):
+    path = bridge / "market" / "status.json"
+    payload = json.loads(path.read_text())
+    payload["latest_closed_bars"] = latest
+    path.write_text(json.dumps(payload))
+    result = _conn(bridge).fetch_ohlc_data("EURUSD", 15)
+    assert result.empty
+    assert result.attrs["error"]["code"] == "FILE_BRIDGE_OHLC_UNAVAILABLE"
+
+
+def test_fractional_bar_time_is_rejected(bridge):
+    path = bridge / "market" / "bars_EURUSD_M15.json"
+    payload = json.loads(path.read_text())
+    payload["bars"][0][0] += 0.5
+    path.write_text(json.dumps(payload))
+    result = _conn(bridge).fetch_ohlc_data("EURUSD", 15)
+    assert result.empty
+    assert "positive integer" in result.attrs["error"]["message"]
 
 
 def test_live_spread_from_quote_snapshot(bridge):
@@ -185,6 +291,16 @@ def test_open_position_tickets_require_consistent_counts(bridge):
     path = bridge / "feedback" / "account_snapshot.json"
     payload = json.loads(path.read_text())
     payload["open_positions_count"] = 2
+    path.write_text(json.dumps(payload))
+    assert _conn(bridge).get_open_position_tickets() is None
+
+
+@pytest.mark.parametrize("tickets,count", [([0], 1), ([True], 1), ([111, 111], 1), ([111], "1")])
+def test_invalid_position_tickets_or_count_are_rejected(bridge, tickets, count):
+    path = bridge / "feedback" / "account_snapshot.json"
+    payload = json.loads(path.read_text())
+    payload["managed_position_tickets"] = tickets
+    payload["open_positions_count"] = count
     path.write_text(json.dumps(payload))
     assert _conn(bridge).get_open_position_tickets() is None
 

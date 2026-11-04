@@ -8,28 +8,56 @@ Usage (from fx_ai_engine/):
 The most recent --holdout-months are reported separately and are never used to
 choose a variant. Every run, including rejected variants, is appended to
 artifacts/experiments/registry.jsonl so that multiple testing is visible.
+
+Every result goes through the R2 authenticity gate (research.authenticity_gate,
+with the R1 bias audit computed once per policy and dataset and cached). The
+gate verdict is written next to the report as <stem>_gate.json, the report's
+first line says whether it is evidence, and the registry row carries
+gate_verdict and evidence_status. --no-gate skips R1/R2 and labels the report
+NOT EVIDENCE (ADR 0003).
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from backtesting import replay_cache
 from backtesting.replay_report import (
-    breakdown, equity_metrics, monte_carlo_drawdown, render_markdown, trade_metrics, windows,
+    breakdown, equity_metrics, render_markdown, trade_metrics, windows,
 )
 from backtesting.unified_replay import (
-    COST_SCENARIOS, EXIT_MODES, SYMBOLS, SimulationConfig, generate_all_candidates, load_csv_frames, simulate,
+    COST_SCENARIOS, DEFAULT_WORKERS, EXIT_MODES, SYMBOLS, SimulationConfig, generate_all_candidates,
+    load_csv_frames, simulate,
 )
 from config_microcapital import apply_agent_threshold_overrides, get_policy_config
 from core.policy.envelope import canonical_policy_hash
 
 PROJECT_ROOT = Path(__file__).parents[1]
 REGISTRY = PROJECT_ROOT / "artifacts" / "experiments" / "registry.jsonl"
+DEFAULT_CACHE_DIR = PROJECT_ROOT / "artifacts" / "replay" / "cache"
+COST_STRESS_MULTIPLES = (1.0, 1.5, 2.0, 3.0)
+R1_CACHE_KIND = "r1_bias_audit"
+R1_MAX_DECISIONS = 60  # research.bias_audit defaults
+R1_SEED = 7
+# Code R1 runs besides the candidate code already in replay_cache.CANDIDATE_CODE_PATHS.
+R1_CODE_PATHS = ("research/bias_audit.py", "research/common.py",
+                 "core/agents/adversarial_agent.py", "core/agents/portfolio_manager.py")
+NO_GATE_LINE = "# NOT EVIDENCE: authenticity gate skipped (--no-gate)"
+
+
+def _raise_system_exit(signum, _frame) -> None:
+    raise SystemExit(128 + signum)
+
+
+def install_sigterm_handler() -> None:
+    """Turn SIGTERM into SystemExit so worker pools are terminated on the way out."""
+    signal.signal(signal.SIGTERM, _raise_system_exit)
 
 # Ablations of the loosened live parameters against the coded defaults (assessment section 4.1).
 VARIANTS: dict[str, dict] = {
@@ -61,8 +89,13 @@ def _sha(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def _section(trades, equity, start_balance, label_range, risk):
+def _section(trades, equity, start_balance, label_range, *, policy, frames, cost):
+    # research imports run_replay.VARIANTS (research.common), so import it here, not at module level.
+    from research.cost_stress import recost_trades
+    from research.monte_carlo import risk_sweep
+
     m = trade_metrics(trades)
+    by_exit = sorted(trades, key=lambda t: pd.Timestamp(t["exit_time"]))
     return {
         "range": label_range,
         "trades": m,
@@ -70,8 +103,53 @@ def _section(trades, equity, start_balance, label_range, risk):
         "by_symbol": breakdown(trades, "symbol"),
         "by_hour": breakdown(trades, "hour_utc"),
         "windows": windows(trades),
-        "monte_carlo": monte_carlo_drawdown([t["r_multiple"] for t in trades], risk_per_trade=risk) if trades else {},
+        "cost_stress": recost_trades(trades, frames, cost, COST_STRESS_MULTIPLES, scale_commission=True),
+        "monte_carlo": risk_sweep([t["r_multiple"] for t in by_exit], policy=policy,
+                                  exit_times=[t["exit_time"] for t in by_exit]) if trades else {},
     }
+
+
+def _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, end, cache_dir):
+    """R1 depends only on the policy, the data and the sample settings: compute once and cache."""
+    from research import bias_audit
+
+    parts = {"policy_hash": policy_hash, "datasets": dataset_hashes, "symbols": list(symbols),
+             "start": start.isoformat(), "end": end.isoformat(), "max_decisions": R1_MAX_DECISIONS,
+             "seed": R1_SEED, "r1_code": replay_cache.code_fingerprint(PROJECT_ROOT, R1_CODE_PATHS)}
+    key = replay_cache.cache_key(R1_CACHE_KIND, **parts)
+    meta = replay_cache.key_parts(R1_CACHE_KIND, **parts)
+    if cache_dir is not None:
+        cached = replay_cache.load(cache_dir, R1_CACHE_KIND, key, meta)
+        if cached is not None:
+            return cached
+    report = bias_audit.run_bias_audit(frames, policy, COST_SCENARIOS["base"], start=start, end=end,
+                                       max_decisions=R1_MAX_DECISIONS, seed=R1_SEED)
+    report = json.loads(json.dumps(report, default=str))  # same shape whether computed or cached
+    if cache_dir is not None:
+        replay_cache.store(cache_dir, R1_CACHE_KIND, key, report, meta)
+    return report
+
+
+def _display_path(path: Path) -> str:
+    """Path relative to fx_ai_engine/ when the report is inside it (--out may point elsewhere)."""
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _skipped_gate(policy_hash: str, context: dict) -> dict:
+    return {"tool": "r2_authenticity_gate", "verdict": "SKIPPED", "evidence_status": "NOT_EVIDENCE",
+            "reasons": ["GATE_SKIPPED: run with --no-gate"], "warnings": [], "checks": [],
+            "policy_hash": policy_hash, **context}
+
+
+def _gate_line(gate: dict) -> str:
+    from research.authenticity_gate import render_gate_markdown
+
+    if gate["verdict"] == "SKIPPED":
+        return NO_GATE_LINE
+    return render_gate_markdown(gate).splitlines()[0]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -83,19 +161,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--holdout-months", type=int, default=6)
     parser.add_argument("--start", default=None, help="ISO start date (default: data start + 60 days warm-up)")
     parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="candidate worker processes (capped by FX_MAX_WORKERS)")
+    parser.add_argument("--symbols", nargs="+", default=list(SYMBOLS), choices=SYMBOLS)
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR,
+                        help="candidate cache keyed by policy, data, cost, range and code hashes")
+    parser.add_argument("--no-cache", action="store_true", help="always regenerate candidates")
     parser.add_argument("--halts", choices=("srs", "edge"), default="srs",
                         help="srs: SRS daily/weekly/drawdown/loss-streak halts as specified; "
                              "edge: those account halts disabled so the full period measures strategy edge "
                              "(position limits, exposure cap, correlation and throttle unchanged)")
+    parser.add_argument("--no-gate", action="store_true",
+                        help="skip the R1 bias audit and R2 authenticity gate; reports are labelled NOT EVIDENCE")
     args = parser.parse_args(argv)
+    install_sigterm_handler()
+    symbols = tuple(s for s in SYMBOLS if s in set(args.symbols))
+    cache_dir = None if args.no_cache else args.cache_dir.resolve()
 
     data_dir = args.data_dir.resolve()
     datasets = sorted(p.name for p in data_dir.glob("*.csv"))
     dataset_hashes = {p.name: _sha(p) for p in sorted(data_dir.glob("*.csv"))}
-    frames = load_csv_frames(data_dir)
-    m15_start = max(frames[s]["M15"].index[0] for s in SYMBOLS)
-    data_end = min(frames[s]["M15"].index[-1] for s in SYMBOLS) + pd.Timedelta(minutes=15)
+    frames = load_csv_frames(data_dir, symbols=symbols)
+    m15_start = max(frames[s]["M15"].index[0] for s in symbols)
+    data_end = min(frames[s]["M15"].index[-1] for s in symbols) + pd.Timedelta(minutes=15)
     start = pd.Timestamp(args.start, tz="UTC") if args.start else m15_start + pd.Timedelta(days=60)
     holdout_start = data_end - pd.DateOffset(months=args.holdout_months)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -108,9 +196,14 @@ def main(argv: list[str] | None = None) -> int:
         policy = apply_agent_threshold_overrides(get_policy_config(mode_id="core_srs", env={}), VARIANTS[variant] or None)
         policy_hash = canonical_policy_hash(policy)
         print(f"[{variant}] generating candidates {start.date()} .. {data_end.date()} ...", flush=True)
-        candidates, funnels = generate_all_candidates(data_dir, policy, COST_SCENARIOS["base"],
-                                                      start=start, end=data_end, workers=args.workers)
+        candidates, funnels = generate_all_candidates(data_dir, policy, COST_SCENARIOS["base"], symbols=symbols,
+                                                      start=start, end=data_end, workers=args.workers,
+                                                      cache_dir=cache_dir)
         print(f"[{variant}] {len(candidates)} candidates", flush=True)
+        r1_report = None
+        if not args.no_gate:
+            print(f"[{variant}] R1 bias audit ...", flush=True)
+            r1_report = _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, data_end, cache_dir)
         for exit_mode in args.exit_modes:
             for cost_name in args.costs:
                 cost = COST_SCENARIOS[cost_name]
@@ -123,22 +216,33 @@ def main(argv: list[str] | None = None) -> int:
                 hold = [t for t in result.trades if pd.Timestamp(t["entry_time"]) >= holdout_start]
                 eq = result.equity
                 label = f"{variant}__{exit_mode}__{args.halts}"
-                risk = float(policy["BASE_RISK_PCT"])
+                gate_context = {"variant": label, "dataset_sha256_16": dataset_hashes}
+                if r1_report is None:
+                    gate = _skipped_gate(policy_hash, {**gate_context, "exit_mode": exit_mode, "cost": cost.name})
+                else:
+                    from research.authenticity_gate import audit_replay
+
+                    gate = audit_replay(frames=frames, policy=policy, cost=cost, candidates=candidates, result=result,
+                                        exit_mode=exit_mode, r1_report=r1_report, context=gate_context)
+                section_kw = {"policy": policy, "frames": frames, "cost": cost}
                 report = {
                     "variant": label, "cost": cost_name, "generated_at": run_id, "policy_hash": policy_hash,
                     "datasets": datasets, "dataset_sha256_16": dataset_hashes, "assumptions": ASSUMPTIONS,
                     "holdout_start": holdout_start.isoformat(),
+                    "gate_verdict": gate["verdict"], "evidence_status": gate["evidence_status"],
                     "development": _section(dev, eq[eq.index < holdout_start], 100_000.0,
-                                            f"{start.date()} to {holdout_start.date()}", risk),
+                                            f"{start.date()} to {holdout_start.date()}", **section_kw),
                     "holdout": _section(hold, eq[eq.index >= holdout_start], float(eq[eq.index < holdout_start]["balance"].iloc[-1]) if (eq.index < holdout_start).any() else 100_000.0,
-                                        f"{holdout_start.date()} to {data_end.date()}", risk),
+                                        f"{holdout_start.date()} to {data_end.date()}", **section_kw),
                     "decisions": dict(result.decisions), "risk_events": result.risk_events[:200],
                     "candidate_funnel": {s: dict(f) for s, f in funnels.items()},
                     "overrides": VARIANTS[variant],
                 }
                 stem = out_root / f"{label}__{cost_name}"
+                stem.with_name(stem.name + "_gate.json").write_text(json.dumps(gate, indent=2, default=str),
+                                                                    encoding="utf-8")
                 stem.with_suffix(".json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-                stem.with_suffix(".md").write_text(render_markdown(report), encoding="utf-8")
+                stem.with_suffix(".md").write_text(_gate_line(gate) + "\n\n" + render_markdown(report), encoding="utf-8")
                 pd.DataFrame(result.trades).to_csv(stem.with_name(stem.name + "_trades.csv"), index=False)
                 d = report["development"]["trades"]
                 h = report["holdout"]["trades"]
@@ -146,12 +250,14 @@ def main(argv: list[str] | None = None) -> int:
                        "datasets": dataset_hashes, "dev": {k: d.get(k) for k in ("trades", "win_rate", "expectancy_r", "profit_factor")},
                        "dev_max_dd": report["development"]["equity"].get("max_drawdown"),
                        "holdout": {k: h.get(k) for k in ("trades", "win_rate", "expectancy_r", "profit_factor")},
-                       "report": str(stem.with_suffix(".md").relative_to(PROJECT_ROOT))}
+                       "gate_verdict": gate["verdict"], "evidence_status": gate["evidence_status"],
+                       "report": _display_path(stem.with_suffix(".md"))}
                 with REGISTRY.open("a", encoding="utf-8") as reg:
                     reg.write(json.dumps(row, default=str) + "\n")
                 summary.append(row)
                 print(f"  {label:34} {cost_name:12} dev n={d.get('trades')} E={d.get('expectancy_r')} PF={d.get('profit_factor')} "
-                      f"DD={row['dev_max_dd']} | holdout n={h.get('trades')} E={h.get('expectancy_r')}", flush=True)
+                      f"DD={row['dev_max_dd']} | holdout n={h.get('trades')} E={h.get('expectancy_r')} "
+                      f"| gate {gate['verdict']} ({gate['evidence_status']})", flush=True)
 
     (out_root / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     print(f"Reports: {out_root}")

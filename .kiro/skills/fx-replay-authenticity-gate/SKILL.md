@@ -54,7 +54,7 @@ Exit code 0 means PASS, 1 means FAIL. In code, `research.authenticity_gate.audit
 - The fixture verdict is FAIL (only `R4_COST_STRESS`, mean R < 0). That shows the gate works; it says nothing about the strategy.
 - Re-running with a different `--max-decisions` or `--seed` changes the R1 sample; record both.
 - Fill tolerances allow 5e-6 for prices printed with 5 decimals; do not widen them to make a run pass.
-- `run_replay.py` does not call the gate yet; see `fx_ai_engine/docs/research/validation-wave1-integration-notes.md`.
+- `backtesting.run_replay` gates every result (ADR 0003): it writes `<stem>_gate.json`, puts the gate's first line at the top of the report, and adds `gate_verdict`/`evidence_status` to the registry row. R1 is computed once per policy hash and dataset hashes (60 decisions per symbol, seed 7) and cached under `artifacts/replay/cache/r1_bias_audit/`. `--no-gate` skips R1/R2 and labels the report `# NOT EVIDENCE: authenticity gate skipped (--no-gate)`.
 
 ## Inspiration
 

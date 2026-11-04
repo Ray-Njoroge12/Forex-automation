@@ -10,6 +10,7 @@ import pytest
 from core.evidence import EvidenceContext
 from core.account_status import AccountStatus
 from core.schemas import SchemaError, validate_execution_feedback
+from database import connection as db_connection
 from database import db
 from main import Engine, _execution_feedback_dedupe_key
 
@@ -28,7 +29,7 @@ def ledger(tmp_path, monkeypatch):
         finally:
             conn.close()
 
-    monkeypatch.setattr(db, "get_conn", connection)
+    monkeypatch.setattr(db_connection, "get_conn", connection)
     db.initialize_schema()
     evidence = EvidenceContext("stream", "core", "mt5", "account")
     with connection() as conn:
@@ -194,7 +195,7 @@ def test_engine_retry_after_commit_does_not_repeat_alert(ledger, tmp_path, monke
                                       collect_trade_exits=lambda: [], delete_artifact=Mock())
     engine.router = SimpleNamespace(release_lock=Mock())
     alert = Mock()
-    monkeypatch.setattr("main.alert_trade_execution", alert)
+    monkeypatch.setattr("application.feedback_service.alert_trade_execution", alert)
     engine._consume_feedback()
     engine._consume_feedback()
     assert alert.call_count == 1

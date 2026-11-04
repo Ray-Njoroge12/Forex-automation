@@ -57,3 +57,6 @@ NUL
 
 # Large replay datasets (manifests and coverage stay tracked)
 fx_ai_engine/artifacts/datasets/**/*.csv
+# Replay candidate cache and detached job folders (regenerable, local only)
+fx_ai_engine/artifacts/replay/cache/
+fx_ai_engine/artifacts/jobs/

@@ -49,6 +49,27 @@ def install_calendar(source: Path, *, now_utc: datetime | None = None) -> Path:
         missing = {"datetime_utc", "currency", "impact", "event"} - set(item)
         if missing:
             raise ValueError(f"calendar event {index} missing fields: {sorted(missing)}")
+    if source.name == "calendar.json" and source.parent.name == "market":
+        # The EA's list contains only events, so missing currencies cannot prove
+        # whether a query returned zero results or failed. Require the paired
+        # status from an EA that explicitly certifies a complete refresh.
+        try:
+            status = _load_json(source.parent / "status.json")
+            if not isinstance(status, Mapping) or status.get("calendar_complete") is not True:
+                raise ValueError("MT5 calendar query completeness is unverified")
+            if status.get("terminal_connected") is not True or status.get("account_is_demo") is not True:
+                raise ValueError("MT5 calendar status is not from a connected demo terminal")
+            if type(status.get("calendar_high_impact_events")) is not int or status["calendar_high_impact_events"] != len(payload):
+                raise ValueError("MT5 calendar event count does not match status")
+            stamp = datetime.fromisoformat(str(status["calendar_generated_at"]).replace("Z", "+00:00"))
+            current = now_utc or datetime.now(timezone.utc)
+            if stamp.tzinfo is None or current.tzinfo is None:
+                raise ValueError("MT5 calendar timestamps must be timezone-aware")
+            age = (current - stamp).total_seconds()
+            if age < -5 or age > 7200:
+                raise ValueError("MT5 calendar export is stale or from the future")
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"MT5 calendar completeness status unavailable: {exc}") from exc
     quality = evaluate_calendar_freshness(payload, now_utc=now_utc)
     if not quality.approved:
         raise ValueError(f"{quality.reason_code}: {quality.details}")

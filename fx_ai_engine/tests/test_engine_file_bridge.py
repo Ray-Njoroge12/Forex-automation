@@ -10,6 +10,7 @@ import pytest
 from core.file_bridge_connection import FileBridgeConnection
 from core.metrics import init_metrics
 from core.observability import init_tracing
+from database import connection as db_connection
 from database import db
 from tests.test_file_bridge_connection import build_bridge
 
@@ -28,18 +29,19 @@ def isolated_db(tmp_path, monkeypatch):
         finally:
             conn.close()
 
-    monkeypatch.setattr(db, "get_conn", connection)
+    monkeypatch.setattr(db_connection, "get_conn", connection)
     db.initialize_schema()
     return connection
 
 
 def test_engine_runs_one_loop_on_file_bridge(tmp_path, monkeypatch, isolated_db):
     import main
+    from application import engine_runtime
 
     bridge_dir = build_bridge(tmp_path / "bridge", datetime.now(timezone.utc), open_tickets=())
     monkeypatch.delenv("USE_MT5_MOCK", raising=False)
     monkeypatch.setenv("BRIDGE_BASE_PATH", str(bridge_dir))
-    monkeypatch.setattr(main, "update_health_status", lambda **_: None)
+    monkeypatch.setattr(engine_runtime, "update_health_status", lambda **_: None)
 
     conn = FileBridgeConnection(bridge_dir)
     assert conn.connect(retry_count=1)

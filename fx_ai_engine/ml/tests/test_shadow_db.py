@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.evidence import EvidenceContext
+from database import connection as db_connection
 from database import db as db_mod
 
 
@@ -25,9 +26,9 @@ def _patch_db(tmp_path, monkeypatch) -> Path:
     temp_db = tmp_path / "trading_state.db"
     temp_schema = tmp_path / "schema.sql"
     temp_schema.write_text(db_mod.SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    monkeypatch.setattr(db_mod, "DB_PATH", temp_db)
-    monkeypatch.setattr(db_mod, "SCHEMA_PATH", temp_schema)
-    monkeypatch.setattr(db_mod, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
+    monkeypatch.setattr(db_connection, "DB_PATH", temp_db)
+    monkeypatch.setattr(db_connection, "SCHEMA_PATH", temp_schema)
+    monkeypatch.setattr(db_connection, "get_conn", lambda db_path=temp_db: _temp_conn(temp_db))
     return temp_db
 
 
