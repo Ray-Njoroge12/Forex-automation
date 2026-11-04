@@ -10,6 +10,10 @@ input int PollIntervalSeconds = 1;
 input string ExpectedPolicyHash = "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8";
 input bool RequirePolicyHashPin = true; // Fail closed until the deployed policy hash is pinned.
 input bool RequireDemoAccount = true; // Demo is the default; do not send orders to other account types.
+input string SymbolSuffix = ""; // Appended to canonical symbol names to form the broker symbol (for example "c" gives EURUSDc).
+input bool AllowLiveAccount = false; // Real accounts only trade when this is true, RequireDemoAccount is false and both caps below are set.
+input double LiveMaxLotPerOrder = 0.0; // Lot ceiling per order (0 = off; must be > 0 on a real account).
+input int LiveMaxOrdersPerDay = 0; // Orders per UTC day (0 = off; must be > 0 on a real account).
 
 // --- Trade Management Inputs ---
 input double BreakEvenTriggerR = 1.0;     // Move SL to entry when profit reaches this R-multiple
@@ -24,7 +28,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.04-1"
+#define EA_VERSION "2026.11.04-2"
 
 CTrade trade;
 
@@ -34,6 +38,11 @@ ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
 #define EXPORT_SYMBOLS 6
 #define EXPORT_TFS 4
 datetime g_last_bar_export[EXPORT_SYMBOLS][EXPORT_TFS];
+// Broker names are canonical + SymbolSuffix. Everything the EA writes uses the canonical names.
+string   g_broker_symbols[EXPORT_SYMBOLS];
+bool     g_symbol_resolved[EXPORT_SYMBOLS];
+bool     g_symbols_ok = false;
+string   g_symbol_error_log = "";
 string   g_calendar_generated_at = "";
 int      g_calendar_event_count = -1;
 bool     g_calendar_complete = false;
@@ -158,6 +167,8 @@ int OnInit()
    RestoreManagementState();
    EventSetTimer(PollIntervalSeconds);
    LogDebug("OnInit: FX_Execution Started version=" + EA_VERSION + " magic=" + IntegerToString(MagicNumber));
+   ResolveSymbols();
+   LogDebug("OnInit: symbol_suffix='" + SymbolSuffix + "' symbols_ok=" + (g_symbols_ok ? "true" : "false"));
    WriteAccountSnapshot();
    ExportMarketData(true);
    return(INIT_SUCCEEDED);
@@ -277,10 +288,77 @@ bool IsExportSymbol(const string sym)
    return false;
 }
 
+// Canonical name -> broker name. Used for every MT5 call.
+string BrokerSymbol(const string canonical)
+{
+   return canonical + SymbolSuffix;
+}
+
+// Broker name -> index of the canonical symbol, or -1 when it is not one of the six.
+int ExportIndexForBrokerSymbol(const string broker)
+{
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+      if(broker == g_symbols[i] + SymbolSuffix) return i;
+   return -1;
+}
+
+// Broker name -> canonical name for anything the EA writes. Exact match only
+// (no suffix stripping), so other symbols pass through unchanged.
+string CanonicalSymbol(const string name)
+{
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+      if(name == g_symbols[i] + SymbolSuffix) return g_symbols[i];
+   return name;
+}
+
+// Selects the six broker symbols. Logs only when the set of failures changes.
+bool ResolveSymbols()
+{
+   bool allOk = true;
+   string failed = "";
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+   {
+      g_broker_symbols[i] = BrokerSymbol(g_symbols[i]);
+      g_symbol_resolved[i] = SymbolSelect(g_broker_symbols[i], true);
+      if(!g_symbol_resolved[i])
+      {
+         allOk = false;
+         if(failed != "") failed += ",";
+         failed += g_symbols[i] + "->" + g_broker_symbols[i];
+      }
+   }
+   g_symbols_ok = allOk;
+   if(failed != g_symbol_error_log)
+   {
+      g_symbol_error_log = failed;
+      if(failed != "")
+         LogDebug("Symbols not resolved (canonical->broker): " + failed);
+      else
+         LogDebug("All symbols resolved with suffix '" + SymbolSuffix + "'");
+   }
+   return allOk;
+}
+
+string BuildSymbolErrorsJson()
+{
+   string out = "[";
+   int n = 0;
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+   {
+      if(g_symbol_resolved[i]) continue;
+      if(n > 0) out += ",";
+      out += "\"" + g_symbols[i] + "\"";
+      n++;
+   }
+   return out + "]";
+}
+
 // Writes closed bars (shift >= 1, oldest first) when a new bar has closed.
+// The MT5 calls use the broker name; the file name and JSON use the canonical name.
 bool ExportBars(const int si, const int ti, const long offset)
 {
-   string sym = g_symbols[si];
+   string canonical = g_symbols[si];
+   string sym = g_broker_symbols[si];
    ENUM_TIMEFRAMES tf = g_tfs[ti];
    datetime lastClosed = iTime(sym, tf, 1);
    if(lastClosed <= 0)
@@ -295,7 +373,7 @@ bool ExportBars(const int si, const int ti, const long offset)
       return false; // history still synchronising; retry on the next timer tick
 
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   string payload = "{\"schema_version\":1,\"symbol\":\"" + sym + "\",\"timeframe\":\"" + TfName(tf) + "\",";
+   string payload = "{\"schema_version\":1,\"symbol\":\"" + canonical + "\",\"timeframe\":\"" + TfName(tf) + "\",";
    payload += "\"generated_at\":\"" + IsoTimestampUtc() + "\",\"server_utc_offset_seconds\":" + IntegerToString(offset) + ",";
    payload += "\"columns\":[\"time_utc\",\"open\",\"high\",\"low\",\"close\",\"tick_volume\",\"spread_points\"],\"bars\":[";
    for(int i = 0; i < n; i++)
@@ -308,10 +386,10 @@ bool ExportBars(const int si, const int ti, const long offset)
    }
    payload += "]}";
 
-   string path = MarketFolder() + "\\bars_" + sym + "_" + TfName(tf) + ".json";
+   string path = MarketFolder() + "\\bars_" + canonical + "_" + TfName(tf) + ".json";
    if(!PublishAtomic(path, payload))
    {
-      LogDebug("Bar export failed: " + sym + " " + TfName(tf));
+      LogDebug("Bar export failed: " + canonical + " " + TfName(tf));
       return false;
    }
    g_last_bar_export[si][ti] = lastClosed;
@@ -336,6 +414,9 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"calendar_generated_at\":\"" + g_calendar_generated_at + "\",";
    payload += "\"calendar_high_impact_events\":" + IntegerToString(g_calendar_event_count) + ",";
    payload += "\"calendar_complete\":" + (g_calendar_complete ? "true" : "false") + ",";
+   payload += "\"symbol_suffix\":\"" + JsonEscape(SymbolSuffix) + "\",";
+   payload += "\"symbols_ok\":" + (g_symbols_ok ? "true" : "false") + ",";
+   payload += "\"symbol_errors\":" + BuildSymbolErrorsJson() + ",";
    payload += "\"latest_closed_bars\":{";
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
@@ -344,7 +425,7 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
       for(int t = 0; t < EXPORT_TFS; t++)
       {
          if(t > 0) payload += ",";
-         datetime closed = iTime(g_symbols[s], g_tfs[t], 1);
+         datetime closed = iTime(g_broker_symbols[s], g_tfs[t], 1);
          long closedUtc = (closed > 0) ? (long)closed - offset : 0;
          payload += "\"" + TfName(g_tfs[t]) + "\":" + IntegerToString(closedUtc);
       }
@@ -361,12 +442,13 @@ void WriteSymbolSpecs()
    bool first = true;
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
-      string sym = g_symbols[s];
+      string canonical = g_symbols[s];
+      string sym = g_broker_symbols[s];
       if(!SymbolSelect(sym, true))
          continue;
       if(!first) payload += ",";
       first = false;
-      payload += "\"" + sym + "\":{";
+      payload += "\"" + canonical + "\":{";
       payload += "\"digits\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_DIGITS)) + ",";
       payload += "\"point\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_POINT), 10) + ",";
       payload += "\"tick_size\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 10) + ",";
@@ -380,7 +462,8 @@ void WriteSymbolSpecs()
       payload += "\"filling_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_FILLING_MODE)) + ",";
       payload += "\"trade_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE)) + ",";
       payload += "\"swap_long\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4) + ",";
-      payload += "\"swap_short\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4);
+      payload += "\"swap_short\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4) + ",";
+      payload += "\"broker_symbol\":\"" + JsonEscape(sym) + "\"";
       payload += "}";
    }
    payload += "}}";
@@ -407,9 +490,10 @@ void WriteDealHistory(const long offset)
    {
       ulong d = HistoryDealGetTicket(i);
       if(d == 0) continue;
-      string sym = HistoryDealGetString(d, DEAL_SYMBOL);
-      if(!IsExportSymbol(sym)) continue;
-      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      string brokerSym = HistoryDealGetString(d, DEAL_SYMBOL);
+      int symIdx = ExportIndexForBrokerSymbol(brokerSym);
+      if(symIdx < 0) continue;
+      int digits = (int)SymbolInfoInteger(brokerSym, SYMBOL_DIGITS);
       long timeMscUtc = HistoryDealGetInteger(d, DEAL_TIME_MSC) - offset * 1000;
       if(written > 0) payload += ",";
       payload += "{\"ticket\":" + StringFormat("%I64u", d);
@@ -418,7 +502,7 @@ void WriteDealHistory(const long offset)
       payload += ",\"time_msc\":" + IntegerToString(timeMscUtc);
       payload += ",\"type\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_TYPE));
       payload += ",\"entry\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_ENTRY));
-      payload += ",\"symbol\":\"" + sym + "\"";
+      payload += ",\"symbol\":\"" + g_symbols[symIdx] + "\"";
       payload += ",\"volume\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_VOLUME), 8);
       payload += ",\"price\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PRICE), digits);
       payload += ",\"profit\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PROFIT), 2);
@@ -519,6 +603,7 @@ void ExportMarketData(const bool force)
    }
    if(force || now - lastSpecs >= 60)
    {
+      ResolveSymbols();
       WriteSymbolSpecs();
       lastSpecs = now;
    }
@@ -840,12 +925,13 @@ void WriteMarketQuoteSnapshot()
    datetime serverNow = TimeTradeServer();
    for(int i = 0; i < ArraySize(symbols); i++)
    {
+      string brokerSym = BrokerSymbol(symbols[i]);
       MqlTick tick;
-      if(serverNow <= 0 || !SymbolInfoTick(symbols[i], tick) || tick.time <= 0 || tick.bid <= 0.0 || tick.ask < tick.bid)
+      if(serverNow <= 0 || !SymbolInfoTick(brokerSym, tick) || tick.time <= 0 || tick.bid <= 0.0 || tick.ask < tick.bid)
          continue;
       long tickAge = (long)(serverNow - tick.time);
       if(tickAge < 0) continue;
-      int digits = (int)SymbolInfoInteger(symbols[i], SYMBOL_DIGITS);
+      int digits = (int)SymbolInfoInteger(brokerSym, SYMBOL_DIGITS);
       if(digits < 0 || digits > 10) continue;
       if(!first) payload += ",";
       payload += "{\"symbol\":\"" + symbols[i] + "\",\"bid\":" + DoubleToString(tick.bid, digits);
@@ -872,7 +958,7 @@ bool GetFirstPendingSignalFile(string &fileName)
 
 double PipValue(string sym)
 {
-   if(StringFind(sym, "JPY") >= 0)
+   if(StringFind(CanonicalSymbol(sym), "JPY") >= 0)
       return 0.01;
    return 0.0001;
 }
@@ -1112,7 +1198,7 @@ void WriteAccountSnapshot()
       if(PositionGetTicket(i) <= 0)
          continue;
       floating += PositionGetDouble(POSITION_PROFIT);
-      string sym = PositionGetString(POSITION_SYMBOL);
+      string sym = CanonicalSymbol(PositionGetString(POSITION_SYMBOL));
       string token = "|" + sym + "|";
       if(StringFind(seen, token) < 0)
       {
@@ -1567,7 +1653,7 @@ void ProcessPendingSignal()
       return;
    }
 
-   string tradeId, symbol, direction;
+   string tradeId, canonicalSymbol, direction;
    double riskPercent = 0.0;
    double stopPips = 0.0;
    double takeProfitPips = 0.0;
@@ -1600,7 +1686,7 @@ void ProcessPendingSignal()
       FileDelete(filePath);
       return;
    }
-   if(!ExtractJsonString(content, "symbol", symbol)) { LogDebug("JSON fail: sym"); return; }
+   if(!ExtractJsonString(content, "symbol", canonicalSymbol)) { LogDebug("JSON fail: sym"); return; }
    if(!ExtractJsonString(content, "direction", direction)) { LogDebug("JSON fail: dir"); return; }
    if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) { LogDebug("JSON fail: risk"); return; }
    if(!ExtractJsonDouble(content, "stop_pips", stopPips)) { LogDebug("JSON fail: stop"); return; }
@@ -1634,6 +1720,20 @@ void ProcessPendingSignal()
       FileDelete(filePath);
       return;
    }
+
+   // Symbol gate: all six broker symbols must resolve (re-checked now so the decision is current).
+   ResolveSymbols();
+   if(!g_symbols_ok)
+   {
+      LogDebug("Symbol gate reject: unresolved " + g_symbol_error_log + " suffix='" + SymbolSuffix + "' trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SYMBOL", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   // Signals carry canonical names. From here on `symbol` is the broker name,
+   // which every MT5 call below uses.
+   string symbol = BrokerSymbol(canonicalSymbol);
+
    ExtractJsonDouble(content, "lot", requestedLot);
    ExtractJsonString(content, "order_type", orderType);
    ExtractJsonDouble(content, "limit_price", limitPrice);
@@ -1663,7 +1763,7 @@ void ProcessPendingSignal()
       tpModeStr = "FIXED";
    }
 
-   LogDebug("Parsed symbol: " + symbol + " dir: " + direction + " order_type: " + orderType);
+   LogDebug("Parsed symbol: " + canonicalSymbol + " broker: " + symbol + " dir: " + direction + " order_type: " + orderType);
 
    if(!SymbolSelect(symbol, true))
    {
