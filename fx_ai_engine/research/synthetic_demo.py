@@ -19,6 +19,9 @@ Planted effects (all listed in manifest.json):
     SYN_MISSING (closed row with no deal and no feedback), SYN_OPEN (still
     open), and a demo-matrix deal SYN_MATRIX with no trades row.
 The bar path is a seeded random walk; it is not conditioned on trade outcomes.
+R: the planted outcome (manifest ``r_multiple``) is net R, as in the replay. The DB and
+exit files store ``r_multiple`` the way the EA does, gross of commission
+(``ea_r_multiple`` in the manifest), so the tools must compute net R from the deals.
 
 Usage (from fx_ai_engine/):
     USE_MT5_MOCK=1 ../.venv/bin/python -m research.synthetic_demo --out ../tmp/wave3-fixture --seed 3
@@ -50,7 +53,8 @@ BAR_SPREAD_POINTS = 3
 BALANCE_USD = 10_000.0
 REPLAY_ROWS = 200
 REPLAY_START = pd.Timestamp("2025-01-06T00:00:00Z")
-WIN_PROB, WIN_R, LOSS_R = 0.35, 2.2, -1.0
+# Winners hit the locked minimum R:R, read from the policy (never typed in).
+WIN_PROB, WIN_R, LOSS_R = 0.35, float(get_policy_config(mode_id="core_srs", env={})["MIN_RISK_REWARD"]), -1.0
 
 SIGNAL_DELAY_S = 3
 ENTRY_DELAY_S = 6
@@ -186,6 +190,9 @@ def _plan_trades(rng: np.random.Generator, bars: dict[str, dict[pd.Timestamp, li
             exit_pts, comment = fill_pts + s * int(round(stop * MANUAL_EXIT_R * pt_per_pip)), ""
         price = fill_pts * point_size(symbol)
         lots = round(risk_usd / (stop * pip_value_usd_per_lot(symbol, price)), 2)
+        profit_loss = round(r * risk_usd, 2)
+        commission_rt = 2 * round(COST_SCENARIOS["base"].commission_per_lot_usd / 2.0 * lots, 2)
+        ea_r = 0.0 if kind == "SYN_OPEN" else round((profit_loss + commission_rt) / risk_usd, 4)
 
         decision_time = bar_close + pd.Timedelta(seconds=SIGNAL_DELAY_S)
         entry_time = bar_close + pd.Timedelta(seconds=EXEC_DELAY_S if kind == "SYN_EXEC" else ENTRY_DELAY_S)
@@ -195,7 +202,7 @@ def _plan_trades(rng: np.random.Generator, bars: dict[str, dict[pd.Timestamp, li
             "bar_close": bar_close, "decision_time": decision_time, "entry_time": entry_time,
             "exit_time": None if kind == "SYN_OPEN" else exit_time, "duration_bars": duration_bars,
             "stop_pips": float(stop), "tp_pips": tp_pips, "adx": adx, "rr": rr, "risk_pct": risk_pct,
-            "risk_usd": risk_usd, "lots": lots, "r_multiple": r, "profit_loss": round(r * risk_usd, 2),
+            "risk_usd": risk_usd, "lots": lots, "r_multiple": r, "ea_r_multiple": ea_r, "profit_loss": profit_loss,
             "bid_open_pts": bid_open, "spread_pts": spread_pts, "slip_pts": slip_pts, "fill_pts": fill_pts,
             "exit_pts": exit_pts, "exit_kind": exit_kind, "exit_comment": comment,
             "position_ticket": 59_200_000_000 + idx, "entry_ticket": 58_800_000_000 + 2 * idx,
@@ -274,7 +281,7 @@ def _write_db(path: Path, trades: list[dict]) -> None:
                  DEFAULT_STREAM, "core_srs", "mt5", "synthetic:fixture", sym, t["direction"], "MARKET", t["lots"],
                  round(t["fill_pts"] * pt, 5), t["stop_pips"], t["tp_pips"], t["risk_pct"],
                  "TRENDING_BULL" if t["direction"] == "BUY" else "TRENDING_BEAR", status, reason, t["profit_loss"],
-                 t["r_multiple"], 0.0, BAR_SPREAD_POINTS * pt / pip_size(sym), spread_price if has_deal else None,
+                 t["ea_r_multiple"], 0.0, BAR_SPREAD_POINTS * pt / pip_size(sym), spread_price if has_deal else None,
                  slip_price if has_deal else None, _iso_z(t["entry_time"]) if has_deal else None,
                  _iso(t["decision_time"]), _iso(t["exit_time"]) if t["exit_time"] is not None else None, t["rr"]))
             for row in _funnel_rows(t):
@@ -344,7 +351,7 @@ def build_fixture(out_dir: str | Path, seed: int = 3, *, force: bool = False) ->
         _dump(out / "exits" / f"exit_{t['position_ticket']}.json", {
             "ticket": t["position_ticket"], "position_ticket": t["position_ticket"], "trade_id": t["trade_id"],
             "profit_loss": t["profit_loss"], "status": "CLOSED_WIN" if t["r_multiple"] > 0 else "CLOSED_LOSS",
-            "is_final_exit": True, "r_multiple": t["r_multiple"],
+            "is_final_exit": True, "r_multiple": t["ea_r_multiple"],
             "close_time": _iso_z(t["exit_time"].floor("s") + pd.Timedelta(seconds=SERVER_OFFSET_S))})
 
     m, mpt = matrix, point_size(matrix["symbol"])
@@ -428,6 +435,7 @@ def build_fixture(out_dir: str | Path, seed: int = 3, *, force: bool = False) ->
                     "decision_time": _iso(t["decision_time"]), "entry_time": _iso(t["entry_time"]),
                     "exit_time": _iso(t["exit_time"]) if t["exit_time"] is not None else None,
                     "stop_pips": t["stop_pips"], "adx": t["adx"], "lots": t["lots"], "r_multiple": t["r_multiple"],
+                    "ea_r_multiple": t["ea_r_multiple"],
                     "exit_kind": None if t["exit_time"] is None else t["exit_kind"],
                     "iso_week": t["exit_time"].strftime("%G-W%V") if t["exit_time"] is not None else None}
                    for t in trades],

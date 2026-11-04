@@ -17,9 +17,9 @@ On real demo data, use copies only: a read-only snapshot of the state DB (`resea
 ```
 USE_MT5_MOCK=1 ../.venv/bin/python -m research.drift_monitor --db ../tmp/wave3-real/trading_state_snapshot.db --replay-trades-csv ../tmp/wave3-real/baseline__policy__edge__base_trades.csv --exits-dir artifacts/research/wave3-real/inputs/exits --deals artifacts/research/wave3-real/inputs/deals.json --out artifacts/research/wave3-real/r8
 ```
-Options: `--gate-verdict <r2>/verdict.json` (the R2 authenticity gate result for that replay), `--evidence-stream` (default `runtime_mt5_core_srs`), `--thresholds` (default `research/live_vs_replay_thresholds.json`). Outputs `drift_monitor.json`, `drift_monitor.md` and `bands.csv` (one row per live trade).
+`--deals` is required, because live R is computed from the deals. Options: `--gate-verdict <r2>/verdict.json` (the R2 authenticity gate result for that replay), `--evidence-stream` (default `runtime_mt5_core_srs`), `--thresholds` (default `research/live_vs_replay_thresholds.json`). Outputs `drift_monitor.json`, `drift_monitor.md` and `bands.csv` (one row per live trade).
 ## How to read the output
-- Live sequence: closed strategy trades from the DB, plus open trades whose final exit file copy shows them closed, ordered by the closing deal's time, using `r_multiple`. EA demo-matrix test deals have no trades row and are left out.
+- Live sequence: closed strategy trades from the DB, plus open trades whose final exit file copy shows them closed, ordered by the final closing deal's time (a partial close is not the exit). Each trade enters at its net R: profit + commission + swap + fee over all its deals, divided by risk in USD (lots × stop pips × USD pip value). That is how the replay defines `r_multiple`. The EA's own `r_multiple` leaves out commission and swap, so it is not used. Trades with no closing deal are left out and counted in the report. EA demo-matrix test deals have no trades row and are left out.
 - Bands: for each step k (the k-th live trade), the replay R values are resampled into many k-trade paths (block bootstrap, so loss clusters survive) and the table shows the 5th to 95th percentile of simulated cumulative R next to the live cumulative R.
 - Rank: `100*P(sim <= live)`, the share of simulated paths at or below the live value. Near 50 is typical, near 0 means live is worse than almost every path.
 - Final metrics: cumulative R after n trades, maximum drawdown in R (from a peak that includes the starting 0), and the longest run of losing trades, each with its simulated percentiles.
@@ -33,9 +33,10 @@ Options: `--gate-verdict <r2>/verdict.json` (the R2 authenticity gate result for
 - Always `USE_MT5_MOCK=1`. Never `main.py --mode demo`, never an MT5 `trade_*` tool. The CLI refuses an `--out` inside any `MQL5/Files/bridge` folder.
 ## Pitfalls
 - Without `--gate-verdict`, or with an R2 verdict of FAIL, the replay distribution is NOT EVIDENCE and the report says so. Bands built from an ungated replay can only describe that replay.
+- R2's `verdict.json` does not record a hash of the replay trades CSV. The tool checks the trade count it does record: a different count makes the bands NOT EVIDENCE, and an equal count is shown as binding `UNVERIFIED`. Confirm by hand that the verdict came from the same replay run as the CSV.
 - With the handful of real demo trades available, the verdict is `INCONCLUSIVE`. Report it that way; a single trade inside or outside a band says nothing.
 - The replay and the demo must run the same policy and cost scenario. Comparing demo trades with a replay of another variant measures the variant difference, not drift.
 - Block bootstrap needs the replay trades in time order; the tool sorts by `exit_time`. A CSV without that column cannot be used.
-- A trade closed by hand (exit deal without the EA magic number or an `[sl]`/`[tp]` tag) still counts here with its recorded R. R9 classifies it separately.
+- A trade closed by hand (exit deal without the EA magic number or an `[sl]`/`[tp]` tag) still counts here at its net R. R9 flags it; whether such trades should be dropped from R8 is an owner decision (integration notes (e)).
 ## Inspiration
 Ideas, not text, from [Kryhr/26-quant-trading-skills](https://github.com/Kryhr/26-quant-trading-skills) (`live-vs-backtest-drift-monitoring`).

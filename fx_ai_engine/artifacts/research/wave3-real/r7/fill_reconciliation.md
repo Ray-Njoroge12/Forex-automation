@@ -6,7 +6,7 @@ Offline comparison of demo broker fills with the replay cost and fill model (bac
 
 Cost scenario `base` (slippage 0.20 pip, commission 7.00 USD/lot round trip). Entry deals 2, comparable 1, not comparable NO_STRATEGY_SIGNAL 1.
 
-**Verdict: INCONCLUSIVE** (per metric: INCONCLUSIVE below 20 comparable deals; SYSTEMATIC_BIAS when the 95% bootstrap CI of the mean excludes 0).
+**Verdict: INCONCLUSIVE** (per metric: INCONCLUSIVE below 20 comparable deals; SYSTEMATIC_BIAS when the 95% bootstrap CI of the mean excludes 0; the verdict is SYSTEMATIC_BIAS if any of fill_diff_pips, spread_diff_pips, slippage_diff_pips, exit_slippage_diff_pips, commission_diff_usd_per_lot has it). Informational, not in the verdict: fill_latency_s (the replay assumes a fill at the bar close, 0 s, so fill latency is positive by construction; read its size).
 
 | metric | n | mean | median | std | p5 | p95 | CI of mean | status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ Cost scenario `base` (slippage 0.20 pip, commission 7.00 USD/lot round trip). En
 | spread_diff_pips | 1 | -1.100 | -1.100 | 0.000 | -1.100 | -1.100 | [-1.100, -1.100] | INCONCLUSIVE |
 | slippage_diff_pips | 1 | +0.000 | +0.000 | 0.000 | +0.000 | +0.000 | [+0.000, +0.000] | INCONCLUSIVE |
 | exit_slippage_diff_pips | 0 | n/a | n/a | n/a | n/a | n/a | n/a | INCONCLUSIVE |
-| fill_latency_s | 1 | +5.422 | +5.422 | 0.000 | +5.422 | +5.422 | [+5.422, +5.422] | INCONCLUSIVE |
+| fill_latency_s | 1 | +5.422 | +5.422 | 0.000 | +5.422 | +5.422 | [+5.422, +5.422] | INCONCLUSIVE (informational) |
 | commission_diff_usd_per_lot | 1 | -7.000 | -7.000 | 0.000 | -7.000 | -7.000 | [-7.000, -7.000] | INCONCLUSIVE |
 
 Per symbol (mean, n, status):

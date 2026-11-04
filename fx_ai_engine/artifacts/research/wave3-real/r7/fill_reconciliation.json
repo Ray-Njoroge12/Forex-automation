@@ -25,6 +25,16 @@
     }
   },
   "verdict": "INCONCLUSIVE",
+  "verdict_metrics": [
+    "fill_diff_pips",
+    "spread_diff_pips",
+    "slippage_diff_pips",
+    "exit_slippage_diff_pips",
+    "commission_diff_usd_per_lot"
+  ],
+  "informational_metrics": [
+    "fill_latency_s"
+  ],
   "metrics": {
     "fill_diff_pips": {
       "overall": {
@@ -315,6 +325,7 @@
       "exit_deal_ticket": 58758207477,
       "exit_time": "2026-11-03T16:19:52.506000+00:00",
       "exit_price": 1.11936,
+      "exit_magic": 20261103,
       "exit_kind": "STOP",
       "exit_level": 1.11936,
       "exit_slippage_pips": 0.0,
@@ -360,6 +371,7 @@
       "exit_deal_ticket": 58760169499,
       "exit_time": "2026-11-03T19:03:16.520000+00:00",
       "exit_price": 1.34242,
+      "exit_magic": 0,
       "exit_kind": "NOT_BY_EA",
       "exit_level": null,
       "exit_slippage_pips": null,

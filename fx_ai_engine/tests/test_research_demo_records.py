@@ -1,6 +1,7 @@
 """Wave 3 demo-record loaders and synthetic fixture: read-only access, guards, parsing, determinism."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sqlite3
@@ -154,6 +155,72 @@ def test_closed_trades_uses_exit_copy_for_open_trade(fixture_dir, tmp_path):
     assert without_deal["exit_time_unverified"] is True
     assert len(closed) == 37
     conn.close()
+
+
+def test_closed_trades_net_r_differs_from_ea_gross_r_by_commission(fixture_dir):
+    conn = dr.open_ro(fixture_dir / "trading_state.db")
+    deals, _ = dr.load_deals(fixture_dir / "deals.json")
+    closed = {t["trade_id"]: t for t in dr.closed_trades(conn, deals=deals)}
+    conn.close()
+    planted = {t["trade_id"]: t for t in json.loads((fixture_dir / "manifest.json").read_text())["trades"]}
+    ordinary = [t for tid, t in closed.items() if tid.startswith("AI_SYN_")]
+    for t in ordinary:
+        lots, stop = planted[t["trade_id"]]["lots"], planted[t["trade_id"]]["stop_pips"]
+        assert t["risk_usd"] == pytest.approx(lots * stop * 10.0)  # EURUSD/GBPUSD pip value 10 USD per lot
+        planted_pl = round(planted[t["trade_id"]]["r_multiple"] * 320.0, 2)
+        # the fixture charges 3.50 USD per lot per deal; the EA-style stored R leaves it out, net R includes it
+        assert t["r_multiple"] == pytest.approx((planted_pl + 2 * round(3.5 * lots, 2)) / 320.0, abs=1e-4)
+        assert t["net_r"] == pytest.approx(planted_pl / t["risk_usd"], abs=1e-4)
+        assert t["r_multiple"] > t["net_r"]
+        assert t["net_r"] == pytest.approx(planted[t["trade_id"]]["r_multiple"], rel=5e-3)
+    # SYN_MISSING has no deal: no net R, and its trades.close_time fallback is unverified (EA server time)
+    missing = closed["SYN_MISSING"]
+    assert missing["net_r"] is None and missing["net_r_missing"] == "no closing deal"
+    assert missing["exit_time_source"] == "trades.close_time" and missing["exit_time_unverified"] is True
+    assert closed["AI_SYN_000"]["exit_time_source"] == "deal" and closed["AI_SYN_000"]["exit_time_unverified"] is False
+
+
+def test_closed_trades_uses_final_deal_after_partial_close(fixture_dir):
+    conn = dr.open_ro(fixture_dir / "trading_state.db")
+    deals, _ = dr.load_deals(fixture_dir / "deals.json")
+    trade = next(t for t in dr.load_trades(conn) if t["trade_id"] == "AI_SYN_000")
+    pos = trade["position_ticket"]
+    final = next(d for d in deals if d.position_id == pos and d.entry == 1)
+    # EA-style 50% partial close 10 minutes before the final exit; the final deal keeps the other half
+    half = round(final.volume / 2, 2)
+    partial = dr.Deal(ticket=final.ticket - 10_000, order=final.order, position_id=pos,
+                      time=final.time - pd.Timedelta(minutes=10), type=final.type, entry=1, symbol=final.symbol,
+                      volume=half, price=final.price, profit=100.0, commission=-1.0, swap=-0.5, fee=0.0,
+                      magic=dr.EA_MAGIC, comment="partial")
+    rest = [d for d in deals if d.ticket != final.ticket]
+    final_rest = dataclasses.replace(final, volume=round(final.volume - half, 2), profit=50.0, commission=-2.0)
+    entry = next(d for d in deals if d.position_id == pos and d.entry == 0)
+    closed = {t["trade_id"]: t for t in dr.closed_trades(conn, deals=[*rest, partial, final_rest])}
+    conn.close()
+    item = closed["AI_SYN_000"]
+    assert item["exit_time"] == final.time
+    assert item["closing_deals"] == 2
+    net = entry.commission + 100.0 - 1.0 - 0.5 + 50.0 - 2.0
+    assert item["net_usd"] == pytest.approx(net)
+    assert item["net_r"] == pytest.approx(net / item["risk_usd"], abs=1e-6)
+
+
+def test_exit_copy_without_r_multiple_keeps_none(fixture_dir):
+    conn = dr.open_ro(fixture_dir / "trading_state.db")
+    trade = next(t for t in dr.load_trades(conn) if t["trade_id"] == "SYN_OPEN")
+    pos = trade["position_ticket"]
+    exits = {pos: {"position_ticket": pos, "status": "CLOSED_WIN", "is_final_exit": True,
+                   "close_time": "2026-11-13T12:00:00Z"}}
+    item = next(t for t in dr.closed_trades(conn, exits=exits) if t["trade_id"] == "SYN_OPEN")
+    conn.close()
+    assert item["r_multiple"] is None and item["profit_loss"] is None
+    assert item["exit_time_source"] == "exit_file.close_time" and item["exit_time_unverified"] is True
+    assert item["net_r"] is None
+
+
+def test_fixture_win_r_is_the_policy_minimum_rr():
+    from config_microcapital import get_policy_config
+    assert synthetic_demo.WIN_R == float(get_policy_config(mode_id="core_srs", env={})["MIN_RISK_REWARD"])
 
 
 def test_fixture_is_deterministic(tmp_path):

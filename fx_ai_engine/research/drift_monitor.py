@@ -9,8 +9,13 @@ output. INVESTIGATE asks a human to look; it is not a trading signal. Fewer live
 trades than ``min_live_trades`` give INCONCLUSIVE, with any flags shown as
 informational only. A replay distribution that has not passed the R2 gate is
 labelled NOT EVIDENCE.
+Live R is net R computed from the position's deals (research.demo_records.R_DEFINITION),
+the same definition as the replay's r_multiple (net_usd / risk_usd). The EA's own
+r_multiple is price-based and leaves out commission and swap, so it is not used.
+Trades without a closing deal or without the data for risk in USD are left out and
+counted in the report.
 Usage (from fx_ai_engine/):
-    USE_MT5_MOCK=1 ../.venv/bin/python -m research.drift_monitor --db <db> --replay-trades-csv <csv> [--exits-dir <dir>] [--deals <deals.json>] [--gate-verdict <verdict.json>] --out <dir>
+    USE_MT5_MOCK=1 ../.venv/bin/python -m research.drift_monitor --db <db> --replay-trades-csv <csv> --deals <deals.json> [--exits-dir <dir>] [--gate-verdict <verdict.json>] --out <dir>
 """
 from __future__ import annotations
 import argparse
@@ -167,14 +172,22 @@ def render_markdown(report: Mapping[str, Any]) -> str:
              f"Simulation: {cfg['runs']} paths, method {cfg['method']}, block length {cfg['block_length']}, "
              f"seed {cfg['seed']}. Thresholds version {report.get('thresholds_version')} "
              f"(sha256_16 {report.get('thresholds_sha256_16')}).", ""]
+    if report.get("r_definition"):
+        lines += [f"R definition (live and replay): {report['r_definition']}", ""]
     if gate:
         lines += [f"Replay gate: {gate.get('note') or 'R2 verdict ' + str(gate.get('verdict'))} "
                   f"(evidence status {gate.get('evidence_status')}).", ""]
+        if gate.get("binding"):
+            lines += [f"Gate binding: {gate['binding']}: {gate.get('binding_note')}", ""]
     inputs = report.get("inputs")
     if inputs:
+        excluded = inputs.get("without_net_r") or {}
         lines += [f"Inputs: DB `{inputs['db']}` (stream {inputs['evidence_stream']}, read-only); replay "
                   f"`{inputs['replay_trades_csv']}` (sha256_16 {inputs['replay_trades_sha256_16']}, "
-                  f"{inputs['replay_trade_count']} trades).", ""]
+                  f"{inputs['replay_trade_count']} trades). Closed live trades read {inputs['closed_trades']}, "
+                  f"left out for lack of net R {sum(excluded.values())}"
+                  + (f" ({', '.join(f'{k}: {v}' for k, v in sorted(excluded.items()))})" if excluded else "") + ".",
+                  ""]
     if not report["bands"]:
         return "\n".join(lines) + "\n"
     if report["flags_informational"]:
@@ -204,24 +217,35 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_live(db: Path, evidence_stream: str, exits_dir: Path | None, deals_path: Path | None
+def load_live(db: Path, evidence_stream: str, exits_dir: Path | None, deals_path: Path
               ) -> tuple[list[str], list[float], dict[str, Any]]:
+    """Live net R (demo_records.R_DEFINITION) of closed strategy trades in final-exit-time order."""
     exits = dr.load_exits(exits_dir) if exits_dir else None
-    deals = dr.load_deals(deals_path)[0] if deals_path else None
+    deals = dr.load_deals(deals_path)[0]
     conn = dr.open_ro(db)
     try:
         closed = dr.closed_trades(conn, evidence_stream, exits=exits, deals=deals)
         max_id = conn.execute("SELECT MAX(id) FROM trades").fetchone()[0]
     finally:
         conn.close()
-    usable = [t for t in closed if t.get("r_multiple") is not None]
+    usable = [t for t in closed if t.get("net_r") is not None]
     usable.sort(key=lambda t: (t["exit_time"] is None, t["exit_time"] or pd.Timestamp(0, tz="UTC"), t["id"]))
-    meta = {"closed_trades": len(closed), "without_r_multiple": len(closed) - len(usable),
+    excluded: dict[str, int] = {}
+    for t in closed:
+        if t.get("net_r") is None:
+            excluded[t.get("net_r_missing") or "unknown"] = excluded.get(t.get("net_r_missing") or "unknown", 0) + 1
+    ea_gap = [float(t["r_multiple"]) - float(t["net_r"]) for t in usable if t.get("r_multiple") is not None]
+    meta = {"closed_trades": len(closed), "without_net_r": excluded,
+            "mean_ea_r_minus_net_r": _r(np.mean(ea_gap)) if ea_gap else None,
             "exit_time_unverified": sum(1 for t in usable if t.get("exit_time_unverified")),
             "without_exit_time": sum(1 for t in usable if t.get("exit_time") is None),
             "sources": {s: sum(1 for t in usable if t["source"] == s) for s in sorted({t["source"] for t in usable})},
             "max_trades_id_read": max_id}
-    return [str(t["trade_id"]) for t in usable], [float(t["r_multiple"]) for t in usable], meta
+    return [str(t["trade_id"]) for t in usable], [float(t["net_r"]) for t in usable], meta
+
+
+def replay_row_count(path: Path) -> int:
+    return int(len(pd.read_csv(path)))
 
 
 def load_replay(path: Path) -> list[float]:
@@ -231,12 +255,41 @@ def load_replay(path: Path) -> list[float]:
     return trades["r_multiple"].astype(float).tolist()
 
 
-def load_gate(path: Path | None) -> dict[str, Any]:
+def load_gate(path: Path | None, replay_csv: Path | None = None) -> dict[str, Any]:
+    """R2 verdict for the replay, checked against the replay CSV being resampled.
+
+    R2's verdict.json binds to the policy hash and the bar datasets, not to a trades CSV. The check
+    uses what it records: a replay-trades sha256 prefix when present (``replay_trades_sha256_16``),
+    else its trade count against the CSV's row count. A mismatch makes the bands NOT_EVIDENCE; a
+    matching count without a hash is reported as UNVERIFIED for a human to confirm.
+    """
     if path is None:
-        return {"path": None, "verdict": None, "evidence_status": "NOT_EVIDENCE", "note": UNGATED_NOTE}
+        return {"path": None, "verdict": None, "evidence_status": "NOT_EVIDENCE", "note": UNGATED_NOTE,
+                "binding": None, "binding_note": None}
     verdict = json.loads(Path(path).read_text(encoding="utf-8"))
-    return {"path": str(path), "verdict": verdict.get("verdict"), "evidence_status": verdict.get("evidence_status"),
-            "note": None}
+    out = {"path": str(path), "verdict": verdict.get("verdict"), "evidence_status": verdict.get("evidence_status"),
+           "note": None, "binding": None, "binding_note": None}
+    if replay_csv is None:
+        return out
+    csv_sha, csv_rows = _sha16(replay_csv), replay_row_count(replay_csv)
+    gate_sha, gate_trades = verdict.get("replay_trades_sha256_16"), verdict.get("trades")
+    if gate_sha is not None:
+        bound = gate_sha == csv_sha
+        out["binding"] = "BOUND" if bound else "MISMATCH"
+        out["binding_note"] = f"R2 replay_trades_sha256_16 {gate_sha} vs CSV {csv_sha}"
+    elif gate_trades is not None and int(gate_trades) != csv_rows:
+        out["binding"] = "MISMATCH"
+        out["binding_note"] = f"R2 verdict covers {gate_trades} trades, the replay CSV has {csv_rows} rows"
+    else:
+        out["binding"] = "UNVERIFIED"
+        out["binding_note"] = ("R2 verdict.json records no replay-trades hash"
+                               + (f"; its trade count matches the CSV ({csv_rows})" if gate_trades is not None else
+                                  " and no trade count")
+                               + "; confirm by hand that it was produced for this replay")
+    if out["binding"] == "MISMATCH":
+        out["evidence_status"] = "NOT_EVIDENCE"
+        out["note"] = "R2 verdict does not belong to this replay CSV (NOT EVIDENCE)"
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, required=True, help="state DB (opened read-only, mode=ro)")
     parser.add_argument("--replay-trades-csv", type=Path, required=True, help="replay trades CSV with r_multiple, exit_time")
     parser.add_argument("--exits-dir", type=Path, default=None, help="copies of bridge exits/exit_*.json")
-    parser.add_argument("--deals", type=Path, default=None, help="copy of the bridge market/deals.json")
+    parser.add_argument("--deals", type=Path, required=True,
+                        help="copy of the bridge market/deals.json (live net R is computed from the deals)")
     parser.add_argument("--gate-verdict", type=Path, default=None, help="R2 verdict.json for the replay")
     parser.add_argument("--evidence-stream", default=dr.DEFAULT_STREAM)
     parser.add_argument("--thresholds", type=Path, default=None)
@@ -258,12 +312,12 @@ def main(argv: list[str] | None = None) -> int:
     report = drift_report(replay_r, live_r, cfg, live_ids=ids)
     report["thresholds_version"] = version
     report["thresholds_sha256_16"] = sha
-    report["replay_gate"] = load_gate(args.gate_verdict)
+    report["r_definition"] = dr.R_DEFINITION
+    report["replay_gate"] = load_gate(args.gate_verdict, args.replay_trades_csv)
     report["inputs"] = {
         "db": str(args.db), "evidence_stream": args.evidence_stream, **live_meta,
         "exits_dir": str(args.exits_dir) if args.exits_dir else None,
-        "deals": str(args.deals) if args.deals else None,
-        "deals_sha256_16": _sha16(args.deals) if args.deals else None,
+        "deals": str(args.deals), "deals_sha256_16": _sha16(args.deals),
         "replay_trades_csv": str(args.replay_trades_csv), "replay_trades_sha256_16": _sha16(args.replay_trades_csv),
         "replay_trade_count": len(replay_r),
         "thresholds": str(args.thresholds) if args.thresholds else "research/live_vs_replay_thresholds.json",

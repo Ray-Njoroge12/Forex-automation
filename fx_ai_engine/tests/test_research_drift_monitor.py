@@ -97,11 +97,66 @@ def test_main_on_fixture_writes_outputs(tmp_path):
         assert (out / name).is_file()
     report = json.loads((out / "drift_monitor.json").read_text(encoding="utf-8"))
     assert report["thresholds_version"] == VERSION and report["thresholds_sha256_16"] == SHA
-    assert report["n_live"] == 36 and report["verdict"] in ("WITHIN_BANDS", "INVESTIGATE")
+    assert report["n_live"] == 35 and report["verdict"] in ("WITHIN_BANDS", "INVESTIGATE")
+    assert report["inputs"]["closed_trades"] == 36 and report["inputs"]["without_net_r"] == {"no closing deal": 1}
     assert report["replay_gate"]["evidence_status"] == "NOT_EVIDENCE"
     assert report["inputs"]["replay_trade_count"] == 200
     assert "account_scope" not in json.dumps(report)
     md = (out / "drift_monitor.md").read_text(encoding="utf-8")
     assert md.startswith("# Live vs replay drift (R8)") and SHA in md and "NOT EVIDENCE" in md
     assert "| ... |" in md
-    assert len(pd.read_csv(out / "bands.csv")) == 36
+    assert len(pd.read_csv(out / "bands.csv")) == 35
+
+
+def test_live_r_is_net_of_commission(tmp_path):
+    fixture = tmp_path / "fixture"
+    build_fixture(fixture, seed=3)
+    ids, live_r, meta = dm.load_live(fixture / "trading_state.db", dr.DEFAULT_STREAM, fixture / "exits",
+                                     fixture / "deals.json")
+    conn = dr.open_ro(fixture / "trading_state.db")
+    deals, _ = dr.load_deals(fixture / "deals.json")
+    closed = {t["trade_id"]: t for t in dr.closed_trades(conn, deals=deals)}
+    conn.close()
+    assert len(ids) == 35  # SYN_MISSING has no closing deal, so no net R
+    assert meta["without_net_r"] == {"no closing deal": 1}
+    assert live_r == [closed[i]["net_r"] for i in ids]
+    # the fixture charges 7 USD per lot round trip; the EA-style r_multiple leaves it out
+    assert meta["mean_ea_r_minus_net_r"] > 0.02
+    assert all(closed[i]["r_multiple"] > closed[i]["net_r"] for i in ids)
+
+
+def _gate(tmp_path, **fields):
+    path = tmp_path / "verdict.json"
+    path.write_text(json.dumps({"tool": "r2_authenticity_gate", "verdict": "PASS",
+                                "evidence_status": "EVIDENCE_ELIGIBLE", **fields}), encoding="utf-8")
+    return path
+
+
+def test_gate_verdict_is_checked_against_the_replay_csv(tmp_path):
+    csv = tmp_path / "replay.csv"
+    pd.DataFrame({"trade_id": ["a", "b", "c"], "exit_time": ["2025-01-06T00:00:00Z"] * 3,
+                  "r_multiple": [2.2, -1.0, -1.0]}).to_csv(csv, index=False)
+    same_count = dm.load_gate(_gate(tmp_path, trades=3), csv)
+    assert same_count["binding"] == "UNVERIFIED" and same_count["evidence_status"] == "EVIDENCE_ELIGIBLE"
+    other = dm.load_gate(_gate(tmp_path, trades=19), csv)
+    assert other["binding"] == "MISMATCH" and other["evidence_status"] == "NOT_EVIDENCE"
+    bound = dm.load_gate(_gate(tmp_path, trades=3, replay_trades_sha256_16=dm._sha16(csv)), csv)
+    assert bound["binding"] == "BOUND" and bound["evidence_status"] == "EVIDENCE_ELIGIBLE"
+    wrong_hash = dm.load_gate(_gate(tmp_path, trades=3, replay_trades_sha256_16="0" * 16), csv)
+    assert wrong_hash["binding"] == "MISMATCH" and wrong_hash["evidence_status"] == "NOT_EVIDENCE"
+    assert dm.load_gate(None, csv)["evidence_status"] == "NOT_EVIDENCE"
+
+
+def test_main_with_mismatched_gate_reports_not_evidence(tmp_path):
+    fixture = tmp_path / "fixture"
+    build_fixture(fixture, seed=3)
+    out = tmp_path / "r8"
+    gate = _gate(tmp_path, trades=19)
+    assert dm.main(["--db", str(fixture / "trading_state.db"), "--replay-trades-csv", str(fixture / "replay_trades.csv"),
+                    "--deals", str(fixture / "deals.json"), "--gate-verdict", str(gate), "--out", str(out)]) == 0
+    report = json.loads((out / "drift_monitor.json").read_text(encoding="utf-8"))
+    assert report["replay_gate"]["binding"] == "MISMATCH"
+    assert report["replay_gate"]["evidence_status"] == "NOT_EVIDENCE"
+    assert report["r_definition"] == dr.R_DEFINITION
+    md = (out / "drift_monitor.md").read_text(encoding="utf-8")
+    assert "Gate binding: MISMATCH" in md and "net R" in md

@@ -14,12 +14,20 @@ Rules (all evaluated, all flags kept; thresholds from live_vs_replay_thresholds.
                   slippage beyond the model, exit deal not placed by the EA, or an
                   open feedback conflict / EXECUTION_UNCERTAIN reservation;
   NEWS_CALENDAR   high-impact event for either currency inside
-                  [entry - news_before_entry_minutes, exit + news_after_exit_minutes];
+                  [entry - news_before_entry_minutes, exit + news_after_exit_minutes]
+                  (a window around the trade), or an event with its own
+                  blackout_before/after_minutes (e.g. time_exact false, all-day) whose
+                  blackout window [event - before, event + after] overlaps the trade's
+                  life [entry, exit], as calendar_filter.is_news_blackout applies it;
   SPREAD_COST     spread + slippage + exit slippage + commission >= cost_r_fraction R,
                   or a loss that costs alone turned from a gain;
   REGIME_MISMATCH (losing trades only) borderline ADX at entry, or a different
                   regime recorded for the symbol during the trade.
 Primary cause = first flag in PRECEDENCE, else ORDINARY_NOISE.
+R is net R from the position's deals (research.demo_records.R_DEFINITION, the replay's
+definition); the EA's price-based r_multiple is kept in the JSON as ea_r_multiple.
+PATTERN_SHARE (25%) is a module constant outside the versioned thresholds file; ADR
+0004 records why.
 
 Usage (from fx_ai_engine/):
     USE_MT5_MOCK=1 ../.venv/bin/python -m research.trade_postmortem --db <db> --deals <deals.json> --bars-dir <dir> [--exits-dir <dir>] [--feedback-dir <dir>] [--calendar <json>] [--week YYYY-Www] --out <dir>
@@ -39,7 +47,7 @@ import pandas as pd
 from backtesting.unified_replay import COST_SCENARIOS
 from research.common import ARTIFACTS, parse_ts, run_id, write_json
 from research.demo_records import (
-    DEFAULT_CALENDAR, DEFAULT_STREAM, calendar_coverage, closed_trades, guard_output_dir, load_calendar_events,
+    DEFAULT_CALENDAR, DEFAULT_STREAM, R_DEFINITION, calendar_coverage, closed_trades, guard_output_dir, load_calendar_events,
     load_deals, load_exits, load_feedback_files, load_funnel, load_m15, load_open_issues, load_thresholds, open_ro,
     parse_details,
 )
@@ -155,12 +163,16 @@ def prepare_trades(closed: Sequence[Mapping[str, Any]], r7_rows: Sequence[Mappin
             stop, stop_source = _num(trade.get("stop_loss")), "trades.stop_loss (fallback)"
         exit_time = trade.get("exit_time")
         if trade.get("exit_time_unverified"):
-            notes.append("exit time from exit file close_time (server time, unverified)")
+            notes.append(f"exit time from {trade.get('exit_time_source') or 'no source'} "
+                         "(EA exit payload, server time; unverified)")
+        if trade.get("net_r") is None and trade.get("net_r_missing"):
+            notes.append(f"net R missing: {trade['net_r_missing']}")
         out.append({
             "trade_id": tid, "symbol": str(trade.get("symbol") or ""), "direction": trade.get("direction"),
             "status": trade.get("status"), "source": trade.get("source"),
             "decision_time": decision, "entry_time": entry, "exit_time": exit_time,
-            "net_r": _num(trade.get("r_multiple")), "profit_loss": _num(trade.get("profit_loss")),
+            "net_r": _num(trade.get("net_r")), "ea_r_multiple": _num(trade.get("r_multiple")),
+            "risk_usd": _num(trade.get("risk_usd")), "profit_loss": _num(trade.get("profit_loss")),
             "stop_pips": stop, "stop_source": stop_source, "r7": r7, "prep_notes": notes,
         })
     return out
@@ -190,7 +202,8 @@ def _execution_flags(trade: Mapping[str, Any], r7: Mapping[str, Any] | None, com
             flags.append(_flag("EXECUTION", f"exit slippage {exit_diff:+.2f} pip beyond the model "
                                             f"(limit {cfg['execution_exit_adverse_pips']:g})"))
     if r7 is not None and r7.get("exit_kind") == "NOT_BY_EA":
-        flags.append(_flag("EXECUTION", "exit deal not placed by the EA (magic 0, no sl/tp tag): possible manual close"))
+        flags.append(_flag("EXECUTION", f"exit deal not placed by the EA (magic {r7.get('exit_magic')}, no sl/tp tag): "
+                                        "possible manual close"))
     tid = trade["trade_id"]
     if tid in open_issues.get("conflicts", set()):
         flags.append(_flag("EXECUTION", "unresolved execution feedback conflict"))
@@ -212,10 +225,16 @@ def _news(trade: Mapping[str, Any], events: Sequence[Mapping[str, Any]], cfg: Ma
     for e in events:
         if str(e.get("impact", "")).lower() != "high" or str(e.get("currency", "")).upper() not in currencies:
             continue
-        if lo <= e["time"] <= hi:
+        own = _event_blackout(e)
+        in_window = lo <= e["time"] <= hi
+        in_own = own is not None and e["time"] - own[0] <= exit_ and entry <= e["time"] + own[1]
+        if in_window or in_own:
             minutes = (e["time"] - entry).total_seconds() / 60.0
+            extra = "" if own is None else (f"; event blackout -{own[0].total_seconds() / 60:.0f}/"
+                                            f"+{own[1].total_seconds() / 60:.0f} min"
+                                            + (", time not exact" if e.get("time_exact") is False else ""))
             flags.append(_flag("NEWS_CALENDAR", f"high-impact {e.get('currency')} '{e.get('event')}' at "
-                                                f"{e['time'].isoformat()} ({minutes:+.0f} min from entry)"))
+                                                f"{e['time'].isoformat()} ({minutes:+.0f} min from entry{extra})"))
     notes = []
     cov_lo, cov_hi = calendar_coverage(events)
     if cov_lo is None or lo < cov_lo or hi > cov_hi:
@@ -223,6 +242,18 @@ def _news(trade: Mapping[str, Any], events: Sequence[Mapping[str, Any]], cfg: Ma
                      f"[{lo.isoformat()}, {hi.isoformat()}] not inside calendar coverage "
                      f"[{_iso(cov_lo)}, {_iso(cov_hi)}]")
     return flags, notes
+
+
+def _event_blackout(event: Mapping[str, Any]) -> tuple[pd.Timedelta, pd.Timedelta] | None:
+    """The event's own blackout_before/after_minutes (as calendar_filter honours them), or None."""
+    if "blackout_before_minutes" not in event and "blackout_after_minutes" not in event:
+        return None
+    try:
+        before = max(0, int(event.get("blackout_before_minutes", 0)))
+        after = max(0, int(event.get("blackout_after_minutes", 0)))
+    except (TypeError, ValueError):
+        return None
+    return pd.Timedelta(minutes=before), pd.Timedelta(minutes=after)
 
 
 def _cost(trade: Mapping[str, Any], r7: Mapping[str, Any] | None, comparable: bool, cfg: Mapping[str, Any]
@@ -239,15 +270,14 @@ def _cost(trade: Mapping[str, Any], r7: Mapping[str, Any] | None, comparable: bo
     notes = []
     detail = (f"spread {spread:.2f} + slippage {max(0.0, implied):.2f} + exit slippage {max(0.0, exit_slip):.2f} pip "
               f"over a {stop:g}-pip stop ({trade.get('stop_source')})")
-    net_r, pl = trade.get("net_r"), trade.get("profit_loss")
+    net_r, risk_usd = trade.get("net_r"), trade.get("risk_usd")
     per_lot, volume = _num(r7.get("commission_per_lot_usd")), _num(r7.get("volume"))
-    if net_r and pl is not None and per_lot is not None and volume:
-        risk_usd = abs(pl / net_r)
+    if risk_usd and risk_usd > 0 and per_lot is not None and volume:
         commission = per_lot * volume
         cost_r += commission / risk_usd
         detail += f" + commission {commission:.2f} USD / risk {risk_usd:.2f} USD"
     else:
-        notes.append("commission term skipped (r_multiple is 0 or commission/volume missing)")
+        notes.append("commission term skipped (risk USD or commission/volume missing)")
     flags = []
     if cost_r >= cfg["cost_r_fraction"]:
         flags.append(_flag("SPREAD_COST", f"costs {cost_r:.3f} R >= {cfg['cost_r_fraction']:g} R: {detail}"))
@@ -299,7 +329,7 @@ def classify_trade(trade: Mapping[str, Any], regime_rows: Sequence[Mapping[str, 
     elif not comparable:
         notes.append(f"INSUFFICIENT_DATA: R7 row not comparable ({r7.get('reason')}); fill-based rules not evaluated")
     if trade.get("net_r") is None:
-        notes.append("INSUFFICIENT_DATA: r_multiple missing")
+        notes.append("INSUFFICIENT_DATA: net R missing")
     flags = _execution_flags(trade, r7, comparable, open_issues, cfg)
     news_flags, news_notes = _news(trade, events, cfg)
     cost_flags, cost_notes, cost_r = _cost(trade, r7, comparable, cfg)
@@ -313,7 +343,8 @@ def classify_trade(trade: Mapping[str, Any], regime_rows: Sequence[Mapping[str, 
         "status": trade.get("status"), "source": trade.get("source"),
         "decision_time": _iso(trade.get("decision_time")), "entry_time": _iso(trade.get("entry_time")),
         "exit_time": _iso(trade.get("exit_time")), "iso_week": iso_week(trade.get("exit_time")),
-        "net_r": trade.get("net_r"), "profit_loss": trade.get("profit_loss"),
+        "net_r": trade.get("net_r"), "ea_r_multiple": trade.get("ea_r_multiple"),
+        "risk_usd": trade.get("risk_usd"), "profit_loss": trade.get("profit_loss"),
         "stop_pips": trade.get("stop_pips"), "stop_source": trade.get("stop_source"), "cost_r": cost_r,
         "r7_reason": None if r7 is None else (r7.get("reason") if not comparable else "COMPARABLE"),
         "primary_cause": primary, "flags": flags, "notes": notes,
@@ -373,7 +404,8 @@ def _header(title: str, sources: Sequence[Mapping[str, Any]], cfg: Mapping[str, 
     lines += ["", f"Thresholds: version {version}, sha256_16 {sha}: "
                   + ", ".join(f"{k}={v}" for k, v in cfg.items()) + ".", "",
               "Precedence of the primary cause: " + " > ".join(PRECEDENCE) + f" > {DEFAULT_CAUSE} "
-              f"({DEFAULT_CAUSE}: {NOISE_MEANING}). All flags are kept.", ""]
+              f"({DEFAULT_CAUSE}: {NOISE_MEANING}). All flags are kept.", "",
+              f"R: {R_DEFINITION}", ""]
     return lines
 
 
@@ -427,7 +459,7 @@ def build_report(trades: Sequence[Mapping[str, Any]], funnel: Sequence[Mapping[s
     return {
         "tool": "r9_trade_postmortem", "note": NOTE, "report_only": REPORT_ONLY,
         "precedence": list(PRECEDENCE) + [DEFAULT_CAUSE], "ordinary_noise_meaning": NOISE_MEANING,
-        "pattern_share": PATTERN_SHARE, "cfg": dict(cfg), "thresholds_version": thresholds_version,
+        "pattern_share": PATTERN_SHARE, "r_definition": R_DEFINITION, "cfg": dict(cfg), "thresholds_version": thresholds_version,
         "thresholds_sha256_16": thresholds_sha, "sources": list(sources), "selected_weeks": selected,
         "weeks": {w: week_summary(w, trades, funnel, cfg) for w in sorted(set(weeks) | set(selected))},
         "funnel_rejections_all": funnel_rejections(funnel),

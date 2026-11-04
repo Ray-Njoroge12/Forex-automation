@@ -6,7 +6,7 @@ Offline comparison of demo broker fills with the replay cost and fill model (bac
 
 Cost scenario `base` (slippage 0.20 pip, commission 7.00 USD/lot round trip). Entry deals 37, comparable 36, not comparable NO_DEAL 1, NO_STRATEGY_SIGNAL 1.
 
-**Verdict: SYSTEMATIC_BIAS** (per metric: INCONCLUSIVE below 20 comparable deals; SYSTEMATIC_BIAS when the 95% bootstrap CI of the mean excludes 0).
+**Verdict: SYSTEMATIC_BIAS** (per metric: INCONCLUSIVE below 20 comparable deals; SYSTEMATIC_BIAS when the 95% bootstrap CI of the mean excludes 0; the verdict is SYSTEMATIC_BIAS if any of fill_diff_pips, spread_diff_pips, slippage_diff_pips, exit_slippage_diff_pips, commission_diff_usd_per_lot has it). Informational, not in the verdict: fill_latency_s (the replay assumes a fill at the bar close, 0 s, so fill latency is positive by construction; read its size).
 
 | metric | n | mean | median | std | p5 | p95 | CI of mean | status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -14,7 +14,7 @@ Cost scenario `base` (slippage 0.20 pip, commission 7.00 USD/lot round trip). En
 | spread_diff_pips | 36 | +0.492 | +0.500 | 0.073 | +0.400 | +0.600 | [+0.467, +0.514] | SYSTEMATIC_BIAS |
 | slippage_diff_pips | 36 | +0.100 | +0.100 | 0.000 | +0.100 | +0.100 | [+0.100, +0.100] | SYSTEMATIC_BIAS |
 | exit_slippage_diff_pips | 34 | +0.129 | +0.200 | 0.097 | +0.000 | +0.200 | [+0.094, +0.159] | SYSTEMATIC_BIAS |
-| fill_latency_s | 36 | +9.167 | +6.000 | 19.000 | +6.000 | +6.000 | [+6.000, +15.500] | SYSTEMATIC_BIAS |
+| fill_latency_s | 36 | +9.167 | +6.000 | 19.000 | +6.000 | +6.000 | [+6.000, +15.500] | SYSTEMATIC_BIAS (informational) |
 | commission_diff_usd_per_lot | 35 | +0.001 | +0.000 | 0.004 | -0.007 | +0.008 | [-0.001, +0.002] | NO_SYSTEMATIC_BIAS |
 
 Per symbol (mean, n, status):

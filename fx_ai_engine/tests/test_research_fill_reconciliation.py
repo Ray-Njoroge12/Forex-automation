@@ -148,6 +148,31 @@ def test_small_sample_is_inconclusive_and_not_actionable(tmp_path):
     assert report["suggested_adjustment"]["actionable"] is False
 
 
+def test_unbiased_costs_give_no_systematic_bias_despite_fill_latency():
+    n = int(R7["min_deals_for_bias"]) + 4
+    rows = []
+    for i in range(n):
+        e = 0.1 if i % 2 == 0 else -0.1  # zero-mean errors around the model
+        rows.append({"comparable": True, "symbol": "EURUSD", "fill_diff_pips": e, "spread_diff_pips": -e,
+                     "slippage_diff_pips": e, "exit_slippage_diff_pips": -e, "commission_diff_usd_per_lot": e,
+                     "fill_latency_s": 6.0 + (i % 3), "implied_slippage_pips": 0.2 + e, "actual_spread_pips": 0.8,
+                     "commission_per_lot_usd": 7.0 + e, "cost_ratio": 1.0})
+    report = fr.summarise(rows, R7, COST_SCENARIOS["base"])
+    assert report["metrics"]["fill_latency_s"]["overall"]["status"] == "SYSTEMATIC_BIAS"
+    assert all(report["metrics"][m]["overall"]["status"] == "NO_SYSTEMATIC_BIAS" for m in fr.VERDICT_METRICS)
+    assert "fill_latency_s" not in fr.VERDICT_METRICS
+    assert report["verdict"] == "NO_SYSTEMATIC_BIAS"
+    assert report["suggested_adjustment"]["actionable"] is True
+    md = fr.render_markdown(report)
+    assert "SYSTEMATIC_BIAS (informational)" in md
+
+
+def test_exit_magic_is_recorded(tmp_path):
+    rows = {r["trade_id"]: r for r in _fixture_rows(_fixture(tmp_path))}
+    assert rows["SYN_MANUAL"]["exit_magic"] == 0
+    assert rows["AI_SYN_000"]["exit_magic"] == EA_MAGIC
+
+
 def test_cost_model_is_unchanged(tmp_path):
     before = {k: asdict(v) for k, v in COST_SCENARIOS.items()}
     floors_before = dict(DEFAULT_SPREAD_FLOOR_PIPS)

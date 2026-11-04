@@ -20,6 +20,8 @@ Thresholds: version 1, sha256_16 04b13538c8afd78e: execution_entry_adverse_pips=
 
 Precedence of the primary cause: EXECUTION > NEWS_CALENDAR > SPREAD_COST > REGIME_MISMATCH > ORDINARY_NOISE (ORDINARY_NOISE: outcome consistent with the model; nothing abnormal recorded). All flags are kept.
 
+R: net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.
+
 Week 2026-W45: exit times in [2026-11-02T00:00:00+00:00, 2026-11-09T00:00:00+00:00).
 
 **INCONCLUSIVE: 1 closed trades; no pattern claims**

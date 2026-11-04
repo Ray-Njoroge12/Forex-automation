@@ -8,10 +8,10 @@ Rules-based and deterministic classification of closed demo trades by probable c
 
 | source | path | sha256_16 |
 | --- | --- | --- |
-| state DB (read-only, max trades.id 37, stream runtime_mt5_core_srs) | `../tmp/wave3-fixture/trading_state.db` | 2b33691e9908c021 |
+| state DB (read-only, max trades.id 37, stream runtime_mt5_core_srs) | `../tmp/wave3-fixture/trading_state.db` | d08d0b6fd7930cd4 |
 | deals.json copy | `../tmp/wave3-fixture/deals.json` | 7b019047b11014f3 |
 | M15 bars (2 files) | `../tmp/wave3-fixture/bars` | be3b434c4d5dd63f |
-| exit files (36) | `../tmp/wave3-fixture/exits` | a40561dbdd5ec5ac |
+| exit files (36) | `../tmp/wave3-fixture/exits` | bda12f05e7df468c |
 | feedback files (2) | `../tmp/wave3-fixture/feedback` | 38400ee84270fdb9 |
 | economic calendar (3 events) | `../tmp/wave3-fixture/economic_calendar.json` | 46012925d0827304 |
 | thresholds | `research/live_vs_replay_thresholds.json` | 04b13538c8afd78e |
@@ -19,6 +19,8 @@ Rules-based and deterministic classification of closed demo trades by probable c
 Thresholds: version 1, sha256_16 04b13538c8afd78e: execution_entry_adverse_pips=1.0, execution_exit_adverse_pips=1.0, execution_latency_seconds=60, news_before_entry_minutes=30, news_after_exit_minutes=15, cost_r_fraction=0.25, regime_adx_margin=2.0, min_trades_for_pattern=10.
 
 Precedence of the primary cause: EXECUTION > NEWS_CALENDAR > SPREAD_COST > REGIME_MISMATCH > ORDINARY_NOISE (ORDINARY_NOISE: outcome consistent with the model; nothing abnormal recorded). All flags are kept.
+
+R: net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.
 
 Week 2026-W45: exit times in [2026-11-02T00:00:00+00:00, 2026-11-09T00:00:00+00:00).
 
@@ -43,25 +45,25 @@ Week 2026-W45: exit times in [2026-11-02T00:00:00+00:00, 2026-11-09T00:00:00+00:
 | trade_id | symbol | direction | entry UTC | exit UTC | net R | primary cause | flags (evidence) | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | AI_SYN_000 | EURUSD | SELL | 2026-11-02 07:00:06 | 2026-11-02 07:33:14 | +2.200 | ORDINARY_NOISE | none |  |
-| AI_SYN_001 | GBPUSD | SELL | 2026-11-02 10:00:06 | 2026-11-02 12:20:36 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_002 | EURUSD | SELL | 2026-11-02 13:00:06 | 2026-11-02 14:53:28 | +2.200 | ORDINARY_NOISE | none |  |
+| AI_SYN_001 | GBPUSD | SELL | 2026-11-02 10:00:06 | 2026-11-02 12:20:36 | -1.003 | ORDINARY_NOISE | none |  |
+| AI_SYN_002 | EURUSD | SELL | 2026-11-02 13:00:06 | 2026-11-02 14:53:28 | +2.206 | ORDINARY_NOISE | none |  |
 | AI_SYN_003 | GBPUSD | SELL | 2026-11-02 16:00:06 | 2026-11-02 18:07:01 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_004 | EURUSD | BUY | 2026-11-03 07:00:06 | 2026-11-03 08:46:18 | -1.000 | ORDINARY_NOISE | none |  |
+| AI_SYN_004 | EURUSD | BUY | 2026-11-03 07:00:06 | 2026-11-03 08:46:18 | -1.003 | ORDINARY_NOISE | none |  |
 | SYN_EXEC | GBPUSD | BUY | 2026-11-03 10:02:00 | 2026-11-03 10:36:48 | -1.000 | EXECUTION | EXECUTION: entry deal 120.0 s after bar close (limit 60 s) |  |
-| AI_SYN_006 | EURUSD | SELL | 2026-11-03 13:00:06 | 2026-11-03 14:00:08 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_007 | GBPUSD | BUY | 2026-11-03 16:00:06 | 2026-11-03 17:19:52 | -1.000 | ORDINARY_NOISE | none |  |
+| AI_SYN_006 | EURUSD | SELL | 2026-11-03 13:00:06 | 2026-11-03 14:00:08 | -1.003 | ORDINARY_NOISE | none |  |
+| AI_SYN_007 | GBPUSD | BUY | 2026-11-03 16:00:06 | 2026-11-03 17:19:52 | -1.001 | ORDINARY_NOISE | none |  |
 | AI_SYN_008 | EURUSD | SELL | 2026-11-04 07:00:06 | 2026-11-04 08:21:42 | +2.200 | ORDINARY_NOISE | none |  |
-| AI_SYN_009 | GBPUSD | SELL | 2026-11-04 10:00:06 | 2026-11-04 11:45:29 | +2.200 | ORDINARY_NOISE | none |  |
-| SYN_NEWS | EURUSD | BUY | 2026-11-04 13:00:06 | 2026-11-04 14:50:01 | -1.000 | NEWS_CALENDAR | NEWS_CALENDAR: high-impact USD 'Synthetic high-impact release' at 2026-11-04T13:10:00+00:00 (+10 min from entry) |  |
+| AI_SYN_009 | GBPUSD | SELL | 2026-11-04 10:00:06 | 2026-11-04 11:45:29 | +2.206 | ORDINARY_NOISE | none |  |
+| SYN_NEWS | EURUSD | BUY | 2026-11-04 13:00:06 | 2026-11-04 14:50:01 | -1.003 | NEWS_CALENDAR | NEWS_CALENDAR: high-impact USD 'Synthetic high-impact release' at 2026-11-04T13:10:00+00:00 (+10 min from entry) |  |
 | AI_SYN_011 | GBPUSD | SELL | 2026-11-04 16:00:06 | 2026-11-04 18:17:34 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_012 | EURUSD | BUY | 2026-11-05 07:00:06 | 2026-11-05 07:48:33 | -1.000 | ORDINARY_NOISE | none |  |
+| AI_SYN_012 | EURUSD | BUY | 2026-11-05 07:00:06 | 2026-11-05 07:48:33 | -1.003 | ORDINARY_NOISE | none |  |
 | AI_SYN_013 | GBPUSD | SELL | 2026-11-05 10:00:06 | 2026-11-05 11:20:24 | +2.200 | ORDINARY_NOISE | none |  |
 | AI_SYN_014 | EURUSD | BUY | 2026-11-05 13:00:06 | 2026-11-05 14:36:30 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_015 | GBPUSD | SELL | 2026-11-05 16:00:06 | 2026-11-05 17:06:47 | +2.200 | ORDINARY_NOISE | none |  |
+| AI_SYN_015 | GBPUSD | SELL | 2026-11-05 16:00:06 | 2026-11-05 17:06:47 | +2.197 | ORDINARY_NOISE | none |  |
 | AI_SYN_016 | EURUSD | SELL | 2026-11-06 07:00:06 | 2026-11-06 08:54:47 | -1.000 | ORDINARY_NOISE | none |  |
-| SYN_COST | GBPUSD | SELL | 2026-11-06 10:00:06 | 2026-11-06 11:39:59 | -1.000 | SPREAD_COST | SPREAD_COST: costs 1.033 R >= 0.25 R: spread 1.70 + slippage 0.30 + exit slippage 0.40 pip over a 3-pip stop (funnel TECHNICAL stop_pips) + commission 74.68 USD / risk 320.00 USD |  |
-| AI_SYN_018 | EURUSD | SELL | 2026-11-06 13:00:06 | 2026-11-06 14:54:55 | -1.000 | ORDINARY_NOISE | none |  |
-| AI_SYN_019 | GBPUSD | SELL | 2026-11-06 16:00:06 | 2026-11-06 16:49:37 | +2.200 | ORDINARY_NOISE | none |  |
+| SYN_COST | GBPUSD | SELL | 2026-11-06 10:00:06 | 2026-11-06 11:39:59 | -1.000 | SPREAD_COST | SPREAD_COST: costs 1.033 R >= 0.25 R: spread 1.70 + slippage 0.30 + exit slippage 0.40 pip over a 3-pip stop (funnel TECHNICAL stop_pips) + commission 74.68 USD / risk 320.10 USD |  |
+| AI_SYN_018 | EURUSD | SELL | 2026-11-06 13:00:06 | 2026-11-06 14:54:55 | -1.002 | ORDINARY_NOISE | none |  |
+| AI_SYN_019 | GBPUSD | SELL | 2026-11-06 16:00:06 | 2026-11-06 16:49:37 | +2.203 | ORDINARY_NOISE | none |  |
 
 ## Decision funnel rejections (stage, reason_code)
 

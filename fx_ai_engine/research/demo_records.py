@@ -8,7 +8,11 @@ terminal folder.
 
 Times: deals.json ``time_msc`` is UTC epoch milliseconds (core/file_bridge_connection.py
 and core/mt5_bridge.py treat it so). Exit files carry ``close_time`` in broker
-SERVER time, so exit times are taken from the matching deal when one exists.
+SERVER time, so exit times are taken from the final closing deal when one exists.
+
+R: live trades are compared with the replay on net R (``R_DEFINITION``), computed
+from the position's deals, because the EA's ``r_multiple`` leaves out commission
+and swap while the replay's ``r_multiple`` is net of commission.
 
 Usage: imported by research.fill_reconciliation, research.drift_monitor and
 research.trade_postmortem; there is no CLI.
@@ -24,7 +28,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
-from backtesting.unified_replay import SYMBOLS, load_bridge_bar_exports
+from backtesting.unified_replay import SYMBOLS, load_bridge_bar_exports, pip_value_usd_per_lot
 from core.filters.calendar_filter import load_calendar
 from research.common import PROJECT_ROOT, parse_ts
 
@@ -258,23 +262,69 @@ def _ts(value: Any) -> pd.Timestamp | None:
     return parse_ts(str(value))
 
 
+def _opt_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out else None
+
+
+R_DEFINITION = ("net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with "
+                "risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same "
+                "definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based "
+                "and leaves out commission and swap.")
+
+
+def net_r_fields(trade: Mapping[str, Any], entry_deals: Sequence[Deal], exit_deals: Sequence[Deal]) -> dict[str, Any]:
+    """Net R of one position from its deals, defined as unified_replay defines r_multiple (net_usd / risk_usd).
+
+    Returns risk_usd, net_usd, net_r and, when net_r is None, net_r_missing (the reason).
+    """
+    symbol = str(trade.get("symbol") or "")
+    lots = entry_deals[0].volume if entry_deals else _opt_float(trade.get("lot_size"))
+    entry_price = entry_deals[0].price if entry_deals else _opt_float(trade.get("entry_price"))
+    stop = _opt_float(trade.get("stop_loss"))
+    risk = None
+    if symbol in SYMBOLS and lots and stop and stop > 0 and entry_price:
+        risk = lots * stop * pip_value_usd_per_lot(symbol, entry_price)
+    out: dict[str, Any] = {"risk_usd": None if risk is None else round(risk, 4), "net_usd": None, "net_r": None}
+    if not exit_deals:
+        out["net_r_missing"] = "no closing deal"
+        return out
+    net = sum(d.profit + d.commission + d.swap + d.fee for d in (*entry_deals, *exit_deals))
+    out["net_usd"] = round(net, 4)
+    if risk is None or risk <= 0:
+        out["net_r_missing"] = "risk USD unknown (lots, stop pips or entry price missing)"
+        return out
+    out["net_r"] = round(net / risk, 6) + 0.0
+    return out
+
+
 def closed_trades(conn: sqlite3.Connection, evidence_stream: str = DEFAULT_STREAM,
                   exits: Mapping[int, Mapping[str, Any]] | None = None,
                   deals: Sequence[Deal] | None = None) -> list[dict]:
-    """Closed strategy trades from the trades table, with a best-evidence ``exit_time``.
+    """Closed strategy trades from the trades table, with a best-evidence ``exit_time`` and net R.
 
     * status CLOSED_* -> source 'db';
     * status EXECUTED_OPEN with a final exit file for its position_ticket -> source
-      'bridge_exit_copy' (status, r_multiple, profit_loss taken from the exit file);
-    * exit_time: the closing deal (entry == 1, same position_id), else trades.close_time,
-      else the exit file close_time (server time) with ``exit_time_unverified``.
+      'bridge_exit_copy' (status, r_multiple, profit_loss taken from the exit file; a
+      missing value stays None);
+    * exit_time: the FINAL closing deal (last deal with entry == 1 and the same
+      position_id, so an EA partial close is not taken as the exit), else
+      trades.close_time, else the exit file close_time. Both fallbacks come from the
+      EA exit payload, which carries server time, so they set ``exit_time_unverified``;
+      ``exit_time_source`` names the source;
+    * net_r / net_usd / risk_usd: see ``R_DEFINITION`` and ``net_r_fields`` (None without
+      deals). ``r_multiple`` stays the EA's gross, price-based value.
     Deals without a trades row (e.g. EA demo-matrix tests) are never returned.
     """
     exits = exits or {}
-    exit_deals: dict[int, Deal] = {}
-    for deal in deals or ():
-        if deal.entry == 1 and deal.position_id:
-            exit_deals.setdefault(deal.position_id, deal)
+    entry_deals: dict[int, list[Deal]] = {}
+    exit_deals: dict[int, list[Deal]] = {}
+    for deal in sorted(deals or (), key=lambda d: (d.time, d.ticket)):
+        if deal.position_id and deal.entry in (0, 1):
+            (entry_deals if deal.entry == 0 else exit_deals).setdefault(deal.position_id, []).append(deal)
     out: list[dict] = []
     for trade in load_trades(conn, evidence_stream):
         status = str(trade.get("status") or "")
@@ -284,21 +334,27 @@ def closed_trades(conn: sqlite3.Connection, evidence_stream: str = DEFAULT_STREA
             item = {**trade, "source": "db"}
         elif status == "EXECUTED_OPEN" and exit_file and exit_file.get("is_final_exit") is True:
             item = {**trade, "source": "bridge_exit_copy", "status": exit_file.get("status", status),
-                    "r_multiple": float(exit_file.get("r_multiple", 0.0)),
-                    "profit_loss": float(exit_file.get("profit_loss", 0.0))}
+                    "r_multiple": _opt_float(exit_file.get("r_multiple")),
+                    "profit_loss": _opt_float(exit_file.get("profit_loss"))}
         else:
             continue
-        deal = exit_deals.get(position) if position else None
+        closing = exit_deals.get(position, []) if position else []
+        final = closing[-1] if closing else None
         file_close = _ts(exit_file.get("close_time")) if exit_file else None
-        item["exit_time_unverified"] = False
-        if deal is not None:
-            item["exit_time"] = deal.time
-        elif _ts(trade.get("close_time")) is not None:
-            item["exit_time"] = _ts(trade.get("close_time"))
+        db_close = _ts(trade.get("close_time"))
+        if final is not None:
+            item.update(exit_time=final.time, exit_time_source="deal", exit_time_unverified=False)
+        elif db_close is not None:
+            item.update(exit_time=db_close, exit_time_source="trades.close_time", exit_time_unverified=True)
         else:
-            item["exit_time"] = file_close
-            item["exit_time_unverified"] = True
-        if deal is not None and file_close is not None:
-            item["exit_file_close_time_offset_s"] = int((file_close - deal.time.floor("s")).total_seconds())
+            item.update(exit_time=file_close, exit_time_source="exit_file.close_time" if file_close else None,
+                        exit_time_unverified=True)
+        item["closing_deals"] = len(closing)
+        if final is not None and file_close is not None:
+            item["exit_file_close_time_offset_s"] = int((file_close - final.time.floor("s")).total_seconds())
+        if deals is not None:
+            item.update(net_r_fields(trade, entry_deals.get(position, []) if position else [], closing))
+        else:
+            item.update(risk_usd=None, net_usd=None, net_r=None, net_r_missing="no deals given")
         out.append(item)
     return out

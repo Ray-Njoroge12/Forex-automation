@@ -114,17 +114,21 @@
   ],
   "thresholds_version": 1,
   "thresholds_sha256_16": "04b13538c8afd78e",
+  "r_definition": "net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.",
   "replay_gate": {
     "path": null,
     "verdict": null,
     "evidence_status": "NOT_EVIDENCE",
-    "note": "replay distribution not gated by R2 (NOT EVIDENCE)"
+    "note": "replay distribution not gated by R2 (NOT EVIDENCE)",
+    "binding": null,
+    "binding_note": null
   },
   "inputs": {
     "db": "../tmp/wave3-real/trading_state_snapshot.db",
     "evidence_stream": "runtime_mt5_core_srs",
     "closed_trades": 1,
-    "without_r_multiple": 0,
+    "without_net_r": {},
+    "mean_ea_r_minus_net_r": -0.0,
     "exit_time_unverified": 0,
     "without_exit_time": 0,
     "sources": {

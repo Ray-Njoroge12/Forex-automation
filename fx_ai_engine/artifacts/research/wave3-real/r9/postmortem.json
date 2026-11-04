@@ -11,6 +11,7 @@
   ],
   "ordinary_noise_meaning": "outcome consistent with the model; nothing abnormal recorded",
   "pattern_share": 0.25,
+  "r_definition": "net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.",
   "cfg": {
     "execution_entry_adverse_pips": 1.0,
     "execution_exit_adverse_pips": 1.0,
@@ -199,7 +200,9 @@
       "entry_time": "2026-11-03T16:30:05.422000+00:00",
       "exit_time": "2026-11-03T19:03:16.520000+00:00",
       "iso_week": "2026-W45",
-      "net_r": 0.4926,
+      "net_r": 0.492647,
+      "ea_r_multiple": 0.4926,
+      "risk_usd": 3200.08,
       "profit_loss": 1576.51,
       "stop_pips": 13.6,
       "stop_source": "funnel TECHNICAL stop_pips",
@@ -216,6 +219,6 @@
     }
   ],
   "metadata": {
-    "run_utc": "2026-11-04T07:49:09Z"
+    "run_utc": "2026-11-04T08:40:27Z"
   }
 }

@@ -9,9 +9,11 @@ Live demo R sequence placed inside bands simulated from the replay R distributio
 Live closed trades: 1 (minimum for a verdict: 25). Replay trades: 6406. Mean R live +0.4926 vs replay -0.3476.
 Simulation: 10000 paths, method block, block length 5, seed 11. Thresholds version 1 (sha256_16 04b13538c8afd78e).
 
+R definition (live and replay): net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.
+
 Replay gate: replay distribution not gated by R2 (NOT EVIDENCE) (evidence status NOT_EVIDENCE).
 
-Inputs: DB `../tmp/wave3-real/trading_state_snapshot.db` (stream runtime_mt5_core_srs, read-only); replay `../tmp/wave3-real/baseline__policy__edge__base_trades.csv` (sha256_16 2547c2ca3b247509, 6406 trades).
+Inputs: DB `../tmp/wave3-real/trading_state_snapshot.db` (stream runtime_mt5_core_srs, read-only); replay `../tmp/wave3-real/baseline__policy__edge__base_trades.csv` (sha256_16 2547c2ca3b247509, 6406 trades). Closed live trades read 1, left out for lack of net R 0.
 
 Flags below are informational only: the live sample is under the minimum.
 

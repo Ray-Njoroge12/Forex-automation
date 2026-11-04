@@ -13,11 +13,11 @@
     "max_dd_r_high_percentile": 95.0,
     "loss_streak_high_percentile": 95.0
   },
-  "n_live": 36,
+  "n_live": 35,
   "min_live_trades": 25,
   "replay_trades": 200,
   "replay_mean_r": 0.056,
-  "live_mean_r": 0.1083,
+  "live_mean_r": 0.1398,
   "verdict": "WITHIN_BANDS",
   "reason": "no flag fired",
   "flags": [],
@@ -28,7 +28,7 @@
       "metric": "cum_r",
       "rule": "100*P(sim <= live) < cum_r_low_percentile",
       "threshold_percentile": 5.0,
-      "live_rank": 59.29,
+      "live_rank": 64.16,
       "fired": false,
       "note": null
     },
@@ -37,7 +37,7 @@
       "metric": "cum_r",
       "rule": "100*P(sim < live) > cum_r_high_percentile",
       "threshold_percentile": 99.0,
-      "live_rank": 59.29,
+      "live_rank": 64.16,
       "fired": false,
       "note": "check recording (live results better than almost every simulated path)"
     },
@@ -46,7 +46,7 @@
       "metric": "max_dd_r",
       "rule": "100*P(sim < live) > max_dd_r_high_percentile",
       "threshold_percentile": 95.0,
-      "live_rank": 12.48,
+      "live_rank": 20.83,
       "fired": false,
       "note": null
     },
@@ -55,35 +55,35 @@
       "metric": "loss_streak",
       "rule": "100*P(sim < live) > loss_streak_high_percentile",
       "threshold_percentile": 95.0,
-      "live_rank": 15.72,
+      "live_rank": 17.05,
       "fired": false,
       "note": null
     }
   ],
   "metrics": {
     "cum_r": {
-      "live": 3.9,
+      "live": 4.894,
       "simulated": {
-        "p5": -10.4,
-        "p25": -4.0,
-        "p50": 2.4,
-        "p75": 8.8,
-        "p95": 15.2
+        "p5": -12.6,
+        "p25": -3.0,
+        "p50": 3.4,
+        "p75": 6.6,
+        "p95": 16.2
       },
-      "live_rank": 59.29,
-      "live_rank_strict": 59.29
+      "live_rank": 64.16,
+      "live_rank_strict": 64.16
     },
     "max_dd_r": {
-      "live": 5.0,
+      "live": 5.0063,
       "simulated": {
         "p5": 4.0,
         "p25": 5.8,
         "p50": 7.8,
         "p75": 10.6,
-        "p95": 16.0
+        "p95": 15.6
       },
-      "live_rank": 19.5,
-      "live_rank_strict": 12.48
+      "live_rank": 20.83,
+      "live_rank_strict": 20.83
     },
     "loss_streak": {
       "live": 5.0,
@@ -94,8 +94,8 @@
         "p75": 8.0,
         "p95": 12.0
       },
-      "live_rank": 33.86,
-      "live_rank_strict": 15.72
+      "live_rank": 35.73,
+      "live_rank_strict": 17.05
     }
   },
   "bands": [
@@ -114,26 +114,26 @@
     {
       "k": 2,
       "trade_id": "AI_SYN_001",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -2.0,
       "p25": -2.0,
       "p50": 1.2,
       "p75": 1.2,
       "p95": 4.4,
-      "live_cum_r": 1.2,
-      "live_rank": 91.03
+      "live_cum_r": 1.1975,
+      "live_rank": 43.06
     },
     {
       "k": 3,
       "trade_id": "AI_SYN_002",
-      "live_r": 2.2,
+      "live_r": 2.2055,
       "p5": -3.0,
       "p25": -3.0,
       "p50": 0.2,
       "p75": 0.2,
       "p95": 3.4,
-      "live_cum_r": 3.4,
-      "live_rank": 97.58
+      "live_cum_r": 3.403,
+      "live_rank": 97.61
     },
     {
       "k": 4,
@@ -144,20 +144,20 @@
       "p50": -0.8,
       "p75": 2.4,
       "p95": 5.6,
-      "live_cum_r": 2.4,
-      "live_rank": 91.12
+      "live_cum_r": 2.403,
+      "live_rank": 90.69
     },
     {
       "k": 5,
       "trade_id": "AI_SYN_004",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -5.0,
       "p25": -1.8,
       "p50": 1.4,
       "p75": 1.4,
       "p95": 4.6,
-      "live_cum_r": 1.4,
-      "live_rank": 80.46
+      "live_cum_r": 1.4005,
+      "live_rank": 80.41
     },
     {
       "k": 6,
@@ -168,32 +168,32 @@
       "p50": 0.4,
       "p75": 3.6,
       "p95": 6.8,
-      "live_cum_r": 0.4,
-      "live_rank": 69.04
+      "live_cum_r": 0.4005,
+      "live_rank": 69.06
     },
     {
       "k": 7,
       "trade_id": "AI_SYN_006",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -7.0,
       "p25": -3.8,
       "p50": -0.6,
       "p75": 2.6,
       "p95": 5.8,
-      "live_cum_r": -0.6,
-      "live_rank": 58.21
+      "live_cum_r": -0.602,
+      "live_rank": 26.04
     },
     {
       "k": 8,
       "trade_id": "AI_SYN_007",
-      "live_r": -1.0,
+      "live_r": -1.0013,
       "p5": -4.8,
       "p25": -1.6,
       "p50": 1.6,
       "p75": 1.6,
       "p95": 8.0,
-      "live_cum_r": -1.6,
-      "live_rank": 47.02
+      "live_cum_r": -1.6033,
+      "live_rank": 19.15
     },
     {
       "k": 9,
@@ -204,32 +204,32 @@
       "p50": 0.6,
       "p75": 3.8,
       "p95": 7.0,
-      "live_cum_r": 0.6,
-      "live_rank": 66.57
+      "live_cum_r": 0.5967,
+      "live_rank": 37.8
     },
     {
       "k": 10,
       "trade_id": "AI_SYN_009",
-      "live_r": 2.2,
+      "live_r": 2.2055,
       "p5": -6.8,
       "p25": -3.6,
       "p50": -0.4,
       "p75": 2.8,
       "p95": 9.2,
-      "live_cum_r": 2.8,
-      "live_rank": 80.69
+      "live_cum_r": 2.8023,
+      "live_rank": 80.75
     },
     {
       "k": 11,
       "trade_id": "SYN_NEWS",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -7.8,
       "p25": -1.4,
       "p50": 1.8,
       "p75": 5.0,
       "p95": 8.2,
-      "live_cum_r": 1.8,
-      "live_rank": 72.95
+      "live_cum_r": 1.7998,
+      "live_rank": 47.62
     },
     {
       "k": 12,
@@ -240,20 +240,20 @@
       "p50": 0.8,
       "p75": 4.0,
       "p95": 10.4,
-      "live_cum_r": 0.8,
-      "live_rank": 64.81
+      "live_cum_r": 0.7998,
+      "live_rank": 39.74
     },
     {
       "k": 13,
       "trade_id": "AI_SYN_012",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -6.6,
       "p25": -3.4,
       "p50": -0.2,
       "p75": 3.0,
       "p95": 9.4,
-      "live_cum_r": -0.2,
-      "live_rank": 56.59
+      "live_cum_r": -0.2028,
+      "live_rank": 32.09
     },
     {
       "k": 14,
@@ -264,8 +264,8 @@
       "p50": 2.0,
       "p75": 5.2,
       "p95": 8.4,
-      "live_cum_r": 2.0,
-      "live_rank": 71.18
+      "live_cum_r": 1.9972,
+      "live_rank": 48.15
     },
     {
       "k": 15,
@@ -276,20 +276,20 @@
       "p50": 1.0,
       "p75": 4.2,
       "p95": 10.6,
-      "live_cum_r": 1.0,
-      "live_rank": 63.76
+      "live_cum_r": 0.9972,
+      "live_rank": 40.95
     },
     {
       "k": 16,
       "trade_id": "AI_SYN_015",
-      "live_r": 2.2,
+      "live_r": 2.1973,
       "p5": -9.6,
       "p25": -3.2,
       "p50": 0.0,
       "p75": 3.2,
       "p95": 9.6,
-      "live_cum_r": 3.2,
-      "live_rank": 75.63
+      "live_cum_r": 3.1945,
+      "live_rank": 55.98
     },
     {
       "k": 17,
@@ -300,128 +300,128 @@
       "p50": 2.2,
       "p75": 5.4,
       "p95": 11.8,
-      "live_cum_r": 2.2,
-      "live_rank": 69.41
+      "live_cum_r": 2.1945,
+      "live_rank": 48.53
     },
     {
       "k": 18,
       "trade_id": "SYN_COST",
-      "live_r": -1.0,
+      "live_r": -0.9997,
       "p5": -8.4,
       "p25": -2.0,
       "p50": 1.2,
       "p75": 4.4,
       "p95": 10.8,
-      "live_cum_r": 1.2,
-      "live_rank": 62.69
+      "live_cum_r": 1.1948,
+      "live_rank": 41.41
     },
     {
       "k": 19,
       "trade_id": "AI_SYN_018",
-      "live_r": -1.0,
+      "live_r": -1.0016,
       "p5": -9.4,
       "p25": -3.0,
       "p50": 0.2,
       "p75": 6.6,
       "p95": 13.0,
-      "live_cum_r": 0.2,
-      "live_rank": 55.53
+      "live_cum_r": 0.1932,
+      "live_rank": 35.1
     },
     {
       "k": 20,
       "trade_id": "AI_SYN_019",
-      "live_r": 2.2,
+      "live_r": 2.2034,
       "p5": -10.4,
       "p25": -4.0,
       "p50": 2.4,
       "p75": 5.6,
       "p95": 12.0,
-      "live_cum_r": 2.4,
-      "live_rank": 67.73
+      "live_cum_r": 2.3967,
+      "live_rank": 48.72
     },
     {
       "k": 21,
       "trade_id": "AI_SYN_020",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -8.2,
       "p25": -1.8,
       "p50": 1.4,
       "p75": 4.6,
       "p95": 11.0,
-      "live_cum_r": 1.4,
-      "live_rank": 61.87
+      "live_cum_r": 1.3942,
+      "live_rank": 42.82
     },
     {
       "k": 22,
       "trade_id": "AI_SYN_021",
-      "live_r": 2.2,
+      "live_r": 2.2021,
       "p5": -9.2,
       "p25": -2.8,
       "p50": 0.4,
       "p75": 6.8,
       "p95": 13.2,
-      "live_cum_r": 3.6,
-      "live_rank": 71.96
+      "live_cum_r": 3.5962,
+      "live_rank": 55.04
     },
     {
       "k": 23,
       "trade_id": "SYN_REGIME",
-      "live_r": -1.0,
+      "live_r": -1.0031,
       "p5": -10.2,
       "p25": -3.8,
       "p50": 2.6,
       "p75": 5.8,
       "p95": 12.2,
-      "live_cum_r": 2.6,
-      "live_rank": 66.39
+      "live_cum_r": 2.5931,
+      "live_rank": 48.89
     },
     {
       "k": 24,
       "trade_id": "AI_SYN_023",
-      "live_r": -1.0,
+      "live_r": -0.9988,
       "p5": -11.2,
       "p25": -4.8,
       "p50": 1.6,
       "p75": 4.8,
       "p95": 14.4,
-      "live_cum_r": 1.6,
-      "live_rank": 60.54
+      "live_cum_r": 1.5944,
+      "live_rank": 43.47
     },
     {
       "k": 25,
       "trade_id": "AI_SYN_024",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -9.0,
       "p25": -2.6,
       "p50": 0.6,
       "p75": 7.0,
       "p95": 13.4,
-      "live_cum_r": 0.6,
-      "live_rank": 54.79
+      "live_cum_r": 0.5919,
+      "live_rank": 37.87
     },
     {
       "k": 26,
       "trade_id": "AI_SYN_025",
-      "live_r": 2.2,
+      "live_r": 2.2021,
       "p5": -10.0,
       "p25": -3.6,
       "p50": 2.8,
       "p75": 6.0,
       "p95": 12.4,
-      "live_cum_r": 2.8,
-      "live_rank": 65.64
+      "live_cum_r": 2.7939,
+      "live_rank": 49.39
     },
     {
       "k": 27,
       "trade_id": "AI_SYN_026",
-      "live_r": 2.2,
+      "live_r": 2.2021,
       "p5": -11.0,
       "p25": -4.6,
       "p50": 1.8,
       "p75": 5.0,
       "p95": 14.6,
-      "live_cum_r": 5.0,
-      "live_rank": 75.1
+      "live_cum_r": 4.996,
+      "live_rank": 60.51
     },
     {
       "k": 28,
@@ -432,44 +432,44 @@
       "p50": 0.8,
       "p75": 7.2,
       "p95": 13.6,
-      "live_cum_r": 4.0,
-      "live_rank": 70.23
+      "live_cum_r": 3.996,
+      "live_rank": 54.89
     },
     {
       "k": 29,
       "trade_id": "AI_SYN_028",
-      "live_r": -1.0,
+      "live_r": -1.0025,
       "p5": -9.8,
       "p25": -3.4,
       "p50": 3.0,
       "p75": 6.2,
       "p95": 15.8,
-      "live_cum_r": 3.0,
-      "live_rank": 65.35
+      "live_cum_r": 2.9935,
+      "live_rank": 49.53
     },
     {
       "k": 30,
       "trade_id": "SYN_MANUAL",
-      "live_r": 0.5,
+      "live_r": 0.5016,
       "p5": -10.8,
       "p25": -4.4,
       "p50": 2.0,
       "p75": 8.4,
       "p95": 14.8,
-      "live_cum_r": 3.5,
-      "live_rank": 60.36
+      "live_cum_r": 3.495,
+      "live_rank": 60.12
     },
     {
       "k": 31,
       "trade_id": "AI_SYN_030",
-      "live_r": -1.0,
+      "live_r": -1.0016,
       "p5": -11.8,
       "p25": -2.2,
       "p50": 1.0,
       "p75": 7.4,
       "p95": 13.8,
-      "live_cum_r": 2.5,
-      "live_rank": 55.0
+      "live_cum_r": 2.4935,
+      "live_rank": 55.19
     },
     {
       "k": 32,
@@ -480,75 +480,69 @@
       "p50": 0.0,
       "p75": 6.4,
       "p95": 16.0,
-      "live_cum_r": 4.7,
-      "live_rank": 64.89
+      "live_cum_r": 4.6935,
+      "live_rank": 64.66
     },
     {
       "k": 33,
-      "trade_id": "SYN_MISSING",
+      "trade_id": "AI_SYN_033",
       "live_r": -1.0,
       "p5": -10.6,
       "p25": -4.2,
       "p50": 2.2,
       "p75": 8.6,
       "p95": 15.0,
-      "live_cum_r": 3.7,
-      "live_rank": 60.07
+      "live_cum_r": 3.6935,
+      "live_rank": 59.83
     },
     {
       "k": 34,
-      "trade_id": "AI_SYN_033",
-      "live_r": -1.0,
+      "trade_id": "AI_SYN_034",
+      "live_r": -1.0016,
       "p5": -11.6,
       "p25": -5.2,
       "p50": 1.2,
       "p75": 7.6,
       "p95": 17.2,
-      "live_cum_r": 2.7,
-      "live_rank": 55.07
+      "live_cum_r": 2.6919,
+      "live_rank": 55.04
     },
     {
       "k": 35,
-      "trade_id": "AI_SYN_034",
-      "live_r": -1.0,
+      "trade_id": "AI_SYN_035",
+      "live_r": 2.2021,
       "p5": -12.6,
       "p25": -3.0,
       "p50": 3.4,
       "p75": 6.6,
       "p95": 16.2,
-      "live_cum_r": 1.7,
-      "live_rank": 49.87
-    },
-    {
-      "k": 36,
-      "trade_id": "AI_SYN_035",
-      "live_r": 2.2,
-      "p5": -10.4,
-      "p25": -4.0,
-      "p50": 2.4,
-      "p75": 8.8,
-      "p95": 15.2,
-      "live_cum_r": 3.9,
-      "live_rank": 59.29
+      "live_cum_r": 4.894,
+      "live_rank": 64.16
     }
   ],
   "thresholds_version": 1,
   "thresholds_sha256_16": "04b13538c8afd78e",
+  "r_definition": "net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.",
   "replay_gate": {
     "path": null,
     "verdict": null,
     "evidence_status": "NOT_EVIDENCE",
-    "note": "replay distribution not gated by R2 (NOT EVIDENCE)"
+    "note": "replay distribution not gated by R2 (NOT EVIDENCE)",
+    "binding": null,
+    "binding_note": null
   },
   "inputs": {
     "db": "../tmp/wave3-fixture/trading_state.db",
     "evidence_stream": "runtime_mt5_core_srs",
     "closed_trades": 36,
-    "without_r_multiple": 0,
+    "without_net_r": {
+      "no closing deal": 1
+    },
+    "mean_ea_r_minus_net_r": 0.0408,
     "exit_time_unverified": 0,
     "without_exit_time": 0,
     "sources": {
-      "db": 36
+      "db": 35
     },
     "max_trades_id_read": 37,
     "exits_dir": "../tmp/wave3-fixture/exits",

@@ -49,7 +49,7 @@ def test_planted_special_trades_get_their_primary_cause(report):
     assert t["SYN_EXEC"]["primary_cause"] == "EXECUTION"
     assert any("after bar close" in f["evidence"] for f in t["SYN_EXEC"]["flags"])
     assert t["SYN_MANUAL"]["primary_cause"] == "EXECUTION"
-    assert any("not placed by the EA" in f["evidence"] for f in t["SYN_MANUAL"]["flags"])
+    assert any("not placed by the EA (magic 0," in f["evidence"] for f in t["SYN_MANUAL"]["flags"])
     assert t["SYN_NEWS"]["primary_cause"] == "NEWS_CALENDAR"
     assert t["SYN_COST"]["primary_cause"] == "SPREAD_COST"
     assert t["SYN_COST"]["cost_r"] >= CFG["cost_r_fraction"]
@@ -72,7 +72,8 @@ def test_every_ordinary_trade_is_ordinary_noise(report):
 def _hand_trade(**over):
     trade = {"trade_id": "HAND", "symbol": "EURUSD", "direction": "BUY", "status": "CLOSED_LOSS", "source": "db",
              "decision_time": T0 + pd.Timedelta(seconds=3), "entry_time": T0 + pd.Timedelta(seconds=120),
-             "exit_time": T0 + pd.Timedelta(hours=1), "net_r": -1.0, "profit_loss": -320.0, "stop_pips": 20.0,
+             "exit_time": T0 + pd.Timedelta(hours=1), "net_r": -1.0, "profit_loss": -320.0, "risk_usd": 320.0,
+             "stop_pips": 20.0,
              "stop_source": "funnel TECHNICAL stop_pips", "prep_notes": [],
              "r7": {"comparable": True, "fill_diff_pips": 0.2, "fill_latency_s": 120.0, "exit_slippage_diff_pips": 0.0,
                     "exit_slippage_pips": 0.0, "exit_kind": "STOP", "actual_spread_pips": 1.0,
@@ -96,6 +97,23 @@ def test_precedence_keeps_all_flags_and_picks_execution():
     assert not any(n.startswith("NEWS_NOT_EVALUABLE") for n in out["notes"])
     # 1.2 pip / 20 + 7 USD / 320 USD = 0.081875 R
     assert out["cost_r"] == pytest.approx(0.0819, abs=1e-4)
+
+
+def test_all_day_event_blackout_override_flags_news():
+    # Like the repo calendar's time_exact false events: nominal time far from the trade, 720-minute overrides
+    allday = {"time": pd.Timestamp("2026-11-04T00:00:00Z"), "currency": "EUR", "impact": "high",
+              "event": "Leaders summit", "time_exact": False, "blackout_before_minutes": 720,
+              "blackout_after_minutes": 720}
+    events = [*_events(*COVER), allday]
+    trade = _hand_trade(r7={"comparable": True}, entry_time=T0 + pd.Timedelta(seconds=6))
+    out = tp.classify_trade(trade, [], events, {}, CFG)
+    assert out["primary_cause"] == "NEWS_CALENDAR"
+    assert "time not exact" in out["flags"][0]["evidence"]
+    late = _hand_trade(r7={"comparable": True}, entry_time=T0 + pd.Timedelta(hours=3),
+                       exit_time=T0 + pd.Timedelta(hours=4))  # 13:00-14:00, after the 12:00 end of the blackout
+    assert "NEWS_CALENDAR" not in _causes(tp.classify_trade(late, [], events, {}, CFG))
+    plain = [*_events(*COVER), {k: v for k, v in allday.items() if not k.startswith(("blackout", "time_exact"))}]
+    assert "NEWS_CALENDAR" not in _causes(tp.classify_trade(trade, [], plain, {}, CFG))
 
 
 def test_trade_outside_calendar_coverage_gets_not_evaluable_note():

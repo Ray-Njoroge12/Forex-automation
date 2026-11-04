@@ -46,6 +46,10 @@ DEMO_CAVEAT = ("MetaQuotes-Demo spreads and fills differ from a funded broker's 
                "re-measure on the funded account before using any suggestion.")
 METRICS = ("fill_diff_pips", "spread_diff_pips", "slippage_diff_pips", "exit_slippage_diff_pips",
            "fill_latency_s", "commission_diff_usd_per_lot")
+# fill_latency_s is measured against a model latency of 0 s, so it is positive by construction and would
+# fix the verdict at SYSTEMATIC_BIAS; it is reported with its own status but kept out of the verdict.
+INFORMATIONAL_METRICS = ("fill_latency_s",)
+VERDICT_METRICS = tuple(m for m in METRICS if m not in INFORMATIONAL_METRICS)
 VERDICTS = ("INCONCLUSIVE", "SYSTEMATIC_BIAS", "NO_SYSTEMATIC_BIAS")
 EXIT_TAG = re.compile(r"\[(sl|tp)\s+([0-9]*\.?[0-9]+)\]", re.IGNORECASE)
 PRICE_MISMATCH_PIPS = 0.05
@@ -57,7 +61,7 @@ CSV_COLUMNS = (
     "route_to_fill_s", "deal_price", "bid_open", "bar_spread_points", "modelled_spread_pips", "replay_fill",
     "actual_spread_pips", "actual_spread_source", "ea_slippage_pips", "fill_diff_pips", "spread_diff_pips",
     "implied_slippage_pips", "slippage_diff_pips", "strict_fill", "strict_diff_pips", "exit_deal_ticket",
-    "exit_time", "exit_price", "exit_kind", "exit_level", "exit_slippage_pips", "model_exit_slippage_pips",
+    "exit_time", "exit_price", "exit_magic", "exit_kind", "exit_level", "exit_slippage_pips", "model_exit_slippage_pips",
     "exit_slippage_diff_pips", "commission_per_lot_usd", "commission_diff_usd_per_lot", "live_cost_pips",
     "model_cost_pips", "cost_ratio", "price_mismatch_pips",
 )
@@ -116,7 +120,7 @@ def _exit_fields(row: dict, deal: Deal, exits: Sequence[Deal], s: int, pip: floa
     if kind is None:
         kind = "NOT_BY_EA" if last.magic != EA_MAGIC else "UNTAGGED"
     row.update({"exit_deal_ticket": last.ticket, "exit_time": last.time.isoformat(), "exit_price": last.price,
-                "exit_kind": kind, "exit_level": level})
+                "exit_magic": last.magic, "exit_kind": kind, "exit_level": level})
     if level is not None:
         slip = s * (level - last.price) / pip
         model = cost.slippage if kind == "STOP" else 0.0
@@ -301,7 +305,7 @@ def summarise(rows: Sequence[Mapping[str, Any]], thresholds_r7: Mapping[str, Any
         metrics[name] = {"overall": describe([r.get(name) for r in comparable], th),
                          "by_symbol": {s: describe([r.get(name) for r in comparable if r["symbol"] == s], th)
                                        for s in symbols}}
-    statuses = [m["overall"]["status"] for m in metrics.values()]
+    statuses = [metrics[name]["overall"]["status"] for name in VERDICT_METRICS]
     if all(st == "INCONCLUSIVE" for st in statuses):
         verdict = "INCONCLUSIVE"
     elif "SYSTEMATIC_BIAS" in statuses:
@@ -352,6 +356,8 @@ def summarise(rows: Sequence[Mapping[str, Any]], thresholds_r7: Mapping[str, Any
         "counts": {"rows": len(rows), "entry_deals": sum(1 for r in rows if r.get("deal_ticket") is not None),
                    "comparable": len(comparable), "not_comparable": reasons},
         "verdict": verdict,
+        "verdict_metrics": list(VERDICT_METRICS),
+        "informational_metrics": list(INFORMATIONAL_METRICS),
         "metrics": metrics,
         "cost_ratio": cost_ratio,
         "strict_reference": {"n": len(strict), "mean_strict_diff_pips": round(float(np.mean(strict)), 6) if strict else None,
@@ -382,7 +388,10 @@ def render_markdown(report: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
         "",
         f"**Verdict: {report['verdict']}** (per metric: INCONCLUSIVE below "
         f"{report['thresholds_r7']['min_deals_for_bias']} comparable deals; SYSTEMATIC_BIAS when the "
-        f"{report['thresholds_r7']['ci_level']:.0%} bootstrap CI of the mean excludes 0).",
+        f"{report['thresholds_r7']['ci_level']:.0%} bootstrap CI of the mean excludes 0; the verdict is "
+        f"SYSTEMATIC_BIAS if any of {', '.join(report['verdict_metrics'])} has it). "
+        f"Informational, not in the verdict: {', '.join(report['informational_metrics'])} (the replay assumes "
+        f"a fill at the bar close, 0 s, so fill latency is positive by construction; read its size).",
         "",
         "| metric | n | mean | median | std | p5 | p95 | CI of mean | status |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -391,7 +400,8 @@ def render_markdown(report: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
         o = m["overall"]
         ci = f"[{_f(o.get('ci_low'))}, {_f(o.get('ci_high'))}]" if o["n"] else "n/a"
         lines.append(f"| {name} | {o['n']} | {_f(o.get('mean'))} | {_f(o.get('median'))} | {_f(o.get('std'), '.3f')} | "
-                     f"{_f(o.get('p5'))} | {_f(o.get('p95'))} | {ci} | {o['status']} |")
+                     f"{_f(o.get('p5'))} | {_f(o.get('p95'))} | {ci} | {o['status']}"
+                     f"{' (informational)' if name in report['informational_metrics'] else ''} |")
     by_sym = {s for m in report["metrics"].values() for s in m["by_symbol"]}
     if by_sym:
         lines += ["", "Per symbol (mean, n, status):", "",
