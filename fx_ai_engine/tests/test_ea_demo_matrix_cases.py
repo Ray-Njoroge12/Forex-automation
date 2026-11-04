@@ -63,6 +63,9 @@ def test_setup_matches_the_behaviour_each_case_tests():
     assert cases["symbol_missing"]["ea_inputs"]["SymbolSuffix"]
     assert "etting" in cases["account_mode_netting"]["account"]
     assert any("KILL_SWITCH" in item for item in cases["kill_switch"]["files"])
+    # the management claim needs a managed open position, so the case runs after `valid` and names its state file
+    assert cases["kill_switch"]["prerequisite_case"] == "valid"
+    assert any("management_state_" in item for item in cases["kill_switch"]["files"])
     assert "LiveMaxLotPerOrder" in cases["live_lot_ceiling"]["ea_inputs"]
     assert "LiveMaxLotPerOrder" in cases["live_lot_below_minimum"]["ea_inputs"]
     assert cases["live_daily_cap"]["ea_inputs"]["LiveMaxOrdersPerDay"] == 1

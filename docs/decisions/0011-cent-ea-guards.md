@@ -30,7 +30,7 @@ Date: 2026-11-04. Status: built on branch `cent/ea-track`, not merged, not deplo
 - On a real account (`ACCOUNT_TRADE_MODE != DEMO`) a signal is processed only if `RequireDemoAccount` is false, `AllowLiveAccount` is true, `LiveMaxLotPerOrder > 0`, `LiveMaxOrdersPerDay > 0`, and `<RootFolder>\KILL_SWITCH` does not exist. Otherwise: feedback `REJECTED_LIVE_GUARD`, signal deleted, and the exact reason in `ea_debug.log` (`Live guard reject: ...`).
 - The kill switch also blocks new orders on a demo account, so it can be tested there. It is read only in the signal path. It never closes a position and does not touch `ManageOpenPositions`, the closed-position sweep or exit finalisation.
 - Lot ceiling: when `LiveMaxLotPerOrder > 0` and the final lot is above it, the lot becomes the ceiling stepped down to the broker lot step (`floor(cap / step + 1e-9) * step`; the epsilon avoids `0.03 / 0.01` evaluating to 2.999...). It never raises a lot. If the stepped-down lot is below the broker minimum the signal is rejected `REJECTED_LIVE_GUARD`.
-- Daily order cap: `feedback/live_orders_day.json` holds `{"utc_day":"YYYY-MM-DD","orders":N,"last_trade_id":"..."}`. The count is read before the gate and incremented (atomic publish, then read back and compared) after the preflight and before the submission marker is written. Any read, write or verification failure, or an unavailable clock, rejects with `REJECTED_LIVE_GUARD` (fail closed). The count is per trade id, so a retry of the same signal does not count twice. It counts order intents, not fills: an order that ends `EXECUTION_UNCERTAIN` or is rejected by the broker still uses one slot. The file name does not start with `execution_`, which the Python bridge globs.
+- Daily order cap: `feedback/live_orders_day.json` holds `{"utc_day":"YYYY-MM-DD","orders":N,"last_trade_id":"..."}`. The count is read before the gate and incremented (atomic publish, then read back and compared) after the preflight and before the submission marker is written. Any read, write or verification failure, or an unavailable clock, rejects with `REJECTED_LIVE_GUARD` (fail closed). The file is validated strictly on every read: `utc_day` must be a real `YYYY-MM-DD` date, `orders` must be digits only (no sign, point or space, at most 9 digits), and `last_trade_id` must be non-empty. Anything else is a read failure, not a rollover. Only a valid file from an earlier day resets the count to 0. The count is per trade id: the admission gate lets a signal whose trade id is the one already counted today pass the cap check, and `RecordLiveOrderIntent` does not count it again. So if the counter reaches the cap and the submission-marker write then fails, the retry of that same signal is still processed, and a different signal is rejected. It counts order intents, not fills: an order that ends `EXECUTION_UNCERTAIN` or is rejected by the broker still uses one slot. The file name does not start with `execution_`, which the Python bridge globs.
 - `status.json` gains `live_guard`: `account_real`, `require_demo`, `allow_live`, `max_lot`, `max_orders_per_day`, `orders_today` (`-1` when the counter file exists but cannot be read), `kill_switch`.
 
 ### Readings chosen where the task text was silent
@@ -52,17 +52,19 @@ Date: 2026-11-04. Status: built on branch `cent/ea-track`, not merged, not deplo
 
 ## Verification
 
-Build `2026.11.04-2`, staging compile with `scripts/mt5/compile_ea.sh` (no `--deploy`), 2026-11-04 about 13:30 UTC:
+Build `2026.11.04-2`, staging compile with `scripts/mt5/compile_ea.sh` (no `--deploy`), after the review-fix pass (strict counter schema, same-trade retry through the cap gate):
 
 ```
-Result: 0 errors, 0 warnings, 10924 ms elapsed, cpu='X64 Regular'
-249d194ad075a0dd7d8fd24870ec061061111fe67ba6f0b7faa9782181b907d7  fx_ai_engine/mt5_ea/FX_Execution.mq5
-027548da4eed8d601f8d0968c71ccc6abca5943c949fb57d7eb52df4d4dff931  fx_ai_engine/artifacts/mt5-build/FX_Execution.ex5
+Result: 0 errors, 0 warnings, 6769 ms elapsed, cpu='X64 Regular'
+30a4f2996352a544ad2d300b19a6e66617febb2b1491e2685f450809a6f3c787  fx_ai_engine/mt5_ea/FX_Execution.mq5
+2921ebf631a39b601e4c20f8b9e795117864e4bb0e60f7866ac03a27becdee85  fx_ai_engine/artifacts/mt5-build/FX_Execution.ex5
 ```
+
+The first review round covered source `249d194a...` and `.ex5` `027548da...`; both are superseded by the hashes above.
 
 The unmodified source also compiled with 0 errors and 0 warnings before the changes (source `04f5c72a...`). The compile log is `fx_ai_engine/artifacts/mt5-build/compile.txt` (not committed). Nothing was deployed, attached or restarted, and no matrix case was run.
 
-Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` gives 631 passed (581 before). New: `tests/test_ea_cent_guards.py` (44 source-guard tests, including `test_empty_suffix_leaves_exported_names_unchanged` and `test_envelope_checks_unchanged`) and `tests/test_ea_demo_matrix_cases.py` (6 tests). `validation/ea_demo_matrix.py` gains `build_cent_guard_cases` (7 cases: `suffix_resolved`, `symbol_missing`, `account_mode_netting`, `kill_switch`, `live_lot_ceiling`, `live_lot_below_minimum`, `live_daily_cap`) and writes `required_terminal_setup` for all 14 cases in `manifest.json`. `build_demo_matrix` still returns the original seven.
+Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` gives 633 passed (581 before). New: `tests/test_ea_cent_guards.py` (46 source-guard tests, including `test_empty_suffix_leaves_exported_names_unchanged` and `test_envelope_checks_unchanged`) and `tests/test_ea_demo_matrix_cases.py` (6 tests). `validation/ea_demo_matrix.py` gains `build_cent_guard_cases` (7 cases: `suffix_resolved`, `symbol_missing`, `account_mode_netting`, `kill_switch`, `live_lot_ceiling`, `live_lot_below_minimum`, `live_daily_cap`) and writes `required_terminal_setup` for all 14 cases in `manifest.json`. `build_demo_matrix` still returns the original seven.
 
 ### Verified only by compile plus source guards (owner must verify on the terminal after deploying)
 
@@ -71,9 +73,14 @@ Tests, from `fx_ai_engine/`: `USE_MT5_MOCK=1 ../.venv/bin/python -m pytest -q` g
 - That MetaQuotes-Demo reports `hedging` (the new guard rejects every signal otherwise).
 - The real-account path with all live conditions met.
 - The counter file across an EA restart and a UTC day change.
-- The kill switch leaving open positions managed.
+- The kill switch leaving open positions managed. The `kill_switch` matrix case now requires the `valid` case's position to be open and managed, and passes that part only if `ea_debug.log` shows a management line for the ticket after the file was created; without a price trigger it is inconclusive.
+- The strict counter parse (`IsValidUtcDay`, `ParseStrictCount`) on real MQL5 string and date behaviour, and the same-trade retry through the cap gate. The source guards assert structure and order only.
 - The lot ceiling step-down against a real lot step.
 - That Python accepts the `unknown` margin-mode value.
+
+## Runbook note (handoff)
+
+This track does not edit `fx_ai_engine/docs/runbooks/cent-account-setup.md` (outside its file ownership). The operator text for build `2026.11.04-2` is here instead. Inputs: `SymbolSuffix`; `MaxSpreadPips` (default 2.0 unchanged; a cent account gets its ceiling by setting it when the EA is attached; the lower of the input and the signal cap wins; shown as `max_spread_pips_input`); `AllowLiveAccount`; `LiveMaxLotPerOrder`; `LiveMaxOrdersPerDay`. The `KILL_SWITCH` file in the bridge root next to `ea_debug.log` blocks new orders on demo and real accounts, positions stay managed, and deleting it resumes. After attaching, check in `market/status.json`: `symbol_suffix`, `symbols_ok` (true), `symbol_errors` (empty), `account_margin_mode` (must be `hedging`), `account_currency`, `max_spread_pips_input`, `live_guard`. `symbols.json` entries show `broker_symbol`. The daily count is in `feedback/live_orders_day.json`. Matrix cases list their setup in `manifest.json` under `required_terminal_setup`. Sections 2 and 3 of the runbook still describe build `2026.11.04-1` until the owner deploys this build. The orchestrator or the owning track should add this to the runbook.
 
 ## Open
 

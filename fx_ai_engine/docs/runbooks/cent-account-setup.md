@@ -126,25 +126,3 @@ C2 has no protected path and can be done in a normal development wave. C1 to C5 
 ## 6. Switching back
 
 To return to `MetaQuotes-Demo 5058284077`: stop the engine, log MT5 into that account (File, Login to Trading Account), wait until `market/status.json` shows its login, then start the engine. Evidence streams are separate per account scope, so the two accounts' histories do not mix.
-
----
-
-## 7. EA build 2026.11.04-2 (C1, C4, C5) — 2026-11-04
-
-Built and compiled in staging only (ADR `docs/decisions/0011-cent-ea-guards.md`). **Not deployed.** Sections 2 and 3 above still describe build `2026.11.04-1` until the owner deploys this one after review.
-
-New EA inputs (set when attaching the EA to a chart):
-
-| Input | Default | Use |
-| --- | --- | --- |
-| `SymbolSuffix` | `""` | Broker suffix, for example `c` for `EURUSDc`. Leave empty on a plain-name account. Canonical names stay in every file the EA writes |
-| `MaxSpreadPips` | `2.0` (unchanged) | Spread ceiling. A cent account gets its ceiling by setting this input; the signal's own cap still applies (the lower of the two wins). `status.json` shows it as `max_spread_pips_input` |
-| `AllowLiveAccount` | `false` | Must be true, with `RequireDemoAccount=false`, for any real account |
-| `LiveMaxLotPerOrder` | `0.0` | Lot ceiling. Must be above 0 on a real account. On a demo it applies only when set above 0 |
-| `LiveMaxOrdersPerDay` | `0` | Orders per UTC day. Must be above 0 on a real account. On a demo it applies only when set above 0 |
-
-Kill switch: create a file named `KILL_SWITCH` (any content) in the bridge root folder, next to `ea_debug.log`. New orders are then rejected with `REJECTED_LIVE_GUARD`, on demo and real accounts alike. Open positions keep being managed. Delete the file to resume.
-
-What to read in `market/status.json` after attaching: `symbol_suffix`, `symbols_ok` (must be true), `symbol_errors` (empty), `account_margin_mode` (must be `hedging`, otherwise every signal gets `REJECTED_ACCOUNT_MODE`), `account_currency`, `max_spread_pips_input`, and the `live_guard` object (`account_real`, `require_demo`, `allow_live`, `max_lot`, `max_orders_per_day`, `orders_today`, `kill_switch`). `symbols.json` is keyed by canonical name and each entry shows `broker_symbol`. The daily order count is in `feedback/live_orders_day.json`.
-
-Matrix cases for these guards are generated with `validation.ea_demo_matrix`; `manifest.json` lists each case's required terminal setup. None has been run.

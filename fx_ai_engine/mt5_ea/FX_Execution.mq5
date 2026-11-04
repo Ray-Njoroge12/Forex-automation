@@ -1684,8 +1684,47 @@ string UtcDayString()
    return StringSubstr(IsoTimestampUtc(), 0, 10);
 }
 
+// Strict "YYYY-MM-DD": digits and dashes in place, and a real calendar date.
+bool IsValidUtcDay(const string day)
+{
+   if(StringLen(day) != 10)
+      return false;
+   for(int i = 0; i < 10; i++)
+   {
+      ushort c = StringGetCharacter(day, i);
+      if(i == 4 || i == 7)
+      {
+         if(c != '-')
+            return false;
+      }
+      else if(c < '0' || c > '9')
+         return false;
+   }
+   string dotted = StringSubstr(day, 0, 4) + "." + StringSubstr(day, 5, 2) + "." + StringSubstr(day, 8, 2);
+   datetime parsed = StringToTime(dotted);
+   return (parsed > 0 && TimeToString(parsed, TIME_DATE) == dotted);
+}
+
+// Non-negative whole number made only of digits (1 to 9 of them). No sign, point or space.
+bool ParseStrictCount(const string token, int &out)
+{
+   int len = StringLen(token);
+   if(len < 1 || len > 9)
+      return false;
+   for(int i = 0; i < len; i++)
+   {
+      ushort c = StringGetCharacter(token, i);
+      if(c < '0' || c > '9')
+         return false;
+   }
+   out = (int)StringToInteger(token);
+   return true;
+}
+
 // Orders recorded for the current UTC day. A missing file means 0. A file that
-// exists but cannot be read or parsed, or an unavailable clock, returns false (fail closed).
+// exists but cannot be read or fails strict schema validation (valid UTC date,
+// whole-number count, non-empty last_trade_id), or an unavailable clock, returns
+// false (fail closed). Only a valid file from an earlier day counts as rollover.
 bool ReadLiveOrderCount(int &count, string &lastTradeId)
 {
    count = 0;
@@ -1700,13 +1739,19 @@ bool ReadLiveOrderCount(int &count, string &lastTradeId)
    if(!ReadTextFile(path, content))
       return false;
    string day = "";
-   double orders = 0.0;
-   if(!ExtractJsonString(content, "utc_day", day) || !ExtractJsonDouble(content, "orders", orders) || orders < 0.0)
+   string ordersToken = "";
+   string storedTradeId = "";
+   int orders = 0;
+   if(!ExtractJsonString(content, "utc_day", day) || !IsValidUtcDay(day))
+      return false;
+   if(!ExtractJsonString(content, "orders", ordersToken) || !ParseStrictCount(ordersToken, orders))
+      return false;
+   if(!ExtractJsonString(content, "last_trade_id", storedTradeId) || storedTradeId == "")
       return false;
    if(day != today)
       return true;
-   count = (int)MathRound(orders);
-   ExtractJsonString(content, "last_trade_id", lastTradeId);
+   count = orders;
+   lastTradeId = storedTradeId;
    return true;
 }
 
@@ -1751,8 +1796,10 @@ bool RecordLiveOrderIntent(const string tradeId, string &reason)
 
 // Account, kill-switch and daily-cap conditions. On a real account every live
 // condition must hold. The kill switch and the daily cap also apply on demo
-// (the cap only when LiveMaxOrdersPerDay > 0 is set explicitly).
-bool LiveGuardAllowsSignal(string &reason)
+// (the cap only when LiveMaxOrdersPerDay > 0 is set explicitly). A signal whose trade id
+// is the one already counted today (retry after a failed submission-marker write) passes
+// the cap check, because RecordLiveOrderIntent does not count it again.
+bool LiveGuardAllowsSignal(const string tradeId, string &reason)
 {
    reason = "";
    if(IsRealAccount())
@@ -1776,7 +1823,7 @@ bool LiveGuardAllowsSignal(string &reason)
          reason = "order counter file cannot be read: " + LiveOrdersFilePath();
          return false;
       }
-      if(count >= LiveMaxOrdersPerDay)
+      if(count >= LiveMaxOrdersPerDay && lastTradeId != tradeId)
       {
          reason = "daily order cap reached: " + IntegerToString(count) + "/" + IntegerToString(LiveMaxOrdersPerDay);
          return false;
@@ -1924,7 +1971,7 @@ void ProcessPendingSignal()
    // Live-account gate: real accounts need every live condition; the kill switch and an
    // explicitly set daily cap apply on any account. No request was sent.
    string liveGuardReason = "";
-   if(!LiveGuardAllowsSignal(liveGuardReason))
+   if(!LiveGuardAllowsSignal(tradeId, liveGuardReason))
    {
       LogDebug("Live guard reject: " + liveGuardReason + " trade_id=" + tradeId);
       WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);

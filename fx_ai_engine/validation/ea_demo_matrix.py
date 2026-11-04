@@ -178,15 +178,24 @@ def build_cent_guard_cases(mode_id: str = "core_srs") -> list[DemoCase]:
         DemoCase(
             "kill_switch",
             "REJECTED_LIVE_GUARD feedback; no order; EA log reason 'kill switch file present'. market/status.json "
-            "live_guard.kill_switch=true. An open position keeps being managed (break-even, partial, trail) while the "
-            "file exists. After deleting the file the valid case executes again.",
-            "Create an empty file named KILL_SWITCH in the bridge root folder (next to ea_debug.log) before copying the case.",
+            "live_guard.kill_switch=true. Management of the open position from the prerequisite case continues while "
+            "the file exists: the case passes that part only if ea_debug.log shows a management line for that position's "
+            "ticket written after the file was created ('BE moved SL', 'Partial close' or 'Trail SL'). If price never "
+            "reaches a management trigger, record the management part as inconclusive, not passed. After deleting the "
+            "file a new signal with a new trade id can execute again.",
+            "First run the valid case and keep its position open (do not close it by hand). Confirm "
+            "feedback/management_state_<ticket>.json exists for it and the position has not yet reached its break-even "
+            "trigger. Then create an empty file named KILL_SWITCH in the bridge root folder (next to ea_debug.log), copy "
+            "this case, and keep watching ea_debug.log until the position hits a trigger or you stop the case.",
             signal("KILL_SWITCH"),
             {
-                "account": "Demo account, hedging (the current MetaQuotes-Demo works)",
+                "account": "Demo account, hedging (the current MetaQuotes-Demo works), with the valid case's position still open and managed",
                 "ea_inputs": {"RequireDemoAccount": True},
-                "files": ["<RootFolder>\\KILL_SWITCH (any content, created by the operator; delete it afterwards)"],
-                "prerequisite_case": None,
+                "files": [
+                    "<RootFolder>\\KILL_SWITCH (any content, created by the operator; delete it afterwards)",
+                    "<RootFolder>\\feedback\\management_state_<ticket>.json (written by the EA for the open position; read it, do not edit it)",
+                ],
+                "prerequisite_case": "valid",
             },
         ),
         DemoCase(

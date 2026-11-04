@@ -404,7 +404,7 @@ def test_live_guard_checks_every_condition_with_a_reason(source):
     assert "if(KillSwitchPresent())" in body and "kill switch file present" in body
     assert "if(LiveMaxOrdersPerDay > 0)" in body
     assert "ReadLiveOrderCount(count, lastTradeId)" in body
-    assert "count >= LiveMaxOrdersPerDay" in body
+    assert "count >= LiveMaxOrdersPerDay && lastTradeId != tradeId" in body  # same-trade retry stays eligible
     assert "daily order cap reached" in body
     assert body.count("return false;") >= 7
     assert body.rstrip().endswith("return true;")
@@ -412,7 +412,7 @@ def test_live_guard_checks_every_condition_with_a_reason(source):
 
 def test_live_guard_gate_rejects_with_feedback_and_consumes_the_signal(source):
     body = _function_body(source, "ProcessPendingSignal")
-    start = body.index("if(!LiveGuardAllowsSignal(liveGuardReason))")
+    start = body.index("if(!LiveGuardAllowsSignal(tradeId, liveGuardReason))")
     gate = body[start : body.index("return;", start)]
     assert 'WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);' in gate
     assert "FileDelete(filePath);" in gate
@@ -424,7 +424,7 @@ def test_gate_order_is_expiry_then_account_mode_then_live_guard_then_symbol(sour
     order = [
         "REJECTED_EXPIRED",
         "if(!AccountModeAllowsTrading())",
-        "if(!LiveGuardAllowsSignal(liveGuardReason))",
+        "if(!LiveGuardAllowsSignal(tradeId, liveGuardReason))",
         "if(!g_symbols_ok)",
         "string symbol = BrokerSymbol(canonicalSymbol);",
         "SymbolSelect(symbol",
@@ -477,9 +477,40 @@ def test_order_counter_is_keyed_by_utc_day_and_fails_closed_on_read(source):
     assert "return true;" in body[body.index("if(!FileIsExist(path))") :][:80]
     assert "if(!ReadTextFile(path, content))" in body
     assert 'ExtractJsonString(content, "utc_day", day)' in body
-    assert 'ExtractJsonDouble(content, "orders", orders)' in body
+    assert 'ExtractJsonString(content, "orders", ordersToken)' in body
     assert "if(day != today)" in body
     assert '"1970"' in body  # unavailable clock must not reset the day
+
+
+def test_order_counter_schema_is_validated_strictly_before_rollover(source):
+    body = _function_body(source, "ReadLiveOrderCount")
+    # every field is validated before a different day is accepted as rollover
+    assert body.index("IsValidUtcDay(day)") < body.index("ParseStrictCount(ordersToken, orders)")
+    assert body.index("ParseStrictCount(ordersToken, orders)") < body.index('ExtractJsonString(content, "last_trade_id", storedTradeId)')
+    assert body.index('storedTradeId == ""') < body.index("if(day != today)")
+    assert "ExtractJsonDouble" not in body  # StringToDouble accepts malformed text as 0
+    assert body.index("if(day != today)") < body.index("count = orders;")
+    day = _function_body(source, "IsValidUtcDay")
+    assert "StringLen(day) != 10" in day
+    assert "c != '-'" in day and "c < '0' || c > '9'" in day
+    assert "TimeToString(parsed, TIME_DATE) == dotted" in day  # rejects 2026-02-30 and 2026-13-01
+    count = _function_body(source, "ParseStrictCount")
+    assert "len < 1 || len > 9" in count
+    assert "c < '0' || c > '9'" in count  # no sign, decimal point or whitespace
+
+
+def test_cap_gate_lets_the_counted_trade_id_retry_through(source):
+    gate = _function_body(source, "LiveGuardAllowsSignal")
+    record = _function_body(source, "RecordLiveOrderIntent")
+    assert "bool LiveGuardAllowsSignal(const string tradeId, string &reason)" in source
+    # counter advanced to the cap, marker write failed, same signal still pending:
+    # the admission gate and the recorder must both accept it without a second count
+    assert "count >= LiveMaxOrdersPerDay && lastTradeId != tradeId" in gate
+    assert record.index("if(lastTradeId == tradeId)") < record.index("count >= LiveMaxOrdersPerDay")
+    assert record.index("if(lastTradeId == tradeId)") < record.index("PublishAtomic(")
+    body = _function_body(source, "ProcessPendingSignal")
+    marker_fail = body[body.index("Cannot persist submission marker; order not sent") :][:120]
+    assert "return;" in marker_fail and "FileDelete" not in marker_fail  # signal stays pending for the retry
 
 
 def test_order_counter_write_is_atomic_verified_and_fails_closed(source):
@@ -536,7 +567,7 @@ def test_trade_functions_are_only_reached_after_the_guards(source):
     first_send = min(body.index(call) for call in ("trade.Buy(", "trade.Sell(", "trade.BuyLimit(", "trade.SellLimit("))
     for gate in (
         "if(!AccountModeAllowsTrading())",
-        "if(!LiveGuardAllowsSignal(liveGuardReason))",
+        "if(!LiveGuardAllowsSignal(tradeId, liveGuardReason))",
         "if(!g_symbols_ok)",
         "if(!ApplyLiveLotCeiling(",
         "if(!RecordLiveOrderIntent(",
