@@ -1,0 +1,37 @@
+Wave 3 frozen real inputs (read-only copies)
+============================================
+
+Copied at (UTC): 2026-11-04T06:36:34Z
+Copied with plain `cp`; nothing in the bridge folder was written, moved or deleted.
+Thresholds config (fx_ai_engine/research/live_vs_replay_thresholds.json, version 1)
+was committed before these copies were made (commit 894c0db).
+
+Sources
+-------
+BRIDGE = /Users/raynj/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Files/bridge
+
+deals.json                    <- BRIDGE/market/deals.json
+bars_<SYM>_M15.json (6 files) <- BRIDGE/market/bars_<SYM>_M15.json
+exits/exit_59159851261.json   <- BRIDGE/exits/exit_59159851261.json
+(status.json and feedback/account_snapshot.json deliberately NOT copied: they carry the account login.)
+
+Not committed (worktree tmp/, gitignored):
+tmp/wave3-real/trading_state_snapshot.db
+    <- sqlite3 backup of file:/Users/raynj/Desktop/Forex-automation/fx_ai_engine/database/trading_state.db?mode=ro
+tmp/wave3-real/baseline__policy__edge__base_trades.csv
+    <- /Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__base_trades.csv
+tmp/wave3-real/bridge_before.txt
+    <- `find BRIDGE -type f -exec stat -f '%m %z %N' {} + | sort -k3` taken before copying
+
+SHA-256 (shasum -a 256)
+-----------------------
+e9c7fc4f426c650fc1241908d5956eacbdbd09c4c45d3a994977d85429d31a6b  bars_AUDUSD_M15.json
+724c975f8f794d6378a3330142b41d99d743488ec62464ab2d4c0a63a443094f  bars_EURUSD_M15.json
+3935328d43f440ee0f8794ab7f3097ffc88659fbef85242a490908103fbb938f  bars_GBPUSD_M15.json
+34547b6761da1a23b7ef058574ed068a28bb06aab28e5ea8744eb480fa1503cf  bars_USDCAD_M15.json
+f1374dbe035fe8f49347f74c68bc67b10a23219abcbc662c3a69f99d8cb93628  bars_USDCHF_M15.json
+1b5f13ad2b91b999391d9711c1605cbbf2538769497794f236f0e76113285b4e  bars_USDJPY_M15.json
+53d74b95df197c5f5e11f487d6ad84e1aae7307b1dceacf5ff3cdc5f47e9abb7  deals.json
+145bb346ff54786f7ccab8d0d4fda83078d9f480403846a379b62bb8c18b4d03  exits/exit_59159851261.json
+755a1809d8d8f92801eb9b8a2850c39835fb2eebf66c99fd9ae71002400a0dd9  tmp/wave3-real/trading_state_snapshot.db
+2547c2ca3b247509be59b2f0c820cde5e24f60f16e4bf571f6f74fc092b4d7f7  tmp/wave3-real/baseline__policy__edge__base_trades.csv
