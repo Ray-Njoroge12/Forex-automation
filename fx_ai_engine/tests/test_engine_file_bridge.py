@@ -10,6 +10,7 @@ import pytest
 from core.file_bridge_connection import FileBridgeConnection
 from core.metrics import init_metrics
 from core.observability import init_tracing
+from database import connection as db_connection
 from database import db
 from tests.test_file_bridge_connection import build_bridge
 
@@ -28,7 +29,7 @@ def isolated_db(tmp_path, monkeypatch):
         finally:
             conn.close()
 
-    monkeypatch.setattr(db, "get_conn", connection)
+    monkeypatch.setattr(db_connection, "get_conn", connection)
     db.initialize_schema()
     return connection
 

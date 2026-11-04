@@ -17,6 +17,7 @@ from core.account_status import AccountStatus
 from core.data_quality.freshness import evaluate_calendar_freshness, evaluate_rate_differential_freshness
 from core.policy.envelope import attach_execution_envelope, validate_execution_envelope
 from core.schemas import SchemaError, validate_execution_feedback
+from database import connection as db_connection
 from database import db as db_mod
 from validation import update_market_context
 from validation.prepare_replay_dataset import write_manifest
@@ -39,6 +40,7 @@ def _temp_conn(path: Path):
 
 def _patch_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "state.db"
+    monkeypatch.setattr(db_connection, "get_conn", lambda db_path=path: _temp_conn(db_path))
     monkeypatch.setattr(db_mod, "get_conn", lambda db_path=path: _temp_conn(db_path))
     db_mod.initialize_schema()
     db_mod.migrate_add_trade_reservations()
