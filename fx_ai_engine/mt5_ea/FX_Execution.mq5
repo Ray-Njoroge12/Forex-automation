@@ -339,6 +339,23 @@ bool ResolveSymbols()
    return allOk;
 }
 
+string AccountMarginModeName()
+{
+   switch((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE))
+   {
+      case ACCOUNT_MARGIN_MODE_RETAIL_HEDGING: return "hedging";
+      case ACCOUNT_MARGIN_MODE_RETAIL_NETTING: return "netting";
+      case ACCOUNT_MARGIN_MODE_EXCHANGE:       return "exchange";
+      default:                                 return "unknown";
+   }
+}
+
+// The EA's position handling assumes independent positions per trade, so only hedging accounts may trade.
+bool AccountModeAllowsTrading()
+{
+   return ((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+}
+
 string BuildSymbolErrorsJson()
 {
    string out = "[";
@@ -417,6 +434,9 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"symbol_suffix\":\"" + JsonEscape(SymbolSuffix) + "\",";
    payload += "\"symbols_ok\":" + (g_symbols_ok ? "true" : "false") + ",";
    payload += "\"symbol_errors\":" + BuildSymbolErrorsJson() + ",";
+   payload += "\"account_margin_mode\":\"" + AccountMarginModeName() + "\",";
+   payload += "\"account_currency\":\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\",";
+   payload += "\"max_spread_pips_input\":" + DoubleToString(MaxSpreadPips, 4) + ",";
    payload += "\"latest_closed_bars\":{";
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
@@ -1717,6 +1737,15 @@ void ProcessPendingSignal()
       // No request was sent, so the reservation can be released definitively.
       LogDebug("Envelope fail: expired or unparseable expires_at=" + expiresAt);
       WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_EXPIRED", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   // Account-mode gate: no request was sent, so the reservation can be released definitively.
+   if(!AccountModeAllowsTrading())
+   {
+      LogDebug("Account mode gate reject: margin mode is " + AccountMarginModeName() + ", hedging required trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ACCOUNT_MODE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }

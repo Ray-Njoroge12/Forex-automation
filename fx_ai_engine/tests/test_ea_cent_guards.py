@@ -319,3 +319,52 @@ def test_empty_suffix_leaves_exported_names_unchanged(source):
         body = _function_body(source, name)
         assert not re.search(r'"\\\\bars_"\s*\+\s*(sym|brokerSym)\b', body)
         assert not re.search(r'\\"symbol\\":\\""\s*\+\s*(sym|brokerSym)\b', body)
+
+
+# ---------------------------------------------------------------- C4 account guards
+
+
+def test_margin_mode_names_cover_the_three_enum_values(source):
+    body = _function_body(source, "AccountMarginModeName")
+    assert "ACCOUNT_MARGIN_MODE" in body
+    assert 'case ACCOUNT_MARGIN_MODE_RETAIL_HEDGING: return "hedging";' in body
+    assert 'case ACCOUNT_MARGIN_MODE_RETAIL_NETTING: return "netting";' in body
+    assert 'case ACCOUNT_MARGIN_MODE_EXCHANGE:       return "exchange";' in body
+    assert 'default:                                 return "unknown";' in body
+
+
+def test_only_hedging_allows_trading(source):
+    body = _function_body(source, "AccountModeAllowsTrading")
+    assert "== ACCOUNT_MARGIN_MODE_RETAIL_HEDGING" in body
+    assert "NETTING" not in body and "EXCHANGE" not in body
+
+
+def test_status_publishes_margin_mode_currency_and_spread_ceiling(source):
+    body = _function_body(source, "WriteMarketStatus")
+    assert '\\"account_margin_mode\\":\\"" + AccountMarginModeName()' in body
+    assert '\\"account_currency\\":\\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY))' in body
+    assert '\\"max_spread_pips_input\\":" + DoubleToString(MaxSpreadPips, 4)' in body
+
+
+def test_non_hedging_account_rejects_with_feedback_and_consumes_the_signal(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    start = body.index("if(!AccountModeAllowsTrading())")
+    gate = body[start : body.index("return;", start)]
+    assert 'WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ACCOUNT_MODE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);' in gate
+    assert "FileDelete(filePath);" in gate
+    assert "AccountMarginModeName()" in gate  # the reason names the mode
+
+
+def test_account_mode_gate_sits_after_expiry_and_before_the_symbol_gate(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    assert _before(body, "REJECTED_EXPIRED", "if(!AccountModeAllowsTrading())")
+    assert _before(body, "if(!AccountModeAllowsTrading())", "if(!g_symbols_ok)")
+    assert _before(body, "if(!AccountModeAllowsTrading())", "SymbolSelect(symbol")
+
+
+def test_spread_cap_logic_and_default_are_unchanged(source):
+    assert "input double MaxSpreadPips = 2.0;" in source
+    body = _function_body(source, "ProcessPendingSignal")
+    assert "double effectiveSpreadLimit = MathMin(MaxSpreadPips, signalMaxSpreadPips);" in body
+    assert "if(spreadPips > effectiveSpreadLimit)" in body
+    assert '"REJECTED_SPREAD"' in body
