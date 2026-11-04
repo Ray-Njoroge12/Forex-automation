@@ -80,6 +80,8 @@ Numbers are kept so earlier references stay valid.
 
 26. **Owner direction 2026-11-04: the $10 live account is the target.** Pathway, requirements and per-trade economics: `fx_ai_engine/docs/2026-11-04-ten-dollar-growth-pathway.md`. Key numbers (modelled): risk about 1.5% per trade, not 3.2% (3.2% ends in the 20% drawdown halt in about 95% of paths even with a 45% win rate); a strategy needs about 42% wins at 2.2R on 25-pip stops for +0.25R; doubling takes about 185 trades at 1.5% risk; only a cent account fits $10, and wide stops make a standard account need $60 to $400. Gate: at least one Stage D strategy "not rejected" in replay before any live account is opened.
 
+27. **Cent accounts are not ready for the system** (tested 2026-11-04 on a temporary USC copy of the bridge; runbook `fx_ai_engine/docs/runbooks/cent-account-setup.md`). (a) Broker symbol suffixes (Exness Standard Cent uses `c`, e.g. `EURUSDc`) break the EA and the engine, which hard-code the six plain names and have no symbol map. (b) Unit mismatch: the file bridge passes the snapshot in cents while `evaluate_trade_feasibility` and `evaluate_fixed_risk_eligibility` convert the balance to dollars but read tick values in cents, so a 25-pip, 1.5% trade on $10 is rejected (`REJECTED_LOT_PREROUTE`, estimated lot 0.0006 instead of 0.06); only fixed-dollar modes such as `preserve_10` call these checks. (c) `preserve_10` cannot start on the file bridge (`FILE_BRIDGE_PRESERVE_10_UNSUPPORTED`). Fix list C1 to C5 is in the runbook; C2 (unit consistency, `core/mt5_bridge.py`) is not a protected path.
+
 ## Operating rules learned
 
 - One agent per working tree. Use a git worktree per task; never two agents in the main folder.
