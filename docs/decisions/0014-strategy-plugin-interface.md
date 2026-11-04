@@ -1,4 +1,4 @@
-# ADR 0004: Strategy plug-in interface and the Phase 2b hypotheses
+# ADR 0014: Strategy plug-in interface and the Phase 2b hypotheses
 
 Date: 2026-11-04. Status: accepted on `dev/development-wave` (stage D); merge needs a different-model review and owner approval (`main.py` and `application/decision_cycle.py` are guardrail paths). Design: `fx_ai_engine/docs/plans/2026-11-04-stage-d-strategy-plugin-design.md` (owner-approved revision 2).
 

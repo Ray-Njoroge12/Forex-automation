@@ -1,4 +1,4 @@
-"""Strategy plug-in interface (stage D, ADR 0004): registry, guard, static rules, default strategy contract."""
+"""Strategy plug-in interface (stage D, ADR 0014): registry, guard, static rules, default strategy contract."""
 from __future__ import annotations
 
 import ast

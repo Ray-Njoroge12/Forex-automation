@@ -1,4 +1,4 @@
-"""Live engine and replay use the same strategy object (stage D, ADR 0004)."""
+"""Live engine and replay use the same strategy object (stage D, ADR 0014)."""
 from __future__ import annotations
 
 import json

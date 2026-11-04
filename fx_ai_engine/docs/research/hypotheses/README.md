@@ -1,6 +1,6 @@
 # Hypothesis cards (R6)
 
-One card per loosened active parameter named in `docs/2026-11-03-system-assessment-and-benchmark.md` §4.1, and (since stage D, ADR 0004) one card per new strategy hypothesis. A card states what the parameter or strategy is believed to do, the run that tests it, and the result that would reject it. Cards are written before any ablation or replay runs.
+One card per loosened active parameter named in `docs/2026-11-03-system-assessment-and-benchmark.md` §4.1, and (since stage D, ADR 0014) one card per new strategy hypothesis. A card states what the parameter or strategy is believed to do, the run that tests it, and the result that would reject it. Cards are written before any ablation or replay runs.
 
 | Card | Parameter | Active | Coded default | Variant |
 | --- | --- | --- | --- | --- |

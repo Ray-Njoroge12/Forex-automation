@@ -3,7 +3,7 @@
 The order of stages is the SRS decision flow: Regime -> Technical -> Adversarial
 -> Portfolio Manager -> Hard Risk Engine -> [ML shadow/canary] -> reservation
 -> Signal Router. Regime and Technical are one strategy object per symbol
-(``engine.strategies``, built by ``core.strategy.build_strategy``; ADR 0004).
+(``engine.strategies``, built by ``core.strategy.build_strategy``; ADR 0014).
 Functions take the engine as their first argument.
 Persistence goes through ``engine.repository`` (``application.repository``).
 """

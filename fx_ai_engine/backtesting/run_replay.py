@@ -16,7 +16,7 @@ first line says whether it is evidence, and the registry row carries
 gate_verdict and evidence_status. --no-gate skips R1/R2 and labels the report
 NOT EVIDENCE (ADR 0003).
 
---strategy selects a registered strategy (core.strategy, ADR 0004; default
+--strategy selects a registered strategy (core.strategy, ADR 0014; default
 trend_pullback_v1, the live strategy) and --strategy-params a JSON object of
 its parameters. Variants are threshold overrides of the default rules, so a
 non-default strategy accepts only --variants baseline. Strategy id and params go

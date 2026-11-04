@@ -1,4 +1,4 @@
-"""Strategy plug-ins (stage D, ADR 0004).
+"""Strategy plug-ins (stage D, ADR 0014).
 
 Importing this package registers every strategy, so the live engine and the
 replay see the same registry. Live runs only ``DEFAULT_STRATEGY_ID``.

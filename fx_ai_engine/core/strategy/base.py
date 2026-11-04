@@ -1,4 +1,4 @@
-"""Strategy plug-in types (stage D, ADR 0004).
+"""Strategy plug-in types (stage D, ADR 0014).
 
 A strategy replaces exactly the Regime and Technical stages of the decision
 flow. It reads completed bars only through the injected ``fetch_ohlc`` and

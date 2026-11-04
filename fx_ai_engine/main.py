@@ -102,7 +102,7 @@ from application.market_data_service import (  # noqa: F401
 
 logger = logging.getLogger("fx_ai_engine.main")
 
-# The only strategy the live/demo engine runs (ADR 0004). No CLI flag and no
+# The only strategy the live/demo engine runs (ADR 0014). No CLI flag and no
 # environment variable: running another strategy live is an owner/SRS decision.
 LIVE_STRATEGY_ID = DEFAULT_STRATEGY_ID
 

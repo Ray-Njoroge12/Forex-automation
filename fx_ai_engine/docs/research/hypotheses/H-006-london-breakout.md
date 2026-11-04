@@ -3,7 +3,7 @@
 - Strategy: `london_breakout_v1`, `fx_ai_engine/core/strategy/london_breakout.py`
 - Frozen parameters: range 00:00–07:00 Europe/London (28 M15 bars required; on the two UK DST-change days the count follows the elapsed time, 24 or 32); entry decisions (07:00, 10:00] London; first close outside the range only; stop at opposite range side ± 1 pip, accepted 20–60 pips; fixed 2.2R spread-adjusted target; no break-even, partial or trail; reject if the H1 regime trends against the breakout. Code defaults (`Params`): `range_start_hour=0`, `range_end_hour=7`, `entry_end_hour=10`, `min_stop_pips=20`, `max_stop_pips=60`, `stop_buffer_pips=1`
 - Comparators: `trend_pullback_v1` baseline (active core_srs policy, policy and fixed_tp exits); RANDOM and INVERTED direction controls at H-006 entry times (`edge_diagnostics --strategy london_breakout_v1`)
-- SRS fit: within SRS v1 (H1 regime, M15 execution, M15 structure stop, R:R ≥ 2.2); registered `live_eligible=True`, but live runs `trend_pullback_v1` only (ADR 0004)
+- SRS fit: within SRS v1 (H1 regime, M15 execution, M15 structure stop, R:R ≥ 2.2); registered `live_eligible=True`, but live runs `trend_pullback_v1` only (ADR 0014)
 - Proposed by / approved: stage D design 2026-11-04 / owner, 2026-11-04
 - Family size k: 3 (H-006, H-007, H-009), Bonferroni z = 2.39
 - Status: pre-registered, not run

@@ -1,4 +1,4 @@
-"""Strategy registry: the one place strategies are declared and built (ADR 0004).
+"""Strategy registry: the one place strategies are declared and built (ADR 0014).
 
 Live and replay both call ``build_strategy``, which always returns a
 ``GuardedStrategy``. Strategy id and parameters are arguments, never policy
