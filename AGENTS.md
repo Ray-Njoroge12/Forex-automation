@@ -44,7 +44,7 @@ Do not change these without an explicit instruction from the owner and an SRS re
 - `fx_ai_engine/core/risk/**`
 - `fx_ai_engine/config_microcapital.py`
 - `fx_ai_engine/mt5_ea/**`
-- `fx_ai_engine/core/live_gate.py` and `fx_ai_engine/core/live_approval.py` (the live-mode gate; added with the cent build, owner to confirm)
+- `fx_ai_engine/core/live_gate.py`, `fx_ai_engine/core/live_approval.py` and `fx_ai_engine/validation/reset_loss_streak.py` (the live-mode gate and the command that lifts a loss-streak halt; added with the cent build, owner approved 2026-11-04)
 - `fx_ai_engine/bridge/**`
 - `SRS_v1.md`
 

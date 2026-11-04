@@ -8,13 +8,13 @@ Updated 2026-11-04 after the cent build (tracks C1 to C5, integration branch `ce
 | --- | --- | --- | --- |
 | C1 Symbol suffix (EA input `SymbolSuffix`; canonical names in every file) | Yes | EA staging compile 0 errors, 0 warnings; source-guard tests; suffixed bridge fixtures through the Python readers | Terminal test on a suffixed broker after deploy |
 | C2 Cent units (Python sees US dollars; 1000 USC is $10) | Yes | USC fixtures: the 25-pip, 1.5% case is approved at about 0.06 lots (was rejected); USD output unchanged | A real cent account snapshot |
-| C3 `micro_live` policy (1.5% risk, percent mode) | Yes | Hash pinned `53ff41104c05c4c6374ad59d62023575d648155ce190a507a7530c6e112f9489`; `core_srs` hash unchanged | Owner confirms the 1.5% value |
+| C3 `micro_live` policy (1.5% risk, percent mode) | Yes | Hash pinned `53ff41104c05c4c6374ad59d62023575d648155ce190a507a7530c6e112f9489`; `core_srs` hash unchanged | Nothing: the owner confirmed 1.5% |
 | C4 Netting refusal, spread-ceiling visibility | Yes | Source guards, compile | Terminal confirms MetaQuotes-Demo and the broker report `hedging` |
 | C5 Guarded live mode (EA caps and kill switch; Python approval gate; reset command) | Yes, off by default | 1,055 tests on the merged tree; each refusal path has its own test; second-model reviews | Owner approval, SRS v1.1 pre-live gate, terminal tests |
 
 Nothing has been deployed to the terminal and no live account exists. The EA binary in `MQL5/Experts` is still the 2026-11-03 build.
 
-Remaining owner items: the 1.5% risk value, the live caps (`max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order`), the evidence rule or waiver, the 2.0-pip spread ceiling for cent spreads, approval of the SRS v1.1 pre-live addendum (`fx_ai_engine/docs/2026-11-04-srs-v1.1-pre-live-gate-proposal.md`, DRAFT), and the unproven strategy: the only strategy replayed loses 0.35R per trade, so live trading has no evidence behind it yet.
+Decided on 2026-11-04: risk 1.5% per trade, spread ceiling stays 2.0 pips, and the live-gate files join the protected paths. Remaining owner items: the live caps (`max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order`), the evidence rule or waiver, approval of the SRS v1.1 pre-live addendum (`fx_ai_engine/docs/2026-11-04-srs-v1.1-pre-live-gate-proposal.md`, DRAFT), and the unproven strategy: the only strategy replayed loses 0.35R per trade, so live trading has no evidence behind it yet.
 
 ## 1. Choose the broker and confirm four facts
 
@@ -32,7 +32,7 @@ On the broker's demo confirm: (1) symbol names, and the suffix if any; (2) the c
 6. **Deploy the new EA build** (needs your approval; it replaces the binary the terminal loads): `scripts/mt5/compile_ea.sh --deploy`, then in MT5 remove `FX_Execution` from the chart and drag it back from Navigator.
 7. **[you] Attach with these inputs:**
    - `SymbolSuffix`: the broker suffix, or empty.
-   - `MaxSpreadPips`: 2.0 by default; raise it only if the demo's spreads need it. The lower of this and the signal's cap applies; the value in force is shown in `status.json`.
+   - `MaxSpreadPips`: leave at **2.0** (owner decision, ADR 0013). The lower of this and the policy's own 2.0 cap applies, so raising the input alone changes nothing. If the cent demo shows frequent `REJECTED_SPREAD`, pick another broker or account type. The value in force is shown in `status.json`.
    - `ExpectedPolicyHash`: the hash of the policy you will run, from `python -m validation.print_policy_hash --mode core_srs` or `--mode micro_live`.
    - `RequirePolicyHashPin` true, `RequireDemoAccount` true, `AllowLiveAccount` false, `LiveMaxLotPerOrder` 0, `LiveMaxOrdersPerDay` 0, `MagicNumber` 20261103. Allow Algo Trading (green button).
 8. **Check `MQL5/Files/bridge/market/status.json`:** `ea_version` is `2026.11.04-2`; `symbols_ok` true and `symbol_errors` empty; `account_margin_mode` is `hedging`; `account_currency` (for example `USC`); `max_spread_pips_input`; `live_guard`. `symbols.json` shows `broker_symbol` per pair and the contract (`volume_min`, `volume_step`, `tick_value`). For a cent EURUSD expect `tick_value` about 1 (USC per tick per 1.0 cent lot) and a 0.01 lot pip cost of about 0.1 USC ($0.001).

@@ -57,7 +57,7 @@ EA track (fixtures only): `status.json` fields `live_guard {account_real, requir
 - Hashes: `python -m validation.print_policy_hash --mode core_srs` and `--mode micro_live`.
 
 ## Open points for the owner
-Risk value (1.5 % is proposed, not settled); caps `max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order`; evidence rule and waiver; `MAX_SPREAD_PIPS` 2.0 for cent spreads; deposits and withdrawals not tracked; approval of the SRS v1.1 addendum (DRAFT).
+Risk value (decided 1.5 %, 2026-11-04); spread ceiling (decided: stays 2.0); caps `max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order`; evidence rule and waiver; `MAX_SPREAD_PIPS` 2.0 for cent spreads; deposits and withdrawals not tracked; approval of the SRS v1.1 addendum (DRAFT).
 
 ## Not verifiable without the real terminal
 EA `live_guard`, `account_margin_mode`, `symbol_suffix` and `KILL_SWITCH` behaviour; the Bridge dollar normalisation of cent snapshots; `ACCOUNT_TRADE_MODE` on a real broker; end-to-end order placement; `HEALTH_PORT` behaviour on the operator's host (the reset tool's liveness probe).

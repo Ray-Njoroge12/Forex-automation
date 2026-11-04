@@ -17,16 +17,16 @@ The owner wants to grow a small cent account (about 10 dollars) with the system.
 ## OPEN POINTS for the owner
 | Point | State |
 | --- | --- |
-| Exact risk value | **OPEN. 1.5 % is a proposed default, not settled.** ADR 0001 D3 says 1.0 to 1.5 %. A change gives a new hash and needs a new approval. |
-| Caps `max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order` | **OPEN.** The example file holds placeholders only (3.0 dollars, 4, 0.01). The EA caps must be equal or stricter. |
-| Evidence rule and waiver | **OPEN.** Whether a waiver is acceptable while no `micro_live` verdict can be produced. |
-| `MAX_SPREAD_PIPS` 2.0 for cent-account spreads | **OPEN.** Spreads of 1.5 to 2.5 pips will reject some signals. A change is a new hash. |
+| Exact risk value | **DECIDED 2026-11-04 by the owner: 1.5 %.** Basis: ADR 0001 D3 (1.0 to 1.5 %) and the growth model, where 3.2 % reaches the 20 % drawdown halt in about 95 % of paths even with a real edge, against about 11 % at 1.5 %. A future change gives a new hash and needs a new approval. |
+| Caps `max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order` | **Set by the owner in the approval file at approval time.** The example file holds placeholders only (3.0 dollars, 4, 0.01). Suggested for the $10 pilot: loss $7 (30 %), 3 orders a day, 0.10 lot ceiling. The EA caps must be equal or stricter. |
+| Evidence rule and waiver | **Unchanged: evidence or an explicit waiver.** Whether to sign a waiver is the owner's call when the approval file is written, because no `micro_live` verdict can be produced until the replay tools accept `--policy-mode micro_live`. |
+| `MAX_SPREAD_PIPS` 2.0 for cent-account spreads | **DECIDED 2026-11-04 (owner accepted the recommendation): keep 2.0 pips in the policy and in the EA input; do not loosen.** The effective limit is the lower of the EA input and the policy cap, and the Adversarial agent applies the policy cap too, so raising only the EA input would change nothing. Basis: on a 25-pip stop a 2-pip spread already costs about 0.08R, and the strategy's problem is cost; loosening the ceiling buys trade count with the thing that is hurting. If the cent demo shows frequent `REJECTED_SPREAD`, change the broker or account type, not the ceiling. |
 | Deposits and withdrawals | **OPEN.** The loss limit does not track them. |
 | Dollar contract from the Bridge track | **OPEN.** Equity is assumed to arrive in dollars; not verified on the real terminal. |
 ## Consequences
 - A real-account run needs a new owner-written file, short expiry and a restart on renewal.
 - With a waiver, live starts without replay evidence and the engine says so every 4 hours.
-- Spread-gated rejections are likely on cent-account spreads.
+- Spread-gated rejections are likely on cent-account spreads; the ceiling stays 2.0 (decided).
 - The current strategy loses about 0.32 to 0.36R per trade after costs in replay (ADR 0006). The gate limits damage; it does not create edge.
 - `main.py` gets five isolated hunks; merges against `dev/development-wave` touch different lines.
 ## What does not change
