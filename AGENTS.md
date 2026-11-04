@@ -44,6 +44,7 @@ Do not change these without an explicit instruction from the owner and an SRS re
 - `fx_ai_engine/core/risk/**`
 - `fx_ai_engine/config_microcapital.py`
 - `fx_ai_engine/mt5_ea/**`
+- `fx_ai_engine/core/live_gate.py` and `fx_ai_engine/core/live_approval.py` (the live-mode gate; added with the cent build, owner to confirm)
 - `fx_ai_engine/bridge/**`
 - `SRS_v1.md`
 
@@ -57,6 +58,8 @@ Run from `fx_ai_engine/` with the repo venv (Python 3.12):
 | Smoke run | `USE_MT5_MOCK=1 ../.venv/bin/python main.py --mode smoke` |
 | Readiness checks | `../.venv/bin/python -m validation.readiness_preflight --strict` |
 | Policy hash for the EA | `../.venv/bin/python -m validation.print_policy_hash --mode core_srs` |
+| Policy hash for micro-account live use | `../.venv/bin/python -m validation.print_policy_hash --mode micro_live` |
+| Reset a loss-streak halt (engine stopped; typed confirmation) | `../.venv/bin/python -m validation.reset_loss_streak --help` |
 | EA demo test payloads | `../.venv/bin/python -m validation.ea_demo_matrix --output-dir artifacts/ea-demo-matrix --mode core_srs` |
 
 Do not run `main.py --mode demo` or write into the live terminal's bridge folder unless the task explicitly says so.

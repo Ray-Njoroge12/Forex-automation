@@ -1,11 +1,11 @@
 # Handoff: Policy-Live track (C3 micro_live policy, C5 guarded live mode)
 Date: 2026-11-04.
 
-**Path note.** The task named `docs/handoffs/` (plural). The existing folder is `docs/handoff/` (singular). This file uses the task's literal path; the orchestrator may move it.
+**Path note.** Moved to `docs/handoff/` (singular) at integration.
 
 ## Where
 - Branch `cent/policy-live-track`, worktree `/Users/raynj/Desktop/Forex-automation/.worktrees/cent-policy-live`, base `71bb25fc3430323c195ee06a69671b7060741f46`. Not pushed, not merged.
-- Commits: `f76dc43` micro_live policy; `b77a150` approval schema and helpers; `fffd792` startup gate and per-loop checks; `827fa40` `--mode live` wiring; `b323f88` loss-streak reset command; the last commit on the branch is the docs commit (SRS addendum, ADR 0013, this file).
+- Commits (oldest first): `f76dc43` micro_live policy; `b77a150` approval schema and helpers; `fffd792` startup gate and per-loop checks; `827fa40` `--mode live` wiring in main.py; `b323f88` loss-streak reset command; `2287465` SRS addendum, ADR 0013 and this handoff; `d1a5914` live session closed on every exit and halt on loop side-effect failure; `00ef61a` reset command treats health-probe timeouts as indeterminate; `79b2502` preserve-divisor override ignored for micro_live (branch tip at review: `79b2502`).
 
 ## micro_live
 `CORE_SRS_CONFIG` plus `MODE_ID` `micro_live`, `MODE_LABEL` `Micro live`, `EVIDENCE_LABEL` `Micro live percent-risk`, `BASE_RISK_PCT` 0.015. Registered in `MODE_CONFIGS` and `NON_SRS_MODE_IDS`, not in `OVERRIDE_ENABLED_MODE_IDS`.
