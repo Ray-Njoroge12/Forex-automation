@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "AUDUSD",
+  "source_file": "AUDUSD_D1.csv",
+  "sha256": "592994b15dcc2a2a9800e1001b8341024de2670b4f256f9ab2e77adb9e5e9ef8",
+  "rows": 1299,
+  "start_utc": "2021-11-04T21:00:00+00:00",
+  "end_utc": "2026-11-01T22:00:00+00:00",
+  "median_bar_seconds": 86400.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

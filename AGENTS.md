@@ -6,6 +6,7 @@ This is the single source of truth for every AI coding agent working in this rep
 
 A deterministic Forex trading engine for six majors (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF). Python makes decisions; an MQL5 Expert Advisor (EA) in MetaTrader 5 executes them. They communicate through JSON files in the terminal's `MQL5/Files/bridge/` folder. State and audit history live in SQLite.
 
+- **Current status and known issues: `docs/STATUS.md`. Read it first; update it when a phase, gate or known issue changes.**
 - Specification: `SRS_v1.md` (locked baseline; changes require an SRS version bump).
 - Current plan: `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md`.
 - Latest assessment: `fx_ai_engine/docs/2026-11-03-system-assessment-and-benchmark.md`.

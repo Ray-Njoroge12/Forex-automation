@@ -1,0 +1,218 @@
+{
+  "AUDUSD_D1": {
+    "rows": 1299,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "592994b15dcc2a2a9800e1001b8341024de2670b4f256f9ab2e77adb9e5e9ef8"
+  },
+  "AUDUSD_H1": {
+    "rows": 31062,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 11,
+    "gaps_over_3_5_days": 0,
+    "sha256": "498f2ac02179686c31686340f32295c1eb19cb369a7f52744f3aa24a40c7ac26"
+  },
+  "AUDUSD_H4": {
+    "rows": 7777,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "61d58f282ff8a539a7f6961d5272d0800f833ae2e4122a1dae7c800318a9f5cb"
+  },
+  "AUDUSD_M15": {
+    "rows": 99999,
+    "first": "2022-10-25T01:45:00+00:00",
+    "last": "2026-11-03T17:00:00+00:00",
+    "years": 4.02,
+    "intraweek_gaps": 25,
+    "gaps_over_3_5_days": 0,
+    "sha256": "6497fe08d69363964acf6f9f549eac3d67a1444ed466d4618c63c3fb897ab08a"
+  },
+  "EURUSD_D1": {
+    "rows": 1298,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "8150a180c05389d5ca50bba70029882b6e3ace6340bf060416fbe8d3c729921d"
+  },
+  "EURUSD_H1": {
+    "rows": 31061,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 11,
+    "gaps_over_3_5_days": 0,
+    "sha256": "c33e262df088653cec51af023b4cd177eeab7b9d0d2cdca5acf6d6d9c28eadb3"
+  },
+  "EURUSD_H4": {
+    "rows": 7776,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "de602be0342e07576fb387179ecd5d6bec6a96833289556e65e0fb58c4cfb111"
+  },
+  "EURUSD_M15": {
+    "rows": 100207,
+    "first": "2022-10-20T21:00:00+00:00",
+    "last": "2026-11-03T16:45:00+00:00",
+    "years": 4.04,
+    "intraweek_gaps": 25,
+    "gaps_over_3_5_days": 0,
+    "sha256": "450196a31a5f549600e5027dfe101cbc17e550368eaf26de86fec8878c11dae8"
+  },
+  "GBPUSD_D1": {
+    "rows": 1298,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "b117cfe9036bfcbafeb95401a9dcb9ec0280beebe7fd1795e54e075e984974ca"
+  },
+  "GBPUSD_H1": {
+    "rows": 31060,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 12,
+    "gaps_over_3_5_days": 0,
+    "sha256": "bc899405d98a4d93c0d8667020b244d9339b9f62656d1ad9d8d82926feca6476"
+  },
+  "GBPUSD_H4": {
+    "rows": 7776,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "5105b50a27ec413ca1e994a3a09bd2b325635f99af7999e1388be8deda926392"
+  },
+  "GBPUSD_M15": {
+    "rows": 100207,
+    "first": "2022-10-20T21:00:00+00:00",
+    "last": "2026-11-03T17:00:00+00:00",
+    "years": 4.04,
+    "intraweek_gaps": 25,
+    "gaps_over_3_5_days": 0,
+    "sha256": "aab979b89b736172e249c783f6f699d1ec96ae8a8ead5530806ec5031396c579"
+  },
+  "USDCAD_D1": {
+    "rows": 1298,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "10ec9f465ae1b59cd46f58cbd45739c7a5c94aae4ffa1abaa97dd306b6b0523b"
+  },
+  "USDCAD_H1": {
+    "rows": 31061,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 11,
+    "gaps_over_3_5_days": 0,
+    "sha256": "0f5467a9bde6337e6f7a2ce1319e2cf17f079b2f7b3bf36194c8f9789fbc73a9"
+  },
+  "USDCAD_H4": {
+    "rows": 7776,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "216417eb98987d69fc4c0ebd7acf234fe5425c5c47571716a251598e976a2201"
+  },
+  "USDCAD_M15": {
+    "rows": 100210,
+    "first": "2022-10-20T21:00:00+00:00",
+    "last": "2026-11-03T17:00:00+00:00",
+    "years": 4.04,
+    "intraweek_gaps": 25,
+    "gaps_over_3_5_days": 0,
+    "sha256": "35b07739b82adeca74bb4b003af45b9111d995671571afe57ff23cb0f77e737f"
+  },
+  "USDCHF_D1": {
+    "rows": 1298,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "4b2a86dc5ff26404fb30de3003ae15fe50cdb9db1e8936a8acf87169f25bafd4"
+  },
+  "USDCHF_H1": {
+    "rows": 31061,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 11,
+    "gaps_over_3_5_days": 0,
+    "sha256": "66c3bca424e2535da4f3df58b34ff2198c37d546691a175dd57b04690c1dd67a"
+  },
+  "USDCHF_H4": {
+    "rows": 7776,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "7ca6f8781b71efd2934af87b9d01d736fa2636e0a150109fe07c394bf9e6b0fb"
+  },
+  "USDCHF_M15": {
+    "rows": 100594,
+    "first": "2022-10-16T21:00:00+00:00",
+    "last": "2026-11-03T17:00:00+00:00",
+    "years": 4.05,
+    "intraweek_gaps": 25,
+    "gaps_over_3_5_days": 0,
+    "sha256": "7a5a6eaaab507b6c028531179a939c06b5a9a2b4e46d1e1ad60d799c49d60657"
+  },
+  "USDJPY_D1": {
+    "rows": 1299,
+    "first": "2021-11-04T21:00:00+00:00",
+    "last": "2026-11-01T22:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 0,
+    "gaps_over_3_5_days": 1,
+    "sha256": "802a8ff3279e5f70f274e576d0266c34106cebed1536042a7d1ca61591cfd9e0"
+  },
+  "USDJPY_H1": {
+    "rows": 31062,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T16:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 11,
+    "gaps_over_3_5_days": 0,
+    "sha256": "7f987270bc0af18d93d486796678d352b16b015a043e3f100241bdcca631b39c"
+  },
+  "USDJPY_H4": {
+    "rows": 7777,
+    "first": "2021-11-04T17:00:00+00:00",
+    "last": "2026-11-03T10:00:00+00:00",
+    "years": 4.99,
+    "intraweek_gaps": 7,
+    "gaps_over_3_5_days": 0,
+    "sha256": "e0b4d7b9a65484666616aeb2cc0cf7dbad627f62046abda9362cca9d2ad1e2df"
+  },
+  "USDJPY_M15": {
+    "rows": 100500,
+    "first": "2022-10-17T21:00:00+00:00",
+    "last": "2026-11-03T17:00:00+00:00",
+    "years": 4.04,
+    "intraweek_gaps": 24,
+    "gaps_over_3_5_days": 0,
+    "sha256": "5229f613548670a54c4e16ae7461cb3d4d8270a8e4751bc84bcdfb6349ebce0d"
+  }
+}

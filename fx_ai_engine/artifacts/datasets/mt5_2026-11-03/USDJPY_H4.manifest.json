@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "USDJPY",
+  "source_file": "USDJPY_H4.csv",
+  "sha256": "e0b4d7b9a65484666616aeb2cc0cf7dbad627f62046abda9362cca9d2ad1e2df",
+  "rows": 7777,
+  "start_utc": "2021-11-04T17:00:00+00:00",
+  "end_utc": "2026-11-03T10:00:00+00:00",
+  "median_bar_seconds": 14400.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

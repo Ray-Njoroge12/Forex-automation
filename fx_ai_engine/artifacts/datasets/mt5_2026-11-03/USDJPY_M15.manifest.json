@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "USDJPY",
+  "source_file": "USDJPY_M15.csv",
+  "sha256": "5229f613548670a54c4e16ae7461cb3d4d8270a8e4751bc84bcdfb6349ebce0d",
+  "rows": 100500,
+  "start_utc": "2022-10-17T21:00:00+00:00",
+  "end_utc": "2026-11-03T17:00:00+00:00",
+  "median_bar_seconds": 900.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

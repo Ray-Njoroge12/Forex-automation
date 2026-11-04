@@ -84,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", default=None, help="ISO start date (default: data start + 60 days warm-up)")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--halts", choices=("srs", "edge"), default="srs",
+                        help="srs: SRS daily/weekly/drawdown/loss-streak halts as specified; "
+                             "edge: those account halts disabled so the full period measures strategy edge "
+                             "(position limits, exposure cap, correlation and throttle unchanged)")
     args = parser.parse_args(argv)
 
     data_dir = args.data_dir.resolve()
@@ -95,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     start = pd.Timestamp(args.start, tz="UTC") if args.start else m15_start + pd.Timedelta(days=60)
     holdout_start = data_end - pd.DateOffset(months=args.holdout_months)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_root = args.out or PROJECT_ROOT / "artifacts" / "replay" / run_id
+    out_root = (args.out.resolve() if args.out else PROJECT_ROOT / "artifacts" / "replay" / run_id)
     out_root.mkdir(parents=True, exist_ok=True)
     REGISTRY.parent.mkdir(parents=True, exist_ok=True)
     summary = []
@@ -110,11 +114,15 @@ def main(argv: list[str] | None = None) -> int:
         for exit_mode in args.exit_modes:
             for cost_name in args.costs:
                 cost = COST_SCENARIOS[cost_name]
-                result = simulate(candidates, frames, policy, cost, SimulationConfig(exit_mode=exit_mode, start=start, end=data_end))
+                sim_policy = dict(policy)
+                if args.halts == "edge":
+                    sim_policy.update({"DAILY_STOP_LOSS_PCT": 10.0, "WEEKLY_STOP_LOSS_PCT": 10.0,
+                                       "HARD_DRAWDOWN_PCT": 1e9, "LOSS_HALT_THRESHOLD": 10**6})
+                result = simulate(candidates, frames, sim_policy, cost, SimulationConfig(exit_mode=exit_mode, start=start, end=data_end, fixed_sizing=args.halts == "edge"))
                 dev = [t for t in result.trades if pd.Timestamp(t["entry_time"]) < holdout_start]
                 hold = [t for t in result.trades if pd.Timestamp(t["entry_time"]) >= holdout_start]
                 eq = result.equity
-                label = f"{variant}__{exit_mode}"
+                label = f"{variant}__{exit_mode}__{args.halts}"
                 risk = float(policy["BASE_RISK_PCT"])
                 report = {
                     "variant": label, "cost": cost_name, "generated_at": run_id, "policy_hash": policy_hash,

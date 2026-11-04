@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "EURUSD",
+  "source_file": "EURUSD_H4.csv",
+  "sha256": "de602be0342e07576fb387179ecd5d6bec6a96833289556e65e0fb58c4cfb111",
+  "rows": 7776,
+  "start_utc": "2021-11-04T17:00:00+00:00",
+  "end_utc": "2026-11-03T10:00:00+00:00",
+  "median_bar_seconds": 14400.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

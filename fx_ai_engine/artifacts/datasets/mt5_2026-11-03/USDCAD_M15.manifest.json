@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "symbol": "USDCAD",
+  "source_file": "USDCAD_M15.csv",
+  "sha256": "35b07739b82adeca74bb4b003af45b9111d995671571afe57ff23cb0f77e737f",
+  "rows": 100210,
+  "start_utc": "2022-10-20T21:00:00+00:00",
+  "end_utc": "2026-11-03T17:00:00+00:00",
+  "median_bar_seconds": 900.0,
+  "columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread_points"
+  ]
+}

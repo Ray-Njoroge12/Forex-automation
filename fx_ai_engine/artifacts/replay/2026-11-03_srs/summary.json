@@ -1,0 +1,140 @@
+[
+  {
+    "run_id": "20261103T174558Z",
+    "variant": "baseline__policy__srs",
+    "cost": "base",
+    "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+    "datasets": {
+      "AUDUSD_D1.csv": "592994b15dcc2a2a",
+      "AUDUSD_H1.csv": "498f2ac02179686c",
+      "AUDUSD_H4.csv": "61d58f282ff8a539",
+      "AUDUSD_M15.csv": "6497fe08d6936396",
+      "EURUSD_D1.csv": "8150a180c05389d5",
+      "EURUSD_H1.csv": "c33e262df088653c",
+      "EURUSD_H4.csv": "de602be0342e0757",
+      "EURUSD_M15.csv": "450196a31a5f5496",
+      "GBPUSD_D1.csv": "b117cfe9036bfcba",
+      "GBPUSD_H1.csv": "bc899405d98a4d93",
+      "GBPUSD_H4.csv": "5105b50a27ec413c",
+      "GBPUSD_M15.csv": "aab979b89b736172",
+      "USDCAD_D1.csv": "10ec9f465ae1b59c",
+      "USDCAD_H1.csv": "0f5467a9bde6337e",
+      "USDCAD_H4.csv": "216417eb98987d69",
+      "USDCAD_M15.csv": "35b07739b82adeca",
+      "USDCHF_D1.csv": "4b2a86dc5ff26404",
+      "USDCHF_H1.csv": "66c3bca424e2535d",
+      "USDCHF_H4.csv": "7ca6f8781b71efd2",
+      "USDCHF_M15.csv": "7a5a6eaaab507b6c",
+      "USDJPY_D1.csv": "802a8ff3279e5f70",
+      "USDJPY_H1.csv": "7f987270bc0af18d",
+      "USDJPY_H4.csv": "e0b4d7b9a6548466",
+      "USDJPY_M15.csv": "5229f613548670a5"
+    },
+    "dev": {
+      "trades": 16,
+      "win_rate": 0.1875,
+      "expectancy_r": -0.542,
+      "profit_factor": 0.1279
+    },
+    "dev_max_dd": 0.2115,
+    "holdout": {
+      "trades": 0,
+      "win_rate": null,
+      "expectancy_r": null,
+      "profit_factor": null
+    },
+    "report": "artifacts/replay/2026-11-03_srs/baseline__policy__srs__base.md"
+  },
+  {
+    "run_id": "20261103T174558Z",
+    "variant": "baseline__policy__srs",
+    "cost": "stress_1_5x",
+    "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+    "datasets": {
+      "AUDUSD_D1.csv": "592994b15dcc2a2a",
+      "AUDUSD_H1.csv": "498f2ac02179686c",
+      "AUDUSD_H4.csv": "61d58f282ff8a539",
+      "AUDUSD_M15.csv": "6497fe08d6936396",
+      "EURUSD_D1.csv": "8150a180c05389d5",
+      "EURUSD_H1.csv": "c33e262df088653c",
+      "EURUSD_H4.csv": "de602be0342e0757",
+      "EURUSD_M15.csv": "450196a31a5f5496",
+      "GBPUSD_D1.csv": "b117cfe9036bfcba",
+      "GBPUSD_H1.csv": "bc899405d98a4d93",
+      "GBPUSD_H4.csv": "5105b50a27ec413c",
+      "GBPUSD_M15.csv": "aab979b89b736172",
+      "USDCAD_D1.csv": "10ec9f465ae1b59c",
+      "USDCAD_H1.csv": "0f5467a9bde6337e",
+      "USDCAD_H4.csv": "216417eb98987d69",
+      "USDCAD_M15.csv": "35b07739b82adeca",
+      "USDCHF_D1.csv": "4b2a86dc5ff26404",
+      "USDCHF_H1.csv": "66c3bca424e2535d",
+      "USDCHF_H4.csv": "7ca6f8781b71efd2",
+      "USDCHF_M15.csv": "7a5a6eaaab507b6c",
+      "USDJPY_D1.csv": "802a8ff3279e5f70",
+      "USDJPY_H1.csv": "7f987270bc0af18d",
+      "USDJPY_H4.csv": "e0b4d7b9a6548466",
+      "USDJPY_M15.csv": "5229f613548670a5"
+    },
+    "dev": {
+      "trades": 17,
+      "win_rate": 0.2941,
+      "expectancy_r": -0.5386,
+      "profit_factor": 0.1659
+    },
+    "dev_max_dd": 0.2165,
+    "holdout": {
+      "trades": 0,
+      "win_rate": null,
+      "expectancy_r": null,
+      "profit_factor": null
+    },
+    "report": "artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_1_5x.md"
+  },
+  {
+    "run_id": "20261103T174558Z",
+    "variant": "baseline__policy__srs",
+    "cost": "stress_2x",
+    "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+    "datasets": {
+      "AUDUSD_D1.csv": "592994b15dcc2a2a",
+      "AUDUSD_H1.csv": "498f2ac02179686c",
+      "AUDUSD_H4.csv": "61d58f282ff8a539",
+      "AUDUSD_M15.csv": "6497fe08d6936396",
+      "EURUSD_D1.csv": "8150a180c05389d5",
+      "EURUSD_H1.csv": "c33e262df088653c",
+      "EURUSD_H4.csv": "de602be0342e0757",
+      "EURUSD_M15.csv": "450196a31a5f5496",
+      "GBPUSD_D1.csv": "b117cfe9036bfcba",
+      "GBPUSD_H1.csv": "bc899405d98a4d93",
+      "GBPUSD_H4.csv": "5105b50a27ec413c",
+      "GBPUSD_M15.csv": "aab979b89b736172",
+      "USDCAD_D1.csv": "10ec9f465ae1b59c",
+      "USDCAD_H1.csv": "0f5467a9bde6337e",
+      "USDCAD_H4.csv": "216417eb98987d69",
+      "USDCAD_M15.csv": "35b07739b82adeca",
+      "USDCHF_D1.csv": "4b2a86dc5ff26404",
+      "USDCHF_H1.csv": "66c3bca424e2535d",
+      "USDCHF_H4.csv": "7ca6f8781b71efd2",
+      "USDCHF_M15.csv": "7a5a6eaaab507b6c",
+      "USDJPY_D1.csv": "802a8ff3279e5f70",
+      "USDJPY_H1.csv": "7f987270bc0af18d",
+      "USDJPY_H4.csv": "e0b4d7b9a6548466",
+      "USDJPY_M15.csv": "5229f613548670a5"
+    },
+    "dev": {
+      "trades": 16,
+      "win_rate": 0.25,
+      "expectancy_r": -0.5249,
+      "profit_factor": 0.2374
+    },
+    "dev_max_dd": 0.203,
+    "holdout": {
+      "trades": 0,
+      "win_rate": null,
+      "expectancy_r": null,
+      "profit_factor": null
+    },
+    "report": "artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_2x.md"
+  }
+]
