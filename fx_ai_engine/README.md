@@ -16,15 +16,14 @@ Deterministic, local-hosted Forex automation engine aligned to `SRS_v1`.
 2. Initialize project folders and DB:
    - `cd fx_ai_engine`
    - `python init_system.py`
-3. Set MT5 credentials via environment variables:
-   - `MT5_LOGIN`
-   - `MT5_PASSWORD`
-   - `MT5_SERVER`
-4. Run bridge smoke test:
-   - `python test_bridge.py`
+3. On macOS the official `MetaTrader5` Python package does not work. The engine reads the EA's file bridge instead: set `BRIDGE_BASE_PATH` to the terminal's `MQL5/Files/bridge` folder (see `docs/runbooks/demo-bringup.md`). `MT5_LOGIN`, `MT5_PASSWORD` and `MT5_SERVER` apply only to a Windows host that can import the package.
+4. Run the smoke test: `USE_MT5_MOCK=1 python main.py --mode smoke`
 
 ## Tests
-- `python -m pytest -q`
+- `USE_MT5_MOCK=1 python -m pytest -q` (581 tests at `267fc41`)
+
+## Status and decisions
+Current state, gates and open issues are in `../docs/STATUS.md`. Decisions are in `../docs/decisions/`. Agent rules are in `../AGENTS.md`.
 
 ## Run Modes
 - Smoke mode: `python main.py --mode smoke`
@@ -57,11 +56,12 @@ optimisation outcome:
 
 - `python -m backtesting.threshold_audit --csv /path/EURUSD.csv --symbol EURUSD --policy-mode preserve_10 --dataset-manifest artifacts/datasets/EURUSD.manifest.json --tech-pullback-buffer-pips 8`
 
-`backtesting.replay_execution` provides experimental bid/ask quote-bar fill
-primitives with next-observation timing and conservative stop-gap handling.
-These primitives are not yet connected to the strategy or portfolio replay;
-the existing Backtrader runner and its results remain separate. Neither is a
-verified production-equivalent replay or evidence for parameter promotion.
+The unified replay (`python -m backtesting.run_replay`) runs the live agents, portfolio
+manager and hard risk engine over historical bars with bid/ask fills from
+`backtesting.replay_execution`, and gates every result with the authenticity
+check (`research.authenticity_gate`). The Backtrader runner remains a smoke
+test only. A replay result counts as evidence only with a gate PASS bound to
+its policy and dataset hashes.
 
 ## Observability (Local Only)
 Environment variables:

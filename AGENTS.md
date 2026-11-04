@@ -8,9 +8,10 @@ A deterministic Forex trading engine for six majors (EURUSD, GBPUSD, USDJPY, AUD
 
 - **Current status and known issues: `docs/STATUS.md`. Read it first; update it when a phase, gate or known issue changes.**
 - Specification: `SRS_v1.md` (locked baseline; changes require an SRS version bump).
-- Current plan: `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md`.
-- Latest assessment: `fx_ai_engine/docs/2026-11-03-system-assessment-and-benchmark.md`.
-- Decisions: `docs/decisions/` (ADRs). Read them before changing anything they cover.
+- Living status (read first, update when a phase, gate or known issue changes): `docs/STATUS.md`.
+- Current plan: `fx_ai_engine/docs/plans/2026-11-03-full-development-and-ai-plan.md`. Its Phase 6 (30-day demo) is superseded by ADR 0007.
+- Current assessment: `fx_ai_engine/docs/2026-11-04-system-capability-and-readiness.md`. Funded accounts and brokers: `fx_ai_engine/docs/2026-11-04-funded-account-and-broker-options.md`. The 2026-11-03 assessment keeps the benchmark; its status figures are outdated.
+- Decisions: `docs/decisions/` (ADRs 0001 to 0007). Read them before changing anything they cover. ADR 0007: no 30-day demo; demo testing runs in owner-started test waves, one frozen release each.
 
 Environment: macOS (Apple Silicon). MT5 runs under Wine inside `MetaTrader 5.app`. The account is the MetaQuotes-Demo account (no funded account exists). The official `MetaTrader5` Python package does not work on macOS; the live data path is the EA file bridge.
 
@@ -59,6 +60,22 @@ Run from `fx_ai_engine/` with the repo venv (Python 3.12):
 | EA demo test payloads | `../.venv/bin/python -m validation.ea_demo_matrix --output-dir artifacts/ea-demo-matrix --mode core_srs` |
 
 Do not run `main.py --mode demo` or write into the live terminal's bridge folder unless the task explicitly says so.
+
+Validation and research tools (offline, report-only; skills in `.kiro/skills/fx-*`). Run from `fx_ai_engine/` with `USE_MT5_MOCK=1`:
+
+| Question | Command |
+| --- | --- |
+| Do decisions use future data? (R1) | `../.venv/bin/python -m research.bias_audit` |
+| Is a replay result evidence? (R2 gate; `backtesting.run_replay` runs it for every result) | `../.venv/bin/python -m research.authenticity_gate` |
+| How much cost can the trades take? (R4) | `../.venv/bin/python -m research.cost_stress` |
+| What do the SRS halts do at each risk level? (R5) | `../.venv/bin/python -m research.monte_carlo` |
+| Does a variant survive many tests? (R3) | `../.venv/bin/python -m research.multiple_testing` |
+| Do demo fills match the replay cost model? (R7) | `../.venv/bin/python -m research.fill_reconciliation` |
+| Is the live release drifting from replay? (R8) | `../.venv/bin/python -m research.drift_monitor` |
+| Why did closed trades lose or win? (R9) | `../.venv/bin/python -m research.trade_postmortem` |
+| Freeze, seal criteria, evaluate a release (R10) | `../.venv/bin/python -m research.forward_test.freeze` / `.prereg` / `.evaluate` |
+
+Each tool prints its own options with `--help`. A replay is evidence only with an R2 PASS bound to its policy and dataset hashes. Do not close engine trades by hand during a test release; a manual close breaks the statistics.
 
 ## MetaTrader 5 MCP server
 

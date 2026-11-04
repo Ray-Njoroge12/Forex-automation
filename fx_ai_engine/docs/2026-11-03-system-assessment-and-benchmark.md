@@ -1,5 +1,7 @@
 # System assessment and open-source benchmark
 
+> **Update 2026-11-04.** The status figures in section 1 are outdated: CI now exists, 581 tests pass, the EA acceptance matrix has run (7 of 7 cases), one engine trade was routed and filled, and a unified replay has produced results. Current state: `2026-11-04-system-capability-and-readiness.md`. The benchmark (sections 5), the strategy weaknesses (section 4) and the replay-based conclusion that no edge exists remain valid. Funded accounts: `2026-11-04-funded-account-and-broker-options.md`.
+
 Date: 2026-11-03. Scope: current working tree (including uncommitted changes), the local MT5 terminal data folder, and public GitHub projects. This is a read-only assessment. No source file was changed to produce it.
 
 How to read the evidence labels:

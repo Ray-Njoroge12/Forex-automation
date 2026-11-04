@@ -1,5 +1,7 @@
 # Full development plan: from prototype to demo-validated system, with AI
 
+> **Progress 2026-11-04.** Phases 0 and 1 are done except burn-in; Phase 2 produced replay evidence and gate G2 **failed** (no edge); Phase 4 builds S1 and S2 are done; the validation tooling (R1 to R10) is built. Phase 6 (30-day demo) is superseded by ADR 0007. The next required work is Phase 2b (strategy redesign). Live status: `docs/STATUS.md`. Detail: `fx_ai_engine/docs/2026-11-04-system-capability-and-readiness.md`.
+
 Date: 2026-11-03. Builds on `docs/2026-11-03-system-assessment-and-benchmark.md` and `docs/plans/2026-11-02-system-build-roadmap.md`. Durations are estimates for one owner working with AI agents part-time. They are not commitments.
 
 ---
