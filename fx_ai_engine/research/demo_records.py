@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -30,6 +30,7 @@ import pandas as pd
 
 from backtesting.unified_replay import SYMBOLS, load_bridge_bar_exports, pip_value_usd_per_lot
 from core.filters.calendar_filter import load_calendar
+from core.mt5_bridge import account_unit_scale, usd_from_account_units
 from research.common import PROJECT_ROOT, parse_ts
 
 EA_MAGIC = 20261103
@@ -151,8 +152,105 @@ def load_open_issues(conn: sqlite3.Connection) -> dict[str, set[str]]:
 # ----------------------------------------------------------------------
 # Bridge file copies
 # ----------------------------------------------------------------------
+STANDARD_CONTRACT_SIZE = 100000.0
+
+
+@dataclass(frozen=True)
+class AccountUnits:
+    """Money and volume units of the bridge copies (cent accounts: USC, contract size 1,000)."""
+    currency: str = "USD"
+    unit_scale: float = 1.0
+    contract_sizes: Mapping[str, float] = field(default_factory=dict)
+    source: str = "default"
+
+    def money(self, value: Any) -> Any:
+        return usd_from_account_units(value, self.unit_scale)
+
+    def volume(self, symbol: str, value: float) -> float:
+        """Standard-lot equivalent: volume x contract_size / 100000."""
+        factor = float(self.contract_sizes.get(symbol, STANDARD_CONTRACT_SIZE)) / STANDARD_CONTRACT_SIZE
+        return value if factor == 1.0 else value * factor
+
+    @property
+    def is_default(self) -> bool:
+        return self.unit_scale == 1.0 and all(float(v) == STANDARD_CONTRACT_SIZE for v in self.contract_sizes.values())
+
+    def describe(self) -> dict:
+        return {"currency": self.currency, "unit_scale": self.unit_scale,
+                "contract_sizes": dict(sorted(self.contract_sizes.items())), "source": self.source,
+                "money": "converted to USD", "volume": "standard-lot equivalent (volume x contract_size / 100000)"}
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+class UnitsUnknownError(ValueError):
+    """The copied bridge files do not identify the account currency and none was given."""
+
+
+UNITS_UNKNOWN_MESSAGE = (
+    "account currency of the bridge copies is unknown: no status.json with account_currency beside {deals} "
+    "(or in its parent folder) and no --account-currency was given. A cent (USC) account reports money in "
+    "cents, so assuming USD would make every dollar and net-R figure 100 times too large. "
+    "Pass --account-currency (for example USD or USC) or copy status.json next to the deals file."
+)
+
+
+def resolve_units(deals_path: str | Path, account_currency: str | None = None,
+                  symbols_path: str | Path | None = None) -> AccountUnits:
+    """Units of a deals.json copy: currency from the argument, else status.json ``account_currency``
+    beside the deals file (or in its parent, the bridge root); contract sizes from ``symbols_path``,
+    else symbols.json beside the deals file, else 100000.
+
+    Currency is never assumed: with no argument and no readable ``account_currency`` this raises
+    ``UnitsUnknownError`` so no dollar or net-R figure is produced from unknown units. Missing or
+    unreadable symbols.json still falls back to the standard contract size.
+    """
+    deals_dir = Path(deals_path).parent
+    sources = []
+    currency = (account_currency or "").strip()
+    if currency:
+        sources.append("--account-currency")
+    else:
+        for candidate in (deals_dir / "status.json", deals_dir.parent / "status.json"):
+            data = _read_json(candidate)
+            value = data.get("account_currency") if isinstance(data, dict) else None
+            if isinstance(value, str) and value.strip():
+                currency = value.strip()
+                sources.append(str(candidate))
+                break
+    sym_file = Path(symbols_path) if symbols_path else deals_dir / "symbols.json"
+    sizes: dict[str, float] = {}
+    data = _read_json(sym_file)
+    if isinstance(data, dict) and isinstance(data.get("symbols"), dict):
+        for name, spec in data["symbols"].items():
+            try:
+                size = float(spec["contract_size"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if size > 0:
+                sizes[str(name)] = size
+        if sizes:
+            sources.append(str(sym_file))
+    if not currency:
+        raise UnitsUnknownError(UNITS_UNKNOWN_MESSAGE.format(deals=Path(deals_path)))
+    return AccountUnits(currency=currency, unit_scale=account_unit_scale(currency), contract_sizes=sizes,
+                        source=", ".join(sources) or "default")
+
+
+def _convert_pl(data: dict, units: AccountUnits | None) -> dict:
+    if units is not None and not units.is_default and isinstance(data.get("profit_loss"), (int, float)):
+        data["profit_loss"] = units.money(data["profit_loss"])
+    return data
+
+
 @dataclass(frozen=True)
 class Deal:
+    """One MT5 deal. With units, money is USD and ``volume`` is a standard-lot equivalent."""
     ticket: int
     order: int
     position_id: int
@@ -182,17 +280,22 @@ def _deal(row: Mapping[str, Any]) -> Deal:
     )
 
 
-def load_deals(path: str | Path) -> tuple[list[Deal], dict]:
+def load_deals(path: str | Path, units: AccountUnits | None = None) -> tuple[list[Deal], dict]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise ValueError(f"unsupported deals.json schema_version: {payload.get('schema_version') if isinstance(payload, dict) else None!r}")
-    deals = sorted((_deal(r) for r in payload.get("deals") or []), key=lambda d: (d.time, d.ticket))
+    deals = [_deal(r) for r in payload.get("deals") or []]
+    if units is not None and not units.is_default:
+        deals = [replace(d, profit=units.money(d.profit), commission=units.money(d.commission),
+                         swap=units.money(d.swap), fee=units.money(d.fee), volume=units.volume(d.symbol, d.volume))
+                 for d in deals]
+    deals = sorted(deals, key=lambda d: (d.time, d.ticket))
     meta = {"generated_at": payload.get("generated_at"),
             "server_utc_offset_seconds": payload.get("server_utc_offset_seconds")}
     return deals, meta
 
 
-def load_exits(directory: str | Path) -> dict[int, dict]:
+def load_exits(directory: str | Path, units: AccountUnits | None = None) -> dict[int, dict]:
     """exit_*.json keyed by position_ticket (files without one, e.g. exit_result.json, are skipped)."""
     d = Path(directory)
     if not d.is_dir():
@@ -202,11 +305,11 @@ def load_exits(directory: str | Path) -> dict[int, dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not data.get("position_ticket"):
             continue
-        out[int(data["position_ticket"])] = data
+        out[int(data["position_ticket"])] = _convert_pl(data, units)
     return out
 
 
-def load_feedback_files(directory: str | Path) -> dict[str, dict]:
+def load_feedback_files(directory: str | Path, units: AccountUnits | None = None) -> dict[str, dict]:
     """execution_*.json (recursive) keyed by trade_id, with sibling payload.json and source_file.
 
     For duplicate trade_ids keep the first file in sorted path order with a non-zero
@@ -224,6 +327,7 @@ def load_feedback_files(directory: str | Path) -> dict[str, dict]:
         if payload_path.exists():
             data["payload"] = json.loads(payload_path.read_text(encoding="utf-8"))
         data["source_file"] = str(path)
+        _convert_pl(data, units)
         grouped.setdefault(str(data["trade_id"]), []).append(data)
     return {tid: next((x for x in items if int(x.get("ticket") or 0) != 0), items[0])
             for tid, items in grouped.items()}
@@ -276,13 +380,16 @@ R_DEFINITION = ("net R = sum over the position's deals of (profit + commission +
                 "and leaves out commission and swap.")
 
 
-def net_r_fields(trade: Mapping[str, Any], entry_deals: Sequence[Deal], exit_deals: Sequence[Deal]) -> dict[str, Any]:
+def net_r_fields(trade: Mapping[str, Any], entry_deals: Sequence[Deal], exit_deals: Sequence[Deal],
+                 lot_factor: float = 1.0) -> dict[str, Any]:
     """Net R of one position from its deals, defined as unified_replay defines r_multiple (net_usd / risk_usd).
 
     Returns risk_usd, net_usd, net_r and, when net_r is None, net_r_missing (the reason).
     """
     symbol = str(trade.get("symbol") or "")
     lots = entry_deals[0].volume if entry_deals else _opt_float(trade.get("lot_size"))
+    if lots and not entry_deals:
+        lots = lots * lot_factor
     entry_price = entry_deals[0].price if entry_deals else _opt_float(trade.get("entry_price"))
     stop = _opt_float(trade.get("stop_loss"))
     risk = None
@@ -303,7 +410,7 @@ def net_r_fields(trade: Mapping[str, Any], entry_deals: Sequence[Deal], exit_dea
 
 def closed_trades(conn: sqlite3.Connection, evidence_stream: str = DEFAULT_STREAM,
                   exits: Mapping[int, Mapping[str, Any]] | None = None,
-                  deals: Sequence[Deal] | None = None) -> list[dict]:
+                  deals: Sequence[Deal] | None = None, units: AccountUnits | None = None) -> list[dict]:
     """Closed strategy trades from the trades table, with a best-evidence ``exit_time`` and net R.
 
     * status CLOSED_* -> source 'db';
@@ -353,7 +460,10 @@ def closed_trades(conn: sqlite3.Connection, evidence_stream: str = DEFAULT_STREA
         if final is not None and file_close is not None:
             item["exit_file_close_time_offset_s"] = int((file_close - final.time.floor("s")).total_seconds())
         if deals is not None:
-            item.update(net_r_fields(trade, entry_deals.get(position, []) if position else [], closing))
+            symbol = str(trade.get("symbol") or "")
+            lot_factor = units.volume(symbol, 1.0) if units is not None else 1.0
+            item.update(net_r_fields(trade, entry_deals.get(position, []) if position else [], closing,
+                                     lot_factor=lot_factor))
         else:
             item.update(risk_usd=None, net_usd=None, net_r=None, net_r_missing="no deals given")
         out.append(item)

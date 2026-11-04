@@ -28,6 +28,8 @@ from core.mt5_bridge import (
     Preserve10ApprovalFacts,
     SymbolExecutionContract,
     _closed_history_summary_from_deals,
+    account_unit_scale,
+    usd_from_account_units,
 )
 
 logger = logging.getLogger("fx_ai_engine.file_bridge")
@@ -58,7 +60,33 @@ BAR_COLUMNS = ["time_utc", "open", "high", "low", "close", "tick_volume", "sprea
 
 
 class FileBridgeDataError(ValueError):
-    """An EA export cannot safely be used."""
+    """An EA export cannot safely be used.
+
+    ``reason_code`` (class default or per-instance) lets a precise code survive
+    the conversion to ``BridgeError``; ``None`` means the caller's default applies.
+    """
+
+    reason_code: str | None = None
+
+    def __init__(self, message: object = "", *, reason_code: str | None = None):
+        super().__init__(message)
+        if reason_code:
+            self.reason_code = reason_code
+
+
+class FileBridgeSymbolError(FileBridgeDataError):
+    """The EA could not resolve one or more broker symbols (``symbols_ok`` is false)."""
+
+    reason_code = "FILE_BRIDGE_SYMBOLS_NOT_OK"
+
+
+def _code_for(exc: BaseException, default: str) -> str:
+    """Reason code carried by *exc*, else *default*."""
+    return getattr(exc, "reason_code", None) or default
+
+
+def _field_invalid(message: str) -> FileBridgeDataError:
+    return FileBridgeDataError(message, reason_code="FILE_BRIDGE_STATUS_FIELD_INVALID")
 
 
 def _parse_utc(value: object) -> datetime:
@@ -95,6 +123,9 @@ class FileBridgeConnection(MT5Connection):
         self.feedback_dir = self.bridge_path / "feedback"
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._cache: dict[Path, _CachedFile] = {}
+        self._last_currency: str | None = None
+        # (login, server) of the validated snapshot that supplied ``_last_currency``.
+        self._last_currency_identity: tuple[int, str] | None = None
 
     # ------------------------------------------------------------------
     # File helpers
@@ -126,7 +157,35 @@ class FileBridgeConnection(MT5Connection):
             raise FileBridgeDataError(f"{label} is stale (age={age:.1f}s max={max_age:.0f}s)")
         return age
 
-    def _status(self) -> dict[str, Any]:
+    @staticmethod
+    def _validate_profile_fields(status: dict[str, Any]) -> None:
+        """Shape-check the optional EA profile fields; absent fields (old EA) are fine."""
+        if "symbol_suffix" in status and not isinstance(status["symbol_suffix"], str):
+            raise _field_invalid("status symbol_suffix must be a string")
+        if "symbols_ok" in status and type(status["symbols_ok"]) is not bool:
+            raise _field_invalid("status symbols_ok must be a boolean")
+        if "symbol_errors" in status:
+            errors = status["symbol_errors"]
+            if not isinstance(errors, list) or not all(isinstance(item, str) for item in errors):
+                raise _field_invalid("status symbol_errors must be a list of strings")
+            if errors and status.get("symbols_ok") is True:
+                raise _field_invalid("status symbol_errors is non-empty while symbols_ok is true")
+        if "account_currency" in status and (
+            not isinstance(status["account_currency"], str) or not status["account_currency"].strip()
+        ):
+            raise _field_invalid("status account_currency must be a non-empty string")
+        if "max_spread_pips_input" in status:
+            value = status["max_spread_pips_input"]
+            if not _finite_number(value) or value < 0:
+                raise _field_invalid("status max_spread_pips_input must be a finite number >= 0")
+        if "live_guard" in status and not isinstance(status["live_guard"], dict):
+            raise _field_invalid("status live_guard must be an object")
+        if "account_margin_mode" in status:
+            mode = status["account_margin_mode"]
+            if isinstance(mode, bool) or not isinstance(mode, (str, int)):
+                raise _field_invalid("status account_margin_mode must be a string or an integer")
+
+    def _read_status(self, *, require_symbols_ok: bool) -> dict[str, Any]:
         status = self._read_json(self.market_dir / "status.json")
         if not isinstance(status, dict) or status.get("schema_version") != 1:
             raise FileBridgeDataError("unsupported market status schema")
@@ -135,23 +194,51 @@ class FileBridgeConnection(MT5Connection):
             raise FileBridgeDataError("EA could not determine the server time offset")
         if status.get("terminal_connected") is not True:
             raise FileBridgeDataError("MT5 terminal reports no server connection")
+        self._validate_profile_fields(status)
+        # Gate on symbols_ok=false, and also on a non-empty symbol_errors when symbols_ok is absent.
+        if require_symbols_ok and (status.get("symbols_ok") is False or status.get("symbol_errors")):
+            listed = ", ".join(status.get("symbol_errors") or []) or "unspecified"
+            raise FileBridgeSymbolError(
+                f"EA could not resolve broker symbols (suffix={status.get('symbol_suffix', '')!r}): {listed}"
+            )
         return status
+
+    def _status(self) -> dict[str, Any]:
+        return self._read_status(require_symbols_ok=True)
+
+    def get_ea_profile(self) -> dict[str, Any]:
+        """Validated EA profile fields (``None`` when absent) from a fresh status file.
+
+        Does not apply the ``symbols_ok`` gate so a checker can still report it.
+        Raises ``FileBridgeDataError`` when the status file is unusable.
+        """
+        status = self._read_status(require_symbols_ok=False)
+        keys = (
+            "ea_version", "symbol_suffix", "symbols_ok", "symbol_errors",
+            "account_margin_mode", "account_currency", "max_spread_pips_input", "live_guard",
+        )
+        profile: dict[str, Any] = {key: status.get(key) for key in keys}
+        if isinstance(profile["symbol_errors"], list):
+            profile["symbol_errors"] = list(profile["symbol_errors"])
+        if isinstance(profile["live_guard"], dict):
+            profile["live_guard"] = dict(profile["live_guard"])
+        return profile
 
     def server_utc_offset_seconds(self) -> int | None:
         """Broker server time minus UTC from a fresh, valid status file, else ``None``."""
         try:
             offset = self._status().get("server_utc_offset_seconds")
         except ValueError as exc:  # FileBridgeDataError or an unparsable timestamp
-            self._fail("FILE_BRIDGE_STATUS_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_STATUS_UNAVAILABLE"), exc)
             return None
         return offset if type(offset) is int else None
 
-    def _account_snapshot_payload(self) -> dict[str, Any]:
+    def _account_snapshot_payload(self, *, require_symbols_ok: bool = True) -> dict[str, Any]:
         snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
         if not isinstance(snapshot, dict):
             raise FileBridgeDataError("account snapshot is not an object")
         self._require_fresh(snapshot.get("timestamp"), ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS, "account snapshot")
-        status = self._status()
+        status = self._read_status(require_symbols_ok=require_symbols_ok)
         login, server = status.get("login"), status.get("server")
         if (type(login) is not int or login <= 0 or not isinstance(server, str) or not server.strip()
                 or type(snapshot.get("login")) is not int or snapshot.get("login") != login
@@ -159,6 +246,14 @@ class FileBridgeConnection(MT5Connection):
             raise FileBridgeDataError("account identity differs between status and account snapshot")
         if self.connected and (self.login != login or self.server != server):
             raise FileBridgeDataError("terminal account changed since connection")
+        status_currency, snapshot_currency = status.get("account_currency"), snapshot.get("currency")
+        if (isinstance(status_currency, str) and status_currency.strip()
+                and isinstance(snapshot_currency, str) and snapshot_currency.strip()
+                and status_currency.strip().upper() != snapshot_currency.strip().upper()):
+            raise FileBridgeDataError(
+                f"account currency differs between status ({status_currency}) and account snapshot ({snapshot_currency})",
+                reason_code="FILE_BRIDGE_ACCOUNT_CURRENCY_MISMATCH",
+            )
         if snapshot.get("account_authenticated") is not True or snapshot.get("terminal_connected") is not True:
             raise FileBridgeDataError("account snapshot does not confirm authentication and connectivity")
         if type(snapshot.get("account_is_demo")) is not bool or snapshot.get("account_is_demo") != status.get("account_is_demo"):
@@ -166,7 +261,78 @@ class FileBridgeConnection(MT5Connection):
         for key in ("balance", "equity", "margin_free", "floating_pnl"):
             if not _finite_number(snapshot.get(key)):
                 raise FileBridgeDataError(f"account snapshot {key} is not a finite number")
+        currency = snapshot.get("currency")
+        if isinstance(currency, str) and currency.strip():
+            self._last_currency = currency
+            self._last_currency_identity = (login, server)
         return snapshot
+
+    def _account_currency(self) -> str | None:
+        """Account currency from a fully validated snapshot, else the last validated value, else ``None``.
+        The snapshot passes the same validation as every account read (freshness,
+        identity, authentication, connectivity, account type, money fields); only
+        the ``symbols_ok`` gate is skipped so history stays available. A status
+        ``account_currency`` alone is never enough and never cached. ``None``
+        means the currency is unknown and is never defaulted to USD. The cached
+        value covers only a missing, unreadable or stale snapshot; a fresh
+        snapshot that fails validation gives ``None``. Records no error: callers do.
+        """
+        try:
+            currency = self._account_snapshot_payload(require_symbols_ok=False).get("currency")
+        except ValueError:  # FileBridgeDataError or an unparsable timestamp
+            return self._identity_confirmed_cached_currency() if self._snapshot_unavailable() else None
+        return currency if isinstance(currency, str) and currency.strip() else None
+
+    def _identity_confirmed_cached_currency(self) -> str | None:
+        """The cached validated currency, only while a fresh status confirms the same account.
+
+        The cache is bound to the login and server of the snapshot that supplied it. A status that
+        cannot be read, names another account, or names another currency gives ``None`` (and drops
+        the cache when the account differs), so one account's scale is never applied to another's money.
+        """
+        if self._last_currency is None or self._last_currency_identity is None:
+            return None
+        try:
+            status = self._read_status(require_symbols_ok=False)
+        except ValueError:  # FileBridgeDataError or an unparsable timestamp
+            return None
+        identity = (status.get("login"), status.get("server"))
+        if identity != self._last_currency_identity or (self.connected and identity != (self.login, self.server)):
+            if identity != self._last_currency_identity:
+                self._clear_cached_currency()
+            return None
+        status_currency = status.get("account_currency")
+        if isinstance(status_currency, str) and status_currency.strip().upper() != self._last_currency.strip().upper():
+            return None
+        return self._last_currency
+
+    def _clear_cached_currency(self) -> None:
+        self._last_currency = None
+        self._last_currency_identity = None
+
+    def _snapshot_unavailable(self) -> bool:
+        """True when the account snapshot is missing, unreadable, not an object, or stale (not merely invalid)."""
+        try:
+            snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
+        except FileBridgeDataError:
+            return True
+        if not isinstance(snapshot, dict):
+            return True
+        try:
+            age = (self._now() - _parse_utc(snapshot.get("timestamp"))).total_seconds()
+        except ValueError:
+            return False  # unparsable timestamp: invalid, not merely unavailable
+        return age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
+    def _unit_scale(self) -> float | None:
+        """Account-currency to USD multiplier, or ``None`` (with a bridge error) when the currency is unknown."""
+        currency = self._account_currency()
+        if currency is None:
+            self._fail(
+                "FILE_BRIDGE_ACCOUNT_CURRENCY_UNKNOWN",
+                "account currency cannot be established from a validated account snapshot",
+            )
+            return None
+        return account_unit_scale(currency)
 
     def _fail(self, code: str, exc: Exception | str) -> None:
         self._make_error(code, str(exc))
@@ -187,13 +353,16 @@ class FileBridgeConnection(MT5Connection):
                     raise FileBridgeDataError("EA reports no authenticated account")
                 if not isinstance(status.get("server"), str) or not status["server"].strip():
                     raise FileBridgeDataError("EA reports no account server")
+                if self._last_currency_identity != (login, status["server"]):
+                    self._clear_cached_currency()  # another account: never reuse the old scale
                 self.login = login
                 self.server = str(status.get("server") or "")
                 self.connected = True
                 self.last_error = None
                 logger.info(
-                    "File bridge connected path=%s login=%s server=%s ea_version=%s",
+                    "File bridge connected path=%s login=%s server=%s ea_version=%s symbol_suffix=%r",
                     self.bridge_path, self.login, self.server, status.get("ea_version"),
+                    status.get("symbol_suffix", ""),
                 )
                 return True
             except FileBridgeDataError as exc:
@@ -201,7 +370,10 @@ class FileBridgeConnection(MT5Connection):
                 if attempt + 1 < retry_count:
                     time.sleep(2)
         self.connected = False
-        self._fail("FILE_BRIDGE_NOT_READY", last_exc or "unknown")
+        self._fail(
+            _code_for(last_exc, "FILE_BRIDGE_NOT_READY") if last_exc else "FILE_BRIDGE_NOT_READY",
+            last_exc or "unknown",
+        )
         return False
 
     def _ensure_connected(self) -> bool:
@@ -219,7 +391,7 @@ class FileBridgeConnection(MT5Connection):
         try:
             snapshot = self._account_snapshot_payload()
         except FileBridgeDataError as exc:
-            self._fail("FILE_BRIDGE_ACCOUNT_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_ACCOUNT_UNAVAILABLE"), exc)
             return None
         return SimpleNamespace(
             balance=float(snapshot["balance"]),
@@ -234,7 +406,7 @@ class FileBridgeConnection(MT5Connection):
             snapshot = self._account_snapshot_payload()
             status = self._status()
         except FileBridgeDataError as exc:
-            self._fail("FILE_BRIDGE_ACCOUNT_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_ACCOUNT_UNAVAILABLE"), exc)
             return None
         flags = (snapshot.get("account_is_demo"), status.get("account_is_demo"))
         if all(flag is True for flag in flags):
@@ -247,14 +419,21 @@ class FileBridgeConnection(MT5Connection):
         try:
             snapshot = self._account_snapshot_payload()
         except FileBridgeDataError as exc:
-            return {"error": self._make_error("FILE_BRIDGE_ACCOUNT_UNAVAILABLE", str(exc)).__dict__}
-        return dict(snapshot)
+            return {"error": self._make_error(_code_for(exc, "FILE_BRIDGE_ACCOUNT_UNAVAILABLE"), str(exc)).__dict__}
+        result = dict(snapshot)
+        scale = account_unit_scale(snapshot.get("currency") or self._account_currency())
+        if scale != 1.0:
+            for key in ("balance", "equity", "margin_free", "floating_pnl"):
+                result[key] = usd_from_account_units(snapshot[key], scale)
+            result["money_unit"] = "USD"
+            result["unit_scale"] = scale
+        return result
 
     def get_open_position_tickets(self) -> list[int] | None:
         try:
             snapshot = self._account_snapshot_payload()
         except FileBridgeDataError as exc:
-            self._fail("FILE_BRIDGE_ACCOUNT_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_ACCOUNT_UNAVAILABLE"), exc)
             return None
         managed = snapshot.get("managed_position_tickets")
         unmanaged = snapshot.get("unmanaged_position_tickets")
@@ -313,7 +492,7 @@ class FileBridgeConnection(MT5Connection):
                 ))
             return deals
         except (FileBridgeDataError, TypeError, ValueError) as exc:
-            self._fail("FILE_BRIDGE_HISTORY_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_HISTORY_UNAVAILABLE"), exc)
             return None
 
     def get_position_history_summary(self, position_ticket: int, *, lookback_days: int = 30) -> dict[str, Any] | None:
@@ -323,8 +502,14 @@ class FileBridgeConnection(MT5Connection):
         if deals is None:
             return None
         matched = [d for d in deals if d.position_id == int(position_ticket)]
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return _closed_history_summary_from_deals(
-            matched, position_ticket_hint=int(position_ticket), constants=DEAL_CONSTANTS
+            matched,
+            position_ticket_hint=int(position_ticket),
+            constants=DEAL_CONSTANTS,
+            unit_scale=unit_scale,
         )
 
     def get_trade_history_summary(self, trade_id: str, *, lookback_days: int = 30) -> dict[str, Any] | None:
@@ -339,7 +524,12 @@ class FileBridgeConnection(MT5Connection):
             return None
         positions = {d.position_id for d in seed if d.position_id > 0}
         matched = [d for d in deals if d.position_id in positions] if positions else seed
-        return _closed_history_summary_from_deals(matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS)
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
+        return _closed_history_summary_from_deals(
+            matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS, unit_scale=unit_scale
+        )
 
     # ------------------------------------------------------------------
     # Market data
@@ -412,7 +602,9 @@ class FileBridgeConnection(MT5Connection):
         try:
             frame = self._load_bars(symbol, tf_name)
         except FileBridgeDataError as exc:
-            err = self._make_error("FILE_BRIDGE_OHLC_UNAVAILABLE", f"symbol={symbol} tf={tf_name}: {exc}")
+            err = self._make_error(
+                _code_for(exc, "FILE_BRIDGE_OHLC_UNAVAILABLE"), f"symbol={symbol} tf={tf_name}: {exc}"
+            )
             df = pd.DataFrame()
             df.attrs["error"] = err.__dict__
             return df
@@ -421,6 +613,11 @@ class FileBridgeConnection(MT5Connection):
         return result
 
     def get_live_spread(self, symbol: str) -> float | None:
+        try:
+            self._status()  # symbols_ok gate and fresh-status check
+        except ValueError as exc:  # FileBridgeDataError or an unparsable timestamp
+            self._fail(_code_for(exc, "FILE_BRIDGE_STATUS_UNAVAILABLE"), exc)
+            return None
         try:
             quotes = load_demo_quotes(
                 self.feedback_dir / "market_quotes.json",
@@ -439,6 +636,7 @@ class FileBridgeConnection(MT5Connection):
 
     def get_symbol_execution_contract(self, symbol: str) -> SymbolExecutionContract | None:
         try:
+            self._status()  # symbols_ok gate and fresh-status check
             payload = self._read_json(self.market_dir / "symbols.json")
             if not isinstance(payload, dict) or payload.get("schema_version") != 1:
                 raise FileBridgeDataError("unsupported symbol spec schema")
@@ -446,18 +644,25 @@ class FileBridgeConnection(MT5Connection):
             spec = payload.get("symbols", {}).get(symbol)
             if not isinstance(spec, dict):
                 raise FileBridgeDataError(f"no symbol spec for {symbol}")
+            if "broker_symbol" in spec and (
+                not isinstance(spec["broker_symbol"], str) or not spec["broker_symbol"].strip()
+            ):
+                raise _field_invalid(f"symbol spec broker_symbol for {symbol} must be a non-empty string")
             values = {k: spec.get(k) for k in ("volume_min", "volume_step", "volume_max", "tick_value", "tick_size", "point")}
             if not all(_finite_number(v) and v > 0 for v in values.values()):
                 raise FileBridgeDataError(f"invalid symbol spec values for {symbol}")
         except FileBridgeDataError as exc:
-            self._fail("FILE_BRIDGE_SYMBOL_SPEC_UNAVAILABLE", exc)
+            self._fail(_code_for(exc, "FILE_BRIDGE_SYMBOL_SPEC_UNAVAILABLE"), exc)
+            return None
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
             return None
         return SymbolExecutionContract(
             symbol=symbol,
             min_lot=float(values["volume_min"]),
             lot_step=float(values["volume_step"]),
             max_lot=float(values["volume_max"]),
-            tick_value=float(values["tick_value"]),
+            tick_value=usd_from_account_units(float(values["tick_value"]), unit_scale),
             tick_size=float(values["tick_size"]),
             point=float(values["point"]),
         )

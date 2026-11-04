@@ -48,7 +48,7 @@ from backtesting.unified_replay import COST_SCENARIOS
 from research.common import ARTIFACTS, parse_ts, run_id, write_json
 from research.demo_records import (
     DEFAULT_CALENDAR, DEFAULT_STREAM, R_DEFINITION, calendar_coverage, closed_trades, guard_output_dir, load_calendar_events,
-    load_deals, load_exits, load_feedback_files, load_funnel, load_m15, load_open_issues, load_thresholds, open_ro,
+    load_deals, load_exits, resolve_units, UnitsUnknownError, load_feedback_files, load_funnel, load_m15, load_open_issues, load_thresholds, open_ro,
     parse_details,
 )
 from research.fill_reconciliation import reconcile
@@ -469,16 +469,18 @@ def build_report(trades: Sequence[Mapping[str, Any]], funnel: Sequence[Mapping[s
 
 def run(db: Path, deals_path: Path, bars_dir: Path, *, exits_dir: Path | None = None,
         feedback_dir: Path | None = None, calendar: Path = DEFAULT_CALENDAR, thresholds: Path | None = None,
-        evidence_stream: str = DEFAULT_STREAM, week: str | None = None) -> dict:
+        evidence_stream: str = DEFAULT_STREAM, week: str | None = None, units=None) -> dict:
     config, sha = load_thresholds(thresholds)
     cfg = config["r9_postmortem"]
-    deals, _ = load_deals(deals_path)
-    exits = load_exits(exits_dir) if exits_dir else {}
-    feedback = load_feedback_files(feedback_dir) if feedback_dir else None
+    if units is None:
+        units = resolve_units(deals_path)
+    deals, _ = load_deals(deals_path, units)
+    exits = load_exits(exits_dir, units) if exits_dir else {}
+    feedback = load_feedback_files(feedback_dir, units) if feedback_dir else None
     events = load_calendar_events(calendar)
     conn = open_ro(db)
     try:
-        closed = closed_trades(conn, evidence_stream, exits=exits, deals=deals)
+        closed = closed_trades(conn, evidence_stream, exits=exits, deals=deals, units=units)
         r7_rows = reconcile(conn, deals, load_m15(bars_dir), feedback_files=feedback,
                             evidence_stream=evidence_stream, cost=COST_SCENARIOS["base"])
         funnel = _with_time(load_funnel(conn, evidence_stream))
@@ -505,6 +507,9 @@ def run(db: Path, deals_path: Path, bars_dir: Path, *, exits_dir: Path | None = 
         {"name": "thresholds", "path": str(thresholds) if thresholds else "research/live_vs_replay_thresholds.json",
          "sha256_16": sha},
     ]
+    if not units.is_default:
+        sources.append({"name": "units (money converted to USD; volume in standard-lot equivalents)",
+                        "path": units.source, "sha256_16": None})
     return build_report(trades, funnel, cfg, thresholds_version=config["version"], thresholds_sha=sha,
                         sources=sources, week=week)
 
@@ -520,15 +525,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--week", default=None, help="ISO week YYYY-Www (default: every week present)")
     parser.add_argument("--evidence-stream", default=DEFAULT_STREAM)
     parser.add_argument("--thresholds", type=Path, default=None)
+    parser.add_argument("--account-currency", default=None,
+                        help="account currency of the bridge copies (required unless status.json with account_currency sits beside the deals file; never assumed)")
+    parser.add_argument("--symbols", type=Path, default=None,
+                        help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
     if args.week is not None and not WEEK_RE.match(args.week):
         parser.error(f"--week must look like 2026-W45, got {args.week!r}")
 
     out = guard_output_dir(args.out or ARTIFACTS / "r9" / run_id())
+    try:
+        units = resolve_units(args.deals, args.account_currency, args.symbols)
+    except UnitsUnknownError as exc:
+        parser.error(str(exc))
     report = run(args.db, args.deals, args.bars_dir, exits_dir=args.exits_dir, feedback_dir=args.feedback_dir,
                  calendar=args.calendar, thresholds=args.thresholds, evidence_stream=args.evidence_stream,
-                 week=args.week)
+                 week=args.week, units=units)
     report["metadata"] = {"run_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     out.mkdir(parents=True, exist_ok=True)
     written = []

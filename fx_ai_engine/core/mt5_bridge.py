@@ -70,6 +70,7 @@ def _closed_history_summary_from_deals(
     trade_id_hint: str | None = None,
     position_ticket_hint: int | None = None,
     constants: Any = None,
+    unit_scale: float = 1.0,
 ) -> dict[str, Any] | None:
     """Summarise a closed position from its deals.
 
@@ -120,7 +121,7 @@ def _closed_history_summary_from_deals(
         {
             "price": float(getattr(deal, "price", 0.0) or 0.0),
             "volume": float(getattr(deal, "volume", 0.0) or 0.0),
-            "profit_loss": _deal_net_profit_loss(deal),
+            "profit_loss": usd_from_account_units(_deal_net_profit_loss(deal), unit_scale),
             "close_time": _deal_time_iso(deal),
         }
         for deal in close_deals
@@ -162,6 +163,23 @@ _ACCOUNT_DENOMINATION_MAP: dict[str, tuple[str, float]] = {
     "USDCENT": ("usd_cent", 0.01),
     "CENTUSD": ("usd_cent", 0.01),
 }
+
+
+def account_unit_scale(currency: object) -> float:
+    """Multiplier that converts account-currency money to US dollars (USD 1.0, cent accounts 0.01).
+
+    Unknown or empty currencies return 1.0, matching the pre-existing behaviour.
+    """
+    raw = str(currency or "")
+    key = "".join(ch for ch in raw.upper() if ch.isalnum())
+    return _ACCOUNT_DENOMINATION_MAP.get(key, ("usd", 1.0))[1]
+
+
+def usd_from_account_units(value: Any, scale: float) -> Any:
+    """Convert an account-currency amount to USD; identity when ``scale`` is 1.0."""
+    if scale == 1.0:
+        return value
+    return round(float(value) * scale, 8)
 
 
 @dataclass(frozen=True)
@@ -393,6 +411,28 @@ class MT5Connection:
         }
         return SimpleNamespace(**payload)
 
+    def _unit_scale(self) -> float | None:
+        """Account-currency to USD multiplier from a successful account lookup.
+
+        Returns ``None`` and records a bridge error when the lookup fails or
+        reports no currency: the currency is unknown, which is not scale 1.0.
+        Callers must then return no money value and retry on the next poll.
+        A non-empty currency that is not a known cent denomination is scale 1.0.
+        """
+        try:
+            account_info = self._account_info()
+        except Exception as exc:
+            self._make_error("MT5_ACCOUNT_CURRENCY_UNAVAILABLE", f"account_info raised {type(exc).__name__}: {exc}")
+            return None
+        currency = getattr(account_info, "currency", None) if account_info is not None else None
+        if not isinstance(currency, str) or not currency.strip():
+            self._make_error(
+                "MT5_ACCOUNT_CURRENCY_UNAVAILABLE",
+                "Account currency is unavailable, so broker money values cannot be converted to USD.",
+            )
+            return None
+        return account_unit_scale(currency)
+
     def is_demo_account(self) -> bool | None:
         """Return True for demo, False for non-demo, or None if account mode cannot be assessed."""
         if os.getenv("USE_MT5_MOCK") == "1":
@@ -435,9 +475,7 @@ class MT5Connection:
         open_positions = list(positions)
 
         floating_pnl = float(sum(getattr(pos, "profit", 0.0) for pos in open_positions))
-        raw_currency = str(getattr(account_info, "currency", "USD") or "USD")
-        currency_key = "".join(ch for ch in raw_currency.upper() if ch.isalnum())
-        _, unit_scale = _ACCOUNT_DENOMINATION_MAP.get(currency_key, ("usd", 1.0))
+        unit_scale = account_unit_scale(getattr(account_info, "currency", None))
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -448,6 +486,9 @@ class MT5Connection:
             "open_symbols": list(set(pos.symbol for pos in open_positions)),
             "floating_pnl": round(floating_pnl * unit_scale, 8),
         }
+        if unit_scale != 1.0:
+            snapshot["money_unit"] = "USD"
+            snapshot["unit_scale"] = unit_scale
         logger.info(
             "Account snapshot fetched balance=%.2f equity=%.2f open_positions=%d",
             snapshot["balance"],
@@ -511,7 +552,12 @@ class MT5Connection:
         if not matched:
             return None
 
-        return _closed_history_summary_from_deals(matched, position_ticket_hint=int(position_ticket))
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
+        return _closed_history_summary_from_deals(
+            matched, position_ticket_hint=int(position_ticket), unit_scale=unit_scale
+        )
 
     def get_trade_history_summary(
         self,
@@ -556,7 +602,12 @@ class MT5Connection:
         else:
             matched = seed_deals
 
-        return _closed_history_summary_from_deals(matched, trade_id_hint=trade_id)
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
+        return _closed_history_summary_from_deals(
+            matched, trade_id_hint=trade_id, unit_scale=unit_scale
+        )
 
     def fetch_ohlc_data(
         self, symbol: str, timeframe: int, num_candles: int = 300
@@ -658,13 +709,17 @@ class MT5Connection:
             )
             return None
 
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return SymbolExecutionContract(
             symbol=symbol,
             min_lot=float(getattr(info, "volume_min", 0.0) or 0.0),
             lot_step=float(getattr(info, "volume_step", 0.0) or 0.0),
             max_lot=float(getattr(info, "volume_max", 0.0) or 0.0),
-            tick_value=float(
-                getattr(info, "trade_tick_value", getattr(info, "tick_value", 0.0)) or 0.0
+            tick_value=usd_from_account_units(
+                float(getattr(info, "trade_tick_value", getattr(info, "tick_value", 0.0)) or 0.0),
+                unit_scale,
             ),
             tick_size=float(
                 getattr(info, "trade_tick_size", getattr(info, "tick_size", 0.0)) or 0.0

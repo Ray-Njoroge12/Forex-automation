@@ -1,128 +1,100 @@
 # Runbook: set up a cent account in MT5 and connect it to the system (demo first, then live)
 
-Written 2026-11-04. Target: a $10 cent account on the MT5 terminal on this Mac, feeding the system through the file bridge. Commands run from `fx_ai_engine/` with `PY=../.venv/bin/python`. Steps marked **[you]** need a browser, the MT5 window or a personal decision. Content from web sources is summarised; broker terms change, so confirm each item on the broker's own site.
+Updated 2026-11-04 after the cent build (tracks C1 to C5, integration branch `cent/integration`; ADRs 0011, 0012, 0013). Target: a $10 cent account on the MT5 terminal on this Mac, feeding the system through the file bridge. Run commands from `fx_ai_engine/` with `PY=../.venv/bin/python`. Steps marked **[you]** need a browser, the MT5 window or a personal decision. Broker terms change; confirm each item on the broker's own site.
 
-## 0. Read this first: what works today and what does not
+## 0. What is built, what is verified, what is still open
 
-I tested the Python side against a temporary copy of the bridge converted to a $10 cent account (1,000 USC). Nothing in the live bridge folder was changed.
-
-| # | Finding | Evidence | Effect |
+| Item | Built | How it was verified | Still needs |
 | --- | --- | --- | --- |
-| 1 | **Broker symbol suffixes break the system.** Exness Standard Cent symbols carry a `c` suffix, for example `EURUSDc` ([Exness help](https://get.exness.help/hc/fr/articles/17537782786588)). The EA and the engine hard-code `EURUSD`, `GBPUSD`, `USDJPY`, `AUDUSD`, `USDCAD`, `USDCHF` (`FX_Execution.mq5` lines 32 and 832; `application/market_data_service.py` line 26). There is no mapping setting | Code search: no suffix or symbol-map support anywhere | On a suffixed account the EA cannot select or export any symbol, so no market data reaches the engine and nothing trades |
-| 2 | **Cent unit handling is inconsistent.** The file bridge passes the account snapshot through in cents (`balance 1000.0`, `currency USC`). The fixed-dollar-risk checks convert the balance to dollars (10.00) but read the symbol's tick value in cents | Test on the temp cent bridge: `evaluate_trade_feasibility` for EURUSD, 25-pip stop, 1.5% risk returned `REJECTED_LOT_PREROUTE` with `balance=10.00`, `risk_amount=0.15`. The correct lot there is 15 USC / (25 pips x 10 USC per pip per lot) = 0.06, which is feasible; the check computes 0.0006 | Any fixed-dollar-risk mode (`preserve_10`) would reject every trade on a real cent account. Percent-risk modes skip that check, so they are not affected |
-| 3 | **`preserve_10` cannot start on the file bridge.** `get_preserve_10_approval_facts` returns `FILE_BRIDGE_PRESERVE_10_UNSUPPORTED` | `core/file_bridge_connection.py` | The repo's own $10 mode is unusable on this Mac today |
-| 4 | **The EA refuses real accounts and the engine has no live mode** | `RequireDemoAccount = true`; `main.py --mode` is `smoke` or `demo`, and demo exits on a non-demo account | Every live step below is blocked until a guarded live mode is built and approved |
-| 5 | **Spread cap.** The EA rejects a signal when spread exceeds `min(MaxSpreadPips = 2.0, signal cap)` | `FX_Execution.mq5` | A commission-free cent account with spreads near 1 to 2 pips will reject some signals. Measure it on the demo |
-| 6 | **Hedging is never checked** | The EA does not read the account margin mode | Confirm hedging on the demo before trusting position handling |
+| C1 Symbol suffix (EA input `SymbolSuffix`; canonical names in every file) | Yes | EA staging compile 0 errors, 0 warnings; source-guard tests; suffixed bridge fixtures through the Python readers | Terminal test on a suffixed broker after deploy |
+| C2 Cent units (Python sees US dollars; 1000 USC is $10) | Yes | USC fixtures: the 25-pip, 1.5% case is approved at about 0.06 lots (was rejected); USD output unchanged | A real cent account snapshot |
+| C3 `micro_live` policy (1.5% risk, percent mode) | Yes | Hash pinned `53ff41104c05c4c6374ad59d62023575d648155ce190a507a7530c6e112f9489`; `core_srs` hash unchanged | Nothing: the owner confirmed 1.5% |
+| C4 Netting refusal, spread-ceiling visibility | Yes | Source guards, compile | Terminal confirms MetaQuotes-Demo and the broker report `hedging` |
+| C5 Guarded live mode (EA caps and kill switch; Python approval gate; reset command) | Yes, off by default | 1,055 tests on the merged tree; each refusal path has its own test; second-model reviews | Owner approval, SRS v1.1 pre-live gate, terminal tests |
 
-Consequence: connecting a cent **demo** account and reading everything the system reports about it works today and is worth doing. Letting the system **trade** a suffixed cent account needs the code changes in section 5 first.
+Nothing has been deployed to the terminal and no live account exists. The EA binary in `MQL5/Experts` is still the 2026-11-03 build.
 
----
+Decided on 2026-11-04: risk 1.5% per trade, spread ceiling stays 2.0 pips, and the live-gate files join the protected paths. Remaining owner items: the live caps (`max_total_loss_usd`, `max_orders_per_day`, `max_lot_per_order`), the evidence rule or waiver, approval of the SRS v1.1 pre-live addendum (`fx_ai_engine/docs/2026-11-04-srs-v1.1-pre-live-gate-proposal.md`, DRAFT), and the unproven strategy: the only strategy replayed loses 0.35R per trade, so live trading has no evidence behind it yet.
 
 ## 1. Choose the broker and confirm four facts
 
-Candidates found in the research (not recommendations):
+Candidates (not recommendations): Exness Standard Cent (symbols carry a `c` suffix such as `EURUSDc`, [Exness help](https://get.exness.help/hc/fr/articles/17537782786588); Kenyan entity licensed by the CMA, [exness.ke](https://www.exness.ke/standard-accounts/); whether it offers Cent is not verified); HFM Cent ([HFM](https://www.hfm.com/int/en/trading-accounts/cent-account)); TMGM Cent from $15 ([TMGM](https://www.tmgm.com/en/trading/cent-account)).
 
-| Broker | Cent account facts | Source | Not verified |
-| --- | --- | --- | --- |
-| **Exness** | Standard Cent on MT4 and MT5; balance in USC ($10 shows as 1,000 USC); 1 cent lot = 100,000 cents = $1,000 notional; market execution without requotes; opens from $10; Kenyan entity licensed by the CMA | [Exness help](https://get.exness.help/hc/fr/articles/17537782786588), [exness.ke](https://www.exness.ke/standard-accounts/), [tradingbeasts](https://tradingbeasts.com/exness-cent-account-review/) | Whether the Kenyan entity offers the Cent account; M-Pesa; spreads; commission |
-| **HFM** | Cent account, cent lot = 0.01 standard lot = 1,000 units, swap free, margin from 10 cents; Cent, Zero and Premium accounts open from $0 | [HFM](https://www.hfm.com/int/en/trading-accounts/cent-account), [compareforexbrokers](https://www.compareforexbrokers.com/reviews/hfm/) | Symbol suffix; Kenyan entity terms |
-| **TMGM** | Cent account on MT4 and MT5, from $15, up to 1:500 | [TMGM](https://www.tmgm.com/en/trading/cent-account) | CMA licence; suffix |
+On the broker's demo confirm: (1) symbol names, and the suffix if any; (2) the cent contract (read from `symbols.json` after step 8); (3) **hedging**; (4) typical spread and commission during London and New York hours. A suffix is now supported (step 6); a netting account is refused by the EA.
 
-Confirm these for the chosen broker on its demo before anything else:
+## 2. Demo path
 
-1. **Symbol names.** Market Watch must show the six majors exactly as `EURUSD` etc. If it shows `EURUSDc`, the system needs the mapping in section 5.
-2. **Contract.** For `EURUSDc`/`EURUSD` on the cent account: minimum volume 0.01, step 0.01, tick value and contract size (read in step 7 below).
-3. **Hedging.** On the demo, open two opposite positions on the same symbol. If both stay open the account is hedging; if they net, it is not and the system must not run on it.
-4. **Typical spread and commission** on the six pairs during London and New York hours.
-
-Cent accounts normally have no commission and wider spreads than raw accounts. The replay assumes raw pricing, so real cost per trade comes from R7 on the demo.
-
----
-
-## 2. Demo path (do now)
-
-### Steps that need no code change
-
-1. **[you] Register.** Open the broker's Kenya site (for Exness, `exness.ke`) and create a profile with your email, country and a password. A demo account needs no ID or deposit ([fxsignup](https://exn.fxsignup.com/en/account/demo-account.html)).
-2. **[you] Create the demo account.** In the Personal Area choose Open New Account, then Demo, then the Standard Cent type, platform **MT5**, a starting balance equal to **1,000 USC ($10)** if the form allows it, the highest leverage offered, and a trading password. Write down the **login number**, the **server name** (for example a `...MT5Trial...` server) and the trading password.
-3. **[you] Log MT5 into it.** Open MetaTrader 5, then File, Open an Account. Search for the broker, select its company entry (for Exness, "Exness Technologies Ltd."), choose the server from your Personal Area, pick "Connect with an existing account", and enter login and password ([Exness guide](https://get.exness.help/hc/en-us/articles/360011514572-MT5-Trading-guide-Desktop)). The MT5 you already have works; no broker-branded build is needed. The title bar and Navigator should now show the new login.
-4. **[you] Stop the engine and the EA's old state.** Before the account changes, make sure the engine is not running (`ps -Ao command | grep main.py`). Do not delete anything in the bridge folder. Old files belong to `MetaQuotes-Demo 5058284077`; the database keeps each account separately (`account_scope` such as `mt5:MetaQuotes-Demo:5058284077`).
-5. **[you] Read the account type.** Terminal window, Trade tab: balance should read in USC. Right-click Market Watch, Show All, and note the names of the six majors.
-6. **[you] Check hedging and spread.** Open Market Watch, add the six majors, note the spread of each. On the demo only, open a 0.01 BUY and a 0.01 SELL on one pair; confirm both stay open; close both.
-7. **Read the contract** (once the EA is attached, step 9; or right-click a symbol, Specification):
-   - `volume_min 0.01`, `volume_step 0.01`
-   - USC account: `tick_value` for EURUSD should be about 1 (USC per tick per 1.0 cent lot) and `contract_size` about 1,000
-   - pip cost of a 0.01 lot = `tick_value / tick_size x pip_size x 0.01`, which should come to about 0.1 USC ($0.001) for EURUSD
-   - `filling_mode`, `stops_level`, `freeze_level`
-8. **Deploy the current EA build** (merged code is `2026.11.04-1`): `scripts/mt5/compile_ea.sh --deploy`, then in MT5 remove the EA from the chart and drag `FX_Execution` back from Navigator.
-9. **[you] Attach the EA** to an EURUSD H1 chart with: `ExpectedPolicyHash = f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8`, `RequirePolicyHashPin = true`, `RequireDemoAccount = true`, `MagicNumber = 20261103`, Algo Trading on (green button).
-10. **Run the read-only checks:**
+1. **[you] Register** on the broker's Kenya site. A demo needs no ID or deposit.
+2. **[you] Create the demo account:** Standard Cent, platform **MT5**, balance 1,000 USC ($10), highest leverage offered, a trading password. Note the **login**, the exact **server name** and the password.
+3. **[you] Log MT5 into it:** File, Open an Account, search the broker, pick its company entry, choose your server, "Connect with an existing account", enter login and password ([Exness guide](https://get.exness.help/hc/en-us/articles/360011514572-MT5-Trading-guide-Desktop)). The MT5 you already run works.
+4. **Stop the engine** (`ps -Ao command | grep main.py`) before the account changes. Do not delete bridge files; each account has its own `account_scope` in the database.
+5. **[you] Read the account:** Trade tab balance in USC; Market Watch, Show All, note the six majors' names. Open two opposite 0.01 positions on one pair and confirm both stay open (hedging), then close them.
+6. **Deploy the new EA build** (needs your approval; it replaces the binary the terminal loads): `scripts/mt5/compile_ea.sh --deploy`, then in MT5 remove `FX_Execution` from the chart and drag it back from Navigator.
+7. **[you] Attach with these inputs:**
+   - `SymbolSuffix`: the broker suffix, or empty.
+   - `MaxSpreadPips`: leave at **2.0** (owner decision, ADR 0013). The lower of this and the policy's own 2.0 cap applies, so raising the input alone changes nothing. If the cent demo shows frequent `REJECTED_SPREAD`, pick another broker or account type. The value in force is shown in `status.json`.
+   - `ExpectedPolicyHash`: the hash of the policy you will run, from `python -m validation.print_policy_hash --mode core_srs` or `--mode micro_live`.
+   - `RequirePolicyHashPin` true, `RequireDemoAccount` true, `AllowLiveAccount` false, `LiveMaxLotPerOrder` 0, `LiveMaxOrdersPerDay` 0, `MagicNumber` 20261103. Allow Algo Trading (green button).
+8. **Check `MQL5/Files/bridge/market/status.json`:** `ea_version` is `2026.11.04-2`; `symbols_ok` true and `symbol_errors` empty; `account_margin_mode` is `hedging`; `account_currency` (for example `USC`); `max_spread_pips_input`; `live_guard`. `symbols.json` shows `broker_symbol` per pair and the contract (`volume_min`, `volume_step`, `tick_value`). For a cent EURUSD expect `tick_value` about 1 (USC per tick per 1.0 cent lot) and a 0.01 lot pip cost of about 0.1 USC ($0.001).
+9. **Run the read-only checks:**
+   ```
+   $PY -m validation.file_bridge_check
+   $PY -m validation.readiness_preflight --strict
+   ```
+   `file_bridge_check` now reports the new fields and fails on a non-hedging account.
+10. **Install the calendar and rates** (`runbooks/demo-bringup.md`, step 3).
+11. **Run the EA acceptance matrix, one case at a time** (`runbooks/demo-bringup.md`, step 4, plus the 7 new cases in `manifest.json` with their `required_terminal_setup`: `suffix_resolved`, `symbol_missing`, `account_mode_netting`, `kill_switch`, `live_lot_ceiling`, `live_lot_below_minimum`, `live_daily_cap`). Save evidence under `artifacts/demo-evidence/<date>/cent-demo/`.
+12. **Supervised engine run on the demo:**
     ```
-    $PY -m validation.file_bridge_check
-    $PY -m validation.readiness_preflight --strict
+    FX_ALLOW_NON_SRS_POLICY=1 $PY main.py --mode demo --policy-mode micro_live --iterations 1
     ```
-    Expected on a suffixed account: the symbol and bar checks fail (names not found). That is the evidence needed for section 5. Expected on a plain-name account: 43 of 43 pass.
-11. **Save the evidence** to `artifacts/demo-evidence/<date>/cent-demo/`: Market Watch names, the `symbols.json` copy, the check output, spreads.
-
-### Steps that must wait for the section 5 changes (only if the broker uses suffixes, or for any cent account)
-
-12. Install the calendar and rates (`runbooks/demo-bringup.md`, step 3).
-13. Run the EA acceptance matrix, one case at a time (`runbooks/demo-bringup.md`, step 4). The matrix payloads use plain symbol names.
-14. One supervised cycle: `$PY main.py --mode demo --iterations 1`. Use the **core SRS percent-risk policy**; do not start `preserve_10` (finding 3).
-15. Five-day burn-in with R7 (fill costs), R8 (drift), R9 (causes). A test wave only.
-
----
+    (`micro_live` is a non-SRS policy, allowed on a verified demo account only with that flag. The default `core_srs` needs no flag but risks 3.2% per trade.)
+13. **Burn-in** of five trading days with R7 (fill costs), R8 (drift) and R9 (causes). A test wave only.
 
 ## 3. Live path (do not start until every gate is met)
 
 | Gate | Status |
 | --- | --- |
-| A strategy is "not rejected" by the replay gate (expectancy at least +0.25R at 1.5x costs, at least 100 trades, confirming holdout) | Not met; replays not run |
-| Cent demo verified (section 2, steps 1 to 11) and the section 5 changes done | Not started |
-| Micro risk policy at about 1.0% to 1.5% | Not built; owner decision D3 |
-| Guarded live mode and an EA build that accepts real accounts, with a lot ceiling, a trade cap and a kill switch | Not built; protected paths, second-model review and your written approval |
-| SRS v1.1 pre-live gate defined (ADR 0007) | Not written |
+| A strategy passes the replay gate (expectancy at least +0.25R at 1.5x costs, at least 100 trades, confirming holdout), or the owner signs the evidence waiver | Not met; Stage D replays not run |
+| Cent demo verified (section 2) and its terminal checks passed | Not started |
+| Owner approves the merge of the protected-path changes and the EA deploy | Pending |
+| SRS v1.1 pre-live gate approved (draft addendum written) | Pending |
+| Windows VPS with terminal and engine together (this Mac sleeps with the display and runs out of memory) | Not started |
 
 When the gates are met:
 
-1. **[you] Verify identity and open the live account.** On the broker's Kenya site complete the profile and verification. Expect photo ID and proof of address (the exact list for Exness Kenya is not verified; Pepperstone Kenya asks for a photo ID and a recent utility bill or bank statement).
-2. **[you] Open New Account, Real, Standard Cent, MT5**, same leverage and trading password rules. Note the real login and server.
-3. **[you] Fund $10** through a method the broker supports for Kenya (M-Pesa, card, bank or crypto; availability and fees not verified). Do not top up later without a new decision.
-4. **[you] Log MT5 into the real server** (File, Open an Account, existing account). Repeat the section 2 checks (symbols, contract, hedging, spreads) on the live account without placing a trade.
-5. Attach the live-capable EA build with `RequirePolicyHashPin = true`, the new policy hash, and `RequireDemoAccount = false`, only after the gates above.
-6. Start the engine in live mode with the pilot rules agreed in advance: stop at a 30% loss ($7), review at every 20 trades with R7, R8 and R9, no manual closing of engine trades, a weekly loss-streak reset procedure, and the kill switch tested first.
-7. Compare the first 20 live trades with the cent demo before any change of risk.
-
-Do not run the engine on a laptop that sleeps with the display (see `2026-11-04-mt5-demo-and-live-account-assessment.md`). A live account belongs on a Windows VPS with the terminal and engine together.
-
----
+1. **[you] Verify identity and open the live account:** Real, Standard Cent, MT5. Expect photo ID and proof of address (the exact list for the chosen broker is not verified).
+2. **[you] Fund $10** by a method the broker supports for Kenya (fees not verified). No top-ups later without a new decision.
+3. **[you] Log MT5 into the real server** and repeat step 5 and step 8 checks without placing a trade.
+4. **Attach the EA with the live inputs:** `RequireDemoAccount` false, `AllowLiveAccount` true, `LiveMaxLotPerOrder` > 0 (for a $10 cent account 0.10 is a sensible ceiling), `LiveMaxOrdersPerDay` > 0 (for example 3), `ExpectedPolicyHash` the `micro_live` hash. With any of these missing the EA rejects every signal on a real account with `REJECTED_LIVE_GUARD`.
+5. **Create the approval file:** copy `fx_ai_engine/config/live_approval.example.json` to `fx_ai_engine/config/live_approval.json` (git-ignored) and replace every placeholder: your name, short expiry (days, not months), the real login and server, the `micro_live` hash, `starting_balance_usd` 10, `max_total_loss_usd` (the pilot rule is 7), `max_orders_per_day` and `max_lot_per_order` (not looser than the EA inputs), and either the `evidence` verdict path and sha256, or the `evidence_waiver` block (logged as CRITICAL on every start and every four hours).
+6. **Start live:**
+   ```
+   export FX_LIVE_CONFIRM=I-ACCEPT-LIVE-RISK-<login>
+   $PY main.py --mode live
+   ```
+   It refuses on a demo account, a missing or expired file, a login, server, policy or strategy mismatch, a bad confirm text, failed evidence, an old EA build, or EA caps looser than the approval. Per loop it re-checks the file, the `KILL_SWITCH` file and the loss limit.
+7. **Emergency stop:** create a file named `KILL_SWITCH` in the bridge folder (next to `ea_debug.log`). New orders stop at the EA and the engine; open positions stay managed; delete the file to resume.
+8. **After a loss-streak halt** (never clears itself): stop the engine, review R7, R8 and R9, then `$PY -m validation.reset_loss_streak --account-login <N> --account-server "<server>" --operator "<name>" --reason "<text>"` and type `RESET-LOSS-STREAK-<N>`.
+9. Pilot rules: stop at a 30% loss ($7), review every 20 trades, do not close engine trades by hand, compare the first 20 live trades with the demo before any change of risk.
 
 ## 4. What a correct cent-account bridge looks like
 
 | Check | Expected on a $10 cent account |
 | --- | --- |
-| `feedback/account_snapshot.json` | `currency` is `USC` (or similar), `balance` about 1000, `account_is_demo` true on the demo |
-| `market/status.json` | `login` and `server` match the new account; `terminal_connected` true; EA version `2026.11.04-1` |
-| `market/symbols.json` | six symbols, `volume_min` 0.01, `volume_step` 0.01, tick values in cents |
-| Lot for 1.5% risk, 25-pip stop, EURUSD | risk 15 USC / (25 x about 10 USC per lot per pip) = about 0.06 lots |
+| `feedback/account_snapshot.json` | `currency` `USC`, `balance` about 1000, `account_is_demo` true on the demo (Python converts to $10) |
+| `market/status.json` | `ea_version` `2026.11.04-2`, matching `login` and `server`, `symbols_ok` true, `account_margin_mode` `hedging` |
+| `market/symbols.json` | six symbols, `volume_min` 0.01, `volume_step` 0.01, tick values in cents, `broker_symbol` |
+| Lot for 1.5% risk, 25-pip stop, EURUSD | 15 USC / (25 pips x about 10 USC per lot per pip) = about 0.06 lots |
 
----
+## 5. Known limits and follow-ups
 
-## 5. Changes needed before the system can trade a cent account
-
-| # | Change | Where | Protected path |
-| --- | --- | --- | --- |
-| C1 | **Symbol mapping.** One configured map from the six canonical names to broker names (for example a `c` suffix), applied in the EA exports and order calls and in the engine's bridge reads; canonical names stay in the DB, reports and replay | `mt5_ea/FX_Execution.mq5`, `application/market_data_service.py`, `core/file_bridge_connection.py` | EA: yes |
-| C2 | **Cent unit consistency.** Convert tick value to dollars (or the balance to account currency) in `evaluate_trade_feasibility` and `evaluate_fixed_risk_eligibility`; normalise the file bridge snapshot the way `mt5_bridge.get_account_snapshot` does; add a regression test using a USC bridge fixture | `core/mt5_bridge.py`, `core/file_bridge_connection.py` | No |
-| C3 | **Micro percent policy** (about 1.0% to 1.5%) instead of the fixed-dollar `preserve_10`, so the cent path avoids fixed-dollar conversions | `config_microcapital.py`, policy hash, EA pin | Yes |
-| C4 | **EA guards**: refuse a netting account; review `MaxSpreadPips` for cent spreads | `mt5_ea/FX_Execution.mq5` | Yes |
-| C5 | **Guarded live mode** and a real-account EA build | `main.py`, `mt5_ea/FX_Execution.mq5`, SRS v1.1 | Yes |
-
-C2 has no protected path and can be done in a normal development wave. C1 to C5 need a second-model review and your approval.
-
----
+- **Verified only by compile and source tests** (terminal check after deploy): suffixed symbols end to end, the three new feedback statuses reaching Python, the live-account path, counter persistence across restart and UTC day change, the kill-switch race, the lot-ceiling step-down.
+- **Silent USD default.** If neither the status file nor the account snapshot has been read yet, the feedback reader and the research readers treat money as dollars. On a cent account that would record cents as dollars until the snapshot is read. See the second-model review in `.agents/tasks/cent-integration/review-bridge.md`.
+- **Margin mode** is enforced at runtime only by the EA (`REJECTED_ACCOUNT_MODE`); `validation.file_bridge_check` reports it offline.
+- **Not changed (other files):** `check_bridge_health.py` prints cents as dollars; `validate_demo.py` and `analyze_tendencies.py` do not list the three new statuses; the replay and research tools hard-code `core_srs`, so no replay verdict yet carries the `micro_live` hash. See `docs/handoff/`.
+- Do not run live capital on this laptop; use a Windows VPS.
 
 ## 6. Switching back
 
-To return to `MetaQuotes-Demo 5058284077`: stop the engine, log MT5 into that account (File, Login to Trading Account), wait until `market/status.json` shows its login, then start the engine. Evidence streams are separate per account scope, so the two accounts' histories do not mix.
+To return to `MetaQuotes-Demo 5058284077`: stop the engine, log MT5 into it (File, Login to Trading Account), wait until `market/status.json` shows its login, then start the engine. Histories are kept per account scope. Reattach the EA with the core_srs hash and the demo inputs.

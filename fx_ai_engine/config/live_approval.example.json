@@ -1,0 +1,44 @@
+{
+  "_README": "Copy to fx_ai_engine/config/live_approval.json (git-ignored) and replace every placeholder. The engine refuses to start --mode live while any value below is a placeholder or the file has expired. Keys that start with an underscore are ignored by the engine.",
+  "schema_version": 1,
+  "approved_by": "REPLACE_ME",
+  "approved_at_utc": "2000-01-01T00:00:00+00:00",
+  "expires_at_utc": "2000-01-08T00:00:00+00:00",
+  "account_login": 1,
+  "account_server": "REPLACE_ME",
+  "policy_mode": "micro_live",
+  "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "strategy_id": "trend_pullback_v1",
+  "ea_version_min": "2026.11.04-2",
+  "starting_balance_usd": 10.0,
+  "max_total_loss_usd": 3.0,
+  "max_orders_per_day": 4,
+  "max_lot_per_order": 0.01,
+  "evidence": {
+    "verdict_path": "artifacts/REPLACE_ME/authenticity_verdict.json",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "_alternative_evidence_waiver": {
+    "_note": "Use this block INSTEAD of 'evidence' to start without an authenticity verdict. Rename the key to 'evidence_waiver'. If both are present the waiver is used and the engine logs CRITICAL at start and every 4 hours.",
+    "reason": "REPLACE_ME: why live may start without an EVIDENCE_ELIGIBLE verdict",
+    "accepted_by": "REPLACE_ME: the person who accepts the risk"
+  },
+  "_field_notes": {
+    "schema_version": "Integer, must be 1.",
+    "approved_by": "Non-empty text. Name of the person who approves live trading. Written to the audit log.",
+    "approved_at_utc": "ISO 8601 timestamp WITH a timezone (UTC recommended), for example 2026-11-05T09:00:00+00:00. Must be earlier than expires_at_utc.",
+    "expires_at_utc": "ISO 8601 timestamp WITH a timezone. Live trading halts at this time. Keep it short (days, not months) and renew deliberately.",
+    "account_login": "Integer MT5 account number (positive). Must equal the account the EA reports. The cent account number, not the demo one.",
+    "account_server": "Exact MT5 server name as the EA reports it (case sensitive).",
+    "policy_mode": "Must be the text micro_live.",
+    "policy_hash": "64 lowercase hex characters. Print it with: python -m validation.print_policy_hash --mode micro_live. Any change to the micro_live policy changes the hash and needs a new approval.",
+    "strategy_id": "Strategy the engine runs. Currently trend_pullback_v1 is the only value that passes.",
+    "ea_version_min": "Oldest accepted EA build, format YYYY.MM.DD-N. Versions are compared as date, then build number.",
+    "starting_balance_usd": "Number greater than 0, in US dollars. The balance at the moment of approval. Loss is measured from this value.",
+    "max_total_loss_usd": "Number greater than 0, in US dollars. When starting_balance_usd minus account equity reaches this value the engine halts for the rest of the run (positions are not closed).",
+    "max_orders_per_day": "Integer >= 1. The EA must report a live_guard.max_orders_per_day at or below this value.",
+    "max_lot_per_order": "Number greater than 0, in lots (0.01 is the smallest step). The EA must report a live_guard.max_lot at or below this value.",
+    "evidence": "Object {verdict_path, sha256}. verdict_path is an authenticity gate verdict JSON. A relative path is resolved against the fx_ai_engine/ folder, not against the current directory. sha256 is the hash of the verdict FILE bytes (shasum -a 256 <file>). The verdict must say verdict PASS, evidence_status EVIDENCE_ELIGIBLE and carry the same policy_hash as this file.",
+    "evidence_waiver": "Object {reason, accepted_by}, both non-empty text. Starts live without a verdict. Takes precedence over 'evidence' when both are present. Every start and every 4 hours the engine logs CRITICAL and records a LIVE_EVIDENCE_WAIVER risk event."
+  }
+}

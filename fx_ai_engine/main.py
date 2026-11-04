@@ -49,6 +49,7 @@ from core.logging_utils import configure_logging
 load_runtime_env()
 from core.alerts import alert_risk_halt
 from core.health import start_health_api
+from core import live_gate
 from core.metrics import init_metrics
 from core.mt5_bridge import MT5Connection
 from core.file_bridge_connection import FileBridgeConnection
@@ -158,6 +159,11 @@ def evaluate_runtime_policy_approval(
         return _policy_runtime_approve(
             "CORE_SRS_RUNTIME_APPROVED",
             _with_policy_evidence(runtime_policy, "Core SRS runtime policy approved"),
+        )
+    if live_gate.live_session_covers(runtime_policy, bridge):
+        return _policy_runtime_approve(
+            "MICRO_LIVE_LIVE_GATE_APPROVED",
+            _with_policy_evidence(runtime_policy, "Non-SRS policy 'micro_live' approved by the live gate for this session"),
         )
 
     source = os.environ if env is None else env
@@ -1006,7 +1012,7 @@ class Engine:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FX AI Engine")
-    parser.add_argument("--mode", choices=["smoke", "demo"], default="smoke")
+    parser.add_argument("--mode", choices=["smoke", "demo", "live"], default="smoke")
     parser.add_argument(
         "--policy-mode",
         choices=sorted(MODE_CONFIGS),
@@ -1068,6 +1074,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "demo" and not _demo_account_verified(bridge, use_mock=use_mock):
         logger.error("Demo mode requires a verified MT5 demo account; refusing to start")
         return 2
+
+    live_session = None
+    if args.mode == "live":
+        live_session = live_gate.startup_gate(
+            bridge,
+            policy_mode_arg=args.policy_mode,
+            use_mock=use_mock,
+            running_strategy_id=globals().get("LIVE_STRATEGY_ID"),
+        )
+        if live_session is None:
+            return 2
+        os.environ["FX_POLICY_MODE"] = live_gate.LIVE_POLICY_MODE
 
     start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
     from core.alerts import send_telegram_message
@@ -1148,6 +1166,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         except RuntimeError as exc:
             logger.error("Engine initialization failed: %s", exc)
+            return 2
+        if live_session is not None and not live_session.attach(engine):
             return 2
         engine.run(mode=args.mode, iterations=args.iterations)
     finally:

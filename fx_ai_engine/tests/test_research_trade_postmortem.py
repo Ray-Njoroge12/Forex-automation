@@ -20,6 +20,7 @@ T0 = pd.Timestamp("2026-11-04T10:00:00Z")
 def fixture_dir(tmp_path_factory):
     out = tmp_path_factory.mktemp("r9") / "fx"
     build_fixture(out, seed=3)
+    (out / "status.json").write_text('{"account_currency": "USD"}', encoding="utf-8")  # currency evidence (BR-004)
     return out
 
 

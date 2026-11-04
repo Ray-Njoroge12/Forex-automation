@@ -10,6 +10,10 @@ input int PollIntervalSeconds = 1;
 input string ExpectedPolicyHash = "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8";
 input bool RequirePolicyHashPin = true; // Fail closed until the deployed policy hash is pinned.
 input bool RequireDemoAccount = true; // Demo is the default; do not send orders to other account types.
+input string SymbolSuffix = ""; // Appended to canonical symbol names to form the broker symbol (for example "c" gives EURUSDc).
+input bool AllowLiveAccount = false; // Real accounts only trade when this is true, RequireDemoAccount is false and both caps below are set.
+input double LiveMaxLotPerOrder = 0.0; // Lot ceiling per order (0 = off; must be > 0 on a real account).
+input int LiveMaxOrdersPerDay = 0; // Orders per UTC day (0 = off; must be > 0 on a real account).
 
 // --- Trade Management Inputs ---
 input double BreakEvenTriggerR = 1.0;     // Move SL to entry when profit reaches this R-multiple
@@ -24,7 +28,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.04-1"
+#define EA_VERSION "2026.11.04-2"
 
 CTrade trade;
 
@@ -34,6 +38,11 @@ ENUM_TIMEFRAMES g_tfs[]     = {PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
 #define EXPORT_SYMBOLS 6
 #define EXPORT_TFS 4
 datetime g_last_bar_export[EXPORT_SYMBOLS][EXPORT_TFS];
+// Broker names are canonical + SymbolSuffix. Everything the EA writes uses the canonical names.
+string   g_broker_symbols[EXPORT_SYMBOLS];
+bool     g_symbol_resolved[EXPORT_SYMBOLS];
+bool     g_symbols_ok = false;
+string   g_symbol_error_log = "";
 string   g_calendar_generated_at = "";
 int      g_calendar_event_count = -1;
 bool     g_calendar_complete = false;
@@ -158,6 +167,14 @@ int OnInit()
    RestoreManagementState();
    EventSetTimer(PollIntervalSeconds);
    LogDebug("OnInit: FX_Execution Started version=" + EA_VERSION + " magic=" + IntegerToString(MagicNumber));
+   ResolveSymbols();
+   LogDebug("OnInit: symbol_suffix='" + SymbolSuffix + "' symbols_ok=" + (g_symbols_ok ? "true" : "false") +
+            " margin_mode=" + AccountMarginModeName() + " max_spread_pips_input=" + DoubleToString(MaxSpreadPips, 4));
+   LogDebug("OnInit: live_guard account_real=" + (IsRealAccount() ? "true" : "false") +
+            " require_demo=" + (RequireDemoAccount ? "true" : "false") +
+            " allow_live=" + (AllowLiveAccount ? "true" : "false") +
+            " max_lot=" + DoubleToString(LiveMaxLotPerOrder, 8) +
+            " max_orders_per_day=" + IntegerToString(LiveMaxOrdersPerDay));
    WriteAccountSnapshot();
    ExportMarketData(true);
    return(INIT_SUCCEEDED);
@@ -277,10 +294,94 @@ bool IsExportSymbol(const string sym)
    return false;
 }
 
+// Canonical name -> broker name. Used for every MT5 call.
+string BrokerSymbol(const string canonical)
+{
+   return canonical + SymbolSuffix;
+}
+
+// Broker name -> index of the canonical symbol, or -1 when it is not one of the six.
+int ExportIndexForBrokerSymbol(const string broker)
+{
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+      if(broker == g_symbols[i] + SymbolSuffix) return i;
+   return -1;
+}
+
+// Broker name -> canonical name for anything the EA writes. Exact match only
+// (no suffix stripping), so other symbols pass through unchanged.
+string CanonicalSymbol(const string name)
+{
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+      if(name == g_symbols[i] + SymbolSuffix) return g_symbols[i];
+   return name;
+}
+
+// Selects the six broker symbols. Logs only when the set of failures changes.
+bool ResolveSymbols()
+{
+   bool allOk = true;
+   string failed = "";
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+   {
+      g_broker_symbols[i] = BrokerSymbol(g_symbols[i]);
+      g_symbol_resolved[i] = SymbolSelect(g_broker_symbols[i], true);
+      if(!g_symbol_resolved[i])
+      {
+         allOk = false;
+         if(failed != "") failed += ",";
+         failed += g_symbols[i] + "->" + g_broker_symbols[i];
+      }
+   }
+   g_symbols_ok = allOk;
+   if(failed != g_symbol_error_log)
+   {
+      g_symbol_error_log = failed;
+      if(failed != "")
+         LogDebug("Symbols not resolved (canonical->broker): " + failed);
+      else
+         LogDebug("All symbols resolved with suffix '" + SymbolSuffix + "'");
+   }
+   return allOk;
+}
+
+string AccountMarginModeName()
+{
+   switch((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE))
+   {
+      case ACCOUNT_MARGIN_MODE_RETAIL_HEDGING: return "hedging";
+      case ACCOUNT_MARGIN_MODE_RETAIL_NETTING: return "netting";
+      case ACCOUNT_MARGIN_MODE_EXCHANGE:       return "exchange";
+      default:                                 return "unknown";
+   }
+}
+
+// The EA's position handling assumes independent positions per trade, so only hedging accounts may trade.
+bool AccountModeAllowsTrading()
+{
+   return ((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+}
+
+string BuildSymbolErrorsJson()
+{
+   string out = "[";
+   int n = 0;
+   for(int i = 0; i < EXPORT_SYMBOLS; i++)
+   {
+      if(g_symbol_resolved[i]) continue;
+      if(n > 0) out += ",";
+      out += "\"" + g_symbols[i] + "\"";
+      n++;
+   }
+   return out + "]";
+}
+
 // Writes closed bars (shift >= 1, oldest first) when a new bar has closed.
+// The MT5 calls use the broker name; the file name and JSON use the canonical name.
 bool ExportBars(const int si, const int ti, const long offset)
 {
-   string sym = g_symbols[si];
+   string canonical = g_symbols[si];
+   string sym = g_broker_symbols[si];
    ENUM_TIMEFRAMES tf = g_tfs[ti];
    datetime lastClosed = iTime(sym, tf, 1);
    if(lastClosed <= 0)
@@ -295,7 +396,7 @@ bool ExportBars(const int si, const int ti, const long offset)
       return false; // history still synchronising; retry on the next timer tick
 
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   string payload = "{\"schema_version\":1,\"symbol\":\"" + sym + "\",\"timeframe\":\"" + TfName(tf) + "\",";
+   string payload = "{\"schema_version\":1,\"symbol\":\"" + canonical + "\",\"timeframe\":\"" + TfName(tf) + "\",";
    payload += "\"generated_at\":\"" + IsoTimestampUtc() + "\",\"server_utc_offset_seconds\":" + IntegerToString(offset) + ",";
    payload += "\"columns\":[\"time_utc\",\"open\",\"high\",\"low\",\"close\",\"tick_volume\",\"spread_points\"],\"bars\":[";
    for(int i = 0; i < n; i++)
@@ -308,10 +409,10 @@ bool ExportBars(const int si, const int ti, const long offset)
    }
    payload += "]}";
 
-   string path = MarketFolder() + "\\bars_" + sym + "_" + TfName(tf) + ".json";
+   string path = MarketFolder() + "\\bars_" + canonical + "_" + TfName(tf) + ".json";
    if(!PublishAtomic(path, payload))
    {
-      LogDebug("Bar export failed: " + sym + " " + TfName(tf));
+      LogDebug("Bar export failed: " + canonical + " " + TfName(tf));
       return false;
    }
    g_last_bar_export[si][ti] = lastClosed;
@@ -336,6 +437,13 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"calendar_generated_at\":\"" + g_calendar_generated_at + "\",";
    payload += "\"calendar_high_impact_events\":" + IntegerToString(g_calendar_event_count) + ",";
    payload += "\"calendar_complete\":" + (g_calendar_complete ? "true" : "false") + ",";
+   payload += "\"symbol_suffix\":\"" + JsonEscape(SymbolSuffix) + "\",";
+   payload += "\"symbols_ok\":" + (g_symbols_ok ? "true" : "false") + ",";
+   payload += "\"symbol_errors\":" + BuildSymbolErrorsJson() + ",";
+   payload += "\"account_margin_mode\":\"" + AccountMarginModeName() + "\",";
+   payload += "\"account_currency\":\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\",";
+   payload += "\"max_spread_pips_input\":" + DoubleToString(MaxSpreadPips, 4) + ",";
+   payload += "\"live_guard\":" + BuildLiveGuardJson() + ",";
    payload += "\"latest_closed_bars\":{";
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
@@ -344,7 +452,7 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
       for(int t = 0; t < EXPORT_TFS; t++)
       {
          if(t > 0) payload += ",";
-         datetime closed = iTime(g_symbols[s], g_tfs[t], 1);
+         datetime closed = iTime(g_broker_symbols[s], g_tfs[t], 1);
          long closedUtc = (closed > 0) ? (long)closed - offset : 0;
          payload += "\"" + TfName(g_tfs[t]) + "\":" + IntegerToString(closedUtc);
       }
@@ -361,12 +469,13 @@ void WriteSymbolSpecs()
    bool first = true;
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
-      string sym = g_symbols[s];
+      string canonical = g_symbols[s];
+      string sym = g_broker_symbols[s];
       if(!SymbolSelect(sym, true))
          continue;
       if(!first) payload += ",";
       first = false;
-      payload += "\"" + sym + "\":{";
+      payload += "\"" + canonical + "\":{";
       payload += "\"digits\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_DIGITS)) + ",";
       payload += "\"point\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_POINT), 10) + ",";
       payload += "\"tick_size\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 10) + ",";
@@ -380,7 +489,8 @@ void WriteSymbolSpecs()
       payload += "\"filling_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_FILLING_MODE)) + ",";
       payload += "\"trade_mode\":" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE)) + ",";
       payload += "\"swap_long\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4) + ",";
-      payload += "\"swap_short\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4);
+      payload += "\"swap_short\":" + DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4) + ",";
+      payload += "\"broker_symbol\":\"" + JsonEscape(sym) + "\"";
       payload += "}";
    }
    payload += "}}";
@@ -407,9 +517,10 @@ void WriteDealHistory(const long offset)
    {
       ulong d = HistoryDealGetTicket(i);
       if(d == 0) continue;
-      string sym = HistoryDealGetString(d, DEAL_SYMBOL);
-      if(!IsExportSymbol(sym)) continue;
-      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      string brokerSym = HistoryDealGetString(d, DEAL_SYMBOL);
+      int symIdx = ExportIndexForBrokerSymbol(brokerSym);
+      if(symIdx < 0) continue;
+      int digits = (int)SymbolInfoInteger(brokerSym, SYMBOL_DIGITS);
       long timeMscUtc = HistoryDealGetInteger(d, DEAL_TIME_MSC) - offset * 1000;
       if(written > 0) payload += ",";
       payload += "{\"ticket\":" + StringFormat("%I64u", d);
@@ -418,7 +529,7 @@ void WriteDealHistory(const long offset)
       payload += ",\"time_msc\":" + IntegerToString(timeMscUtc);
       payload += ",\"type\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_TYPE));
       payload += ",\"entry\":" + IntegerToString(HistoryDealGetInteger(d, DEAL_ENTRY));
-      payload += ",\"symbol\":\"" + sym + "\"";
+      payload += ",\"symbol\":\"" + g_symbols[symIdx] + "\"";
       payload += ",\"volume\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_VOLUME), 8);
       payload += ",\"price\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PRICE), digits);
       payload += ",\"profit\":" + DoubleToString(HistoryDealGetDouble(d, DEAL_PROFIT), 2);
@@ -519,6 +630,7 @@ void ExportMarketData(const bool force)
    }
    if(force || now - lastSpecs >= 60)
    {
+      ResolveSymbols();
       WriteSymbolSpecs();
       lastSpecs = now;
    }
@@ -840,12 +952,13 @@ void WriteMarketQuoteSnapshot()
    datetime serverNow = TimeTradeServer();
    for(int i = 0; i < ArraySize(symbols); i++)
    {
+      string brokerSym = BrokerSymbol(symbols[i]);
       MqlTick tick;
-      if(serverNow <= 0 || !SymbolInfoTick(symbols[i], tick) || tick.time <= 0 || tick.bid <= 0.0 || tick.ask < tick.bid)
+      if(serverNow <= 0 || !SymbolInfoTick(brokerSym, tick) || tick.time <= 0 || tick.bid <= 0.0 || tick.ask < tick.bid)
          continue;
       long tickAge = (long)(serverNow - tick.time);
       if(tickAge < 0) continue;
-      int digits = (int)SymbolInfoInteger(symbols[i], SYMBOL_DIGITS);
+      int digits = (int)SymbolInfoInteger(brokerSym, SYMBOL_DIGITS);
       if(digits < 0 || digits > 10) continue;
       if(!first) payload += ",";
       payload += "{\"symbol\":\"" + symbols[i] + "\",\"bid\":" + DoubleToString(tick.bid, digits);
@@ -872,7 +985,7 @@ bool GetFirstPendingSignalFile(string &fileName)
 
 double PipValue(string sym)
 {
-   if(StringFind(sym, "JPY") >= 0)
+   if(StringFind(CanonicalSymbol(sym), "JPY") >= 0)
       return 0.01;
    return 0.0001;
 }
@@ -1112,7 +1225,7 @@ void WriteAccountSnapshot()
       if(PositionGetTicket(i) <= 0)
          continue;
       floating += PositionGetDouble(POSITION_PROFIT);
-      string sym = PositionGetString(POSITION_SYMBOL);
+      string sym = CanonicalSymbol(PositionGetString(POSITION_SYMBOL));
       string token = "|" + sym + "|";
       if(StringFind(seen, token) < 0)
       {
@@ -1546,13 +1659,229 @@ string BuildManagementStateError()
    return "managed_positions=" + IntegerToString(managed) + "/" + IntegerToString(total) + " missing_tickets=" + BuildManagedTicketsJson(false);
 }
 
+//+------------------------------------------------------------------+
+//| Live-account guard (C5): real-account gate, kill switch, lot      |
+//| ceiling and a restart-safe per-UTC-day order counter              |
+//+------------------------------------------------------------------+
+bool IsRealAccount()
+{
+   return (AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO);
+}
+
+// Any file at this path blocks new orders. It never closes or stops managing positions.
+string KillSwitchPath() { return RootFolder + "\\KILL_SWITCH"; }
+
+bool KillSwitchPresent()
+{
+   return FileIsExist(KillSwitchPath());
+}
+
+// Not named execution_*: bridge/execution_feedback.py reads every execution_*.json in this folder.
+string LiveOrdersFilePath() { return FeedbackFolder() + "\\live_orders_day.json"; }
+
+string UtcDayString()
+{
+   return StringSubstr(IsoTimestampUtc(), 0, 10);
+}
+
+// Strict "YYYY-MM-DD": digits and dashes in place, and a real calendar date.
+bool IsValidUtcDay(const string day)
+{
+   if(StringLen(day) != 10)
+      return false;
+   for(int i = 0; i < 10; i++)
+   {
+      ushort c = StringGetCharacter(day, i);
+      if(i == 4 || i == 7)
+      {
+         if(c != '-')
+            return false;
+      }
+      else if(c < '0' || c > '9')
+         return false;
+   }
+   string dotted = StringSubstr(day, 0, 4) + "." + StringSubstr(day, 5, 2) + "." + StringSubstr(day, 8, 2);
+   datetime parsed = StringToTime(dotted);
+   return (parsed > 0 && TimeToString(parsed, TIME_DATE) == dotted);
+}
+
+// Non-negative whole number made only of digits (1 to 9 of them). No sign, point or space.
+bool ParseStrictCount(const string token, int &out)
+{
+   int len = StringLen(token);
+   if(len < 1 || len > 9)
+      return false;
+   for(int i = 0; i < len; i++)
+   {
+      ushort c = StringGetCharacter(token, i);
+      if(c < '0' || c > '9')
+         return false;
+   }
+   out = (int)StringToInteger(token);
+   return true;
+}
+
+// Orders recorded for the current UTC day. A missing file means 0. A file that
+// exists but cannot be read or fails strict schema validation (valid UTC date,
+// whole-number count, non-empty last_trade_id), or an unavailable clock, returns
+// false (fail closed). Only a valid file from an earlier day counts as rollover; a
+// valid file dated after today also returns false.
+bool ReadLiveOrderCount(int &count, string &lastTradeId)
+{
+   count = 0;
+   lastTradeId = "";
+   string today = UtcDayString();
+   if(StringSubstr(today, 0, 4) == "1970")
+      return false;
+   string path = LiveOrdersFilePath();
+   if(!FileIsExist(path))
+      return true;
+   string content;
+   if(!ReadTextFile(path, content))
+      return false;
+   string day = "";
+   string ordersToken = "";
+   string storedTradeId = "";
+   int orders = 0;
+   if(!ExtractJsonString(content, "utc_day", day) || !IsValidUtcDay(day))
+      return false;
+   if(!ExtractJsonString(content, "orders", ordersToken) || !ParseStrictCount(ordersToken, orders))
+      return false;
+   if(!ExtractJsonString(content, "last_trade_id", storedTradeId) || storedTradeId == "")
+      return false;
+   // A stored date later than today (clock rolled back, damaged file) is not a rollover.
+   // YYYY-MM-DD strings order the same way as the dates.
+   if(StringCompare(day, today) > 0)
+      return false;
+   if(day != today)
+      return true;
+   count = orders;
+   lastTradeId = storedTradeId;
+   return true;
+}
+
+// Counts one order for today before the submission marker is written. Idempotent per
+// trade id, so a retry after a failed marker write does not count twice. Fails closed.
+bool RecordLiveOrderIntent(const string tradeId, string &reason)
+{
+   reason = "";
+   if(!(LiveMaxOrdersPerDay > 0))
+      return true;
+   int count = 0;
+   string lastTradeId = "";
+   if(!ReadLiveOrderCount(count, lastTradeId))
+   {
+      reason = "order counter file cannot be read: " + LiveOrdersFilePath();
+      return false;
+   }
+   if(lastTradeId == tradeId)
+      return true;
+   if(count >= LiveMaxOrdersPerDay)
+   {
+      reason = "daily order cap reached: " + IntegerToString(count) + "/" + IntegerToString(LiveMaxOrdersPerDay);
+      return false;
+   }
+   int next = count + 1;
+   string payload = "{\"utc_day\":\"" + UtcDayString() + "\",\"orders\":" + IntegerToString(next) +
+                    ",\"last_trade_id\":\"" + JsonEscape(tradeId) + "\"}";
+   if(!PublishAtomic(LiveOrdersFilePath(), payload))
+   {
+      reason = "order counter file cannot be written: " + LiveOrdersFilePath();
+      return false;
+   }
+   int verifyCount = 0;
+   string verifyTradeId = "";
+   if(!ReadLiveOrderCount(verifyCount, verifyTradeId) || verifyCount != next || verifyTradeId != tradeId)
+   {
+      reason = "order counter file failed read-back verification";
+      return false;
+   }
+   return true;
+}
+
+// Account, kill-switch and daily-cap conditions. On a real account every live
+// condition must hold. The kill switch and the daily cap also apply on demo
+// (the cap only when LiveMaxOrdersPerDay > 0 is set explicitly). A signal whose trade id
+// is the one already counted today (retry after a failed submission-marker write) passes
+// the cap check, because RecordLiveOrderIntent does not count it again.
+bool LiveGuardAllowsSignal(const string tradeId, string &reason)
+{
+   reason = "";
+   if(IsRealAccount())
+   {
+      if(RequireDemoAccount) { reason = "real account and RequireDemoAccount=true"; return false; }
+      if(!AllowLiveAccount) { reason = "real account and AllowLiveAccount=false"; return false; }
+      if(!(LiveMaxLotPerOrder > 0.0)) { reason = "real account and LiveMaxLotPerOrder is not > 0"; return false; }
+      if(!(LiveMaxOrdersPerDay > 0)) { reason = "real account and LiveMaxOrdersPerDay is not > 0"; return false; }
+   }
+   if(KillSwitchPresent())
+   {
+      reason = "kill switch file present: " + KillSwitchPath();
+      return false;
+   }
+   if(LiveMaxOrdersPerDay > 0)
+   {
+      int count = 0;
+      string lastTradeId = "";
+      if(!ReadLiveOrderCount(count, lastTradeId))
+      {
+         reason = "order counter file cannot be read: " + LiveOrdersFilePath();
+         return false;
+      }
+      if(count >= LiveMaxOrdersPerDay && lastTradeId != tradeId)
+      {
+         reason = "daily order cap reached: " + IntegerToString(count) + "/" + IntegerToString(LiveMaxOrdersPerDay);
+         return false;
+      }
+   }
+   return true;
+}
+
+// Reduces the lot to LiveMaxLotPerOrder, stepped down to the broker lot step. Only ever
+// lowers risk. Returns false when the capped lot would fall below the broker minimum.
+bool ApplyLiveLotCeiling(const string sym, double &lot, string &reason)
+{
+   reason = "";
+   const double cap = LiveMaxLotPerOrder;
+   if(!(cap > 0.0) || lot <= cap)
+      return true;
+   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   if(step <= 0.0)
+   {
+      reason = "lot step unavailable for " + sym;
+      return false;
+   }
+   double capped = NormalizeDouble(MathFloor(cap / step + 1e-9) * step, VolumeDigits(sym));
+   if(capped < minLot - 1e-9)
+   {
+      reason = "capped lot " + DoubleToString(capped, 8) + " is below broker minimum " + DoubleToString(minLot, 8);
+      return false;
+   }
+   if(capped < lot)
+      lot = capped;
+   return true;
+}
+
+string BuildLiveGuardJson()
+{
+   int count = 0;
+   string lastTradeId = "";
+   int ordersToday = ReadLiveOrderCount(count, lastTradeId) ? count : -1;
+   string out = "{";
+   out += "\"account_real\":" + (IsRealAccount() ? "true" : "false") + ",";
+   out += "\"require_demo\":" + (RequireDemoAccount ? "true" : "false") + ",";
+   out += "\"allow_live\":" + (AllowLiveAccount ? "true" : "false") + ",";
+   out += "\"max_lot\":" + DoubleToString(LiveMaxLotPerOrder, 8) + ",";
+   out += "\"max_orders_per_day\":" + IntegerToString(LiveMaxOrdersPerDay) + ",";
+   out += "\"orders_today\":" + IntegerToString(ordersToday) + ",";
+   out += "\"kill_switch\":" + (KillSwitchPresent() ? "true" : "false");
+   out += "}";
+   return out;
+}
+
 void ProcessPendingSignal()
 {
-   if(RequireDemoAccount && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
-   {
-      LogDebug("Demo account required; refusing to process pending signals");
-      return;
-   }
    string fileName;
    if(!GetFirstPendingSignalFile(fileName))
       return;
@@ -1567,7 +1896,7 @@ void ProcessPendingSignal()
       return;
    }
 
-   string tradeId, symbol, direction;
+   string tradeId, canonicalSymbol, direction;
    double riskPercent = 0.0;
    double stopPips = 0.0;
    double takeProfitPips = 0.0;
@@ -1600,7 +1929,7 @@ void ProcessPendingSignal()
       FileDelete(filePath);
       return;
    }
-   if(!ExtractJsonString(content, "symbol", symbol)) { LogDebug("JSON fail: sym"); return; }
+   if(!ExtractJsonString(content, "symbol", canonicalSymbol)) { LogDebug("JSON fail: sym"); return; }
    if(!ExtractJsonString(content, "direction", direction)) { LogDebug("JSON fail: dir"); return; }
    if(!ExtractJsonDouble(content, "risk_percent", riskPercent)) { LogDebug("JSON fail: risk"); return; }
    if(!ExtractJsonDouble(content, "stop_pips", stopPips)) { LogDebug("JSON fail: stop"); return; }
@@ -1634,6 +1963,40 @@ void ProcessPendingSignal()
       FileDelete(filePath);
       return;
    }
+
+   // Account-mode gate: no request was sent, so the reservation can be released definitively.
+   if(!AccountModeAllowsTrading())
+   {
+      LogDebug("Account mode gate reject: margin mode is " + AccountMarginModeName() + ", hedging required trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ACCOUNT_MODE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   // Live-account gate: real accounts need every live condition; the kill switch and an
+   // explicitly set daily cap apply on any account. No request was sent.
+   string liveGuardReason = "";
+   if(!LiveGuardAllowsSignal(tradeId, liveGuardReason))
+   {
+      LogDebug("Live guard reject: " + liveGuardReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   // Symbol gate: all six broker symbols must resolve (re-checked now so the decision is current).
+   ResolveSymbols();
+   if(!g_symbols_ok)
+   {
+      LogDebug("Symbol gate reject: unresolved " + g_symbol_error_log + " suffix='" + SymbolSuffix + "' trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_SYMBOL", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   // Signals carry canonical names. From here on `symbol` is the broker name,
+   // which every MT5 call below uses.
+   string symbol = BrokerSymbol(canonicalSymbol);
+
    ExtractJsonDouble(content, "lot", requestedLot);
    ExtractJsonString(content, "order_type", orderType);
    ExtractJsonDouble(content, "limit_price", limitPrice);
@@ -1663,7 +2026,7 @@ void ProcessPendingSignal()
       tpModeStr = "FIXED";
    }
 
-   LogDebug("Parsed symbol: " + symbol + " dir: " + direction + " order_type: " + orderType);
+   LogDebug("Parsed symbol: " + canonicalSymbol + " broker: " + symbol + " dir: " + direction + " order_type: " + orderType);
 
    if(!SymbolSelect(symbol, true))
    {
@@ -1719,6 +2082,20 @@ void ProcessPendingSignal()
       return;
    }
 
+   // Lot ceiling: only ever reduces the lot (stepped down to the lot step).
+   string lotGuardReason = "";
+   double lotBeforeCeiling = finalLot;
+   if(!ApplyLiveLotCeiling(symbol, finalLot, lotGuardReason))
+   {
+      LogDebug("Live guard reject: " + lotGuardReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   if(finalLot < lotBeforeCeiling)
+      LogDebug("Live lot ceiling applied: " + DoubleToString(lotBeforeCeiling, 8) + " -> " + DoubleToString(finalLot, 8) +
+               " (LiveMaxLotPerOrder=" + DoubleToString(LiveMaxLotPerOrder, 8) + ")");
+
    trade.SetTypeFilling(ResolveFilling(symbol));
    if(orderType != "LIMIT")
    {
@@ -1748,6 +2125,27 @@ void ProcessPendingSignal()
       }
    }
 
+   // The kill switch may have been created after the admission gate. Check again before any
+   // state changes, so a blocked order does not use a daily-cap slot. No request was sent.
+   if(KillSwitchPresent())
+   {
+      LogDebug("Live guard reject: kill switch file present before order counter: " + KillSwitchPath() + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   // Count the order for today's cap before the submission marker exists, so a counter
+   // failure cannot leave a marker that later reads as EXECUTION_UNCERTAIN. Fails closed.
+   string counterReason = "";
+   if(!RecordLiveOrderIntent(tradeId, counterReason))
+   {
+      LogDebug("Live guard reject: " + counterReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
    // Persist intent before sending. If a restart occurs at any subsequent
    // point the same signal is held for reconciliation, not submitted again.
    // Requires a single EA instance for this bridge directory.
@@ -1760,6 +2158,19 @@ void ProcessPendingSignal()
    if(!ReadTextFile(submissionMarker, markerContents) || markerContents != tradeId)
    {
       LogDebug("Cannot verify submission marker; order not sent: " + tradeId);
+      return;
+   }
+
+   // Last kill-switch check before the irreversible send. The counter already holds this
+   // trade id (it counts order intents, so the slot stays used) and the marker exists, so
+   // remove the marker: no request was sent, and the signal is rejected definitively.
+   if(KillSwitchPresent())
+   {
+      if(!FileDelete(submissionMarker))
+         LogDebug("WARNING: Failed to delete submission marker after kill switch reject: " + submissionMarker + " err=" + (string)GetLastError());
+      LogDebug("Live guard reject: kill switch file present at send boundary: " + KillSwitchPath() + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
       return;
    }
 
