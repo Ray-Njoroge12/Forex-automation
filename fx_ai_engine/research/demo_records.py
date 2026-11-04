@@ -188,22 +188,39 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+class UnitsUnknownError(ValueError):
+    """The copied bridge files do not identify the account currency and none was given."""
+
+
+UNITS_UNKNOWN_MESSAGE = (
+    "account currency of the bridge copies is unknown: no status.json with account_currency beside {deals} "
+    "(or in its parent folder) and no --account-currency was given. A cent (USC) account reports money in "
+    "cents, so assuming USD would make every dollar and net-R figure 100 times too large. "
+    "Pass --account-currency (for example USD or USC) or copy status.json next to the deals file."
+)
+
+
 def resolve_units(deals_path: str | Path, account_currency: str | None = None,
                   symbols_path: str | Path | None = None) -> AccountUnits:
     """Units of a deals.json copy: currency from the argument, else status.json ``account_currency``
-    beside the deals file (or in its parent, the bridge root), else USD; contract sizes from
-    ``symbols_path``, else symbols.json beside the deals file, else 100000. Missing or unreadable
-    sibling files fall back to the default silently."""
+    beside the deals file (or in its parent, the bridge root); contract sizes from ``symbols_path``,
+    else symbols.json beside the deals file, else 100000.
+
+    Currency is never assumed: with no argument and no readable ``account_currency`` this raises
+    ``UnitsUnknownError`` so no dollar or net-R figure is produced from unknown units. Missing or
+    unreadable symbols.json still falls back to the standard contract size.
+    """
     deals_dir = Path(deals_path).parent
     sources = []
-    currency = account_currency
+    currency = (account_currency or "").strip()
     if currency:
         sources.append("--account-currency")
     else:
         for candidate in (deals_dir / "status.json", deals_dir.parent / "status.json"):
             data = _read_json(candidate)
-            if isinstance(data, dict) and data.get("account_currency"):
-                currency = str(data["account_currency"])
+            value = data.get("account_currency") if isinstance(data, dict) else None
+            if isinstance(value, str) and value.strip():
+                currency = value.strip()
                 sources.append(str(candidate))
                 break
     sym_file = Path(symbols_path) if symbols_path else deals_dir / "symbols.json"
@@ -219,7 +236,8 @@ def resolve_units(deals_path: str | Path, account_currency: str | None = None,
                 sizes[str(name)] = size
         if sizes:
             sources.append(str(sym_file))
-    currency = currency or "USD"
+    if not currency:
+        raise UnitsUnknownError(UNITS_UNKNOWN_MESSAGE.format(deals=Path(deals_path)))
     return AccountUnits(currency=currency, unit_scale=account_unit_scale(currency), contract_sizes=sizes,
                         source=", ".join(sources) or "default")
 

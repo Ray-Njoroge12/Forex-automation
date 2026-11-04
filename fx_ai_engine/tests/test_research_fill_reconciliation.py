@@ -59,6 +59,7 @@ def _three_bars():
 def _fixture(tmp_path):
     out = tmp_path / "fx"
     build_fixture(out, seed=3)
+    (out / "status.json").write_text('{"account_currency": "USD"}', encoding="utf-8")  # currency evidence (BR-004)
     return out
 
 

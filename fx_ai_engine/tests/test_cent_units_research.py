@@ -20,6 +20,7 @@ from validation import burnin_status
 def usd_dir(tmp_path_factory):
     out = tmp_path_factory.mktemp("c2") / "usd"
     build_fixture(out, seed=3)
+    (out / "status.json").write_text('{"account_currency": "USD"}', encoding="utf-8")  # currency evidence (BR-004)
     return out
 
 
@@ -71,14 +72,39 @@ def test_resolve_units_flag_sibling_and_default(usd_dir, usc_dir, tmp_path):
     assert sibling.money(100.0) == pytest.approx(1.0)
     explicit = dr.resolve_units(usd_dir / "deals.json", symbols_path=usc_dir / "symbols.json")
     assert explicit.unit_scale == 1.0 and not explicit.is_default
-    default = dr.resolve_units(usd_dir / "deals.json")
+    default = dr.resolve_units(usd_dir / "deals.json")  # status.json beside it says USD
     assert default.is_default and default.currency == "USD" and default.contract_sizes == {}
-    assert dr.resolve_units(tmp_path / "missing" / "deals.json").is_default
-    bad = tmp_path / "bad"
-    bad.mkdir()
-    (bad / "status.json").write_text("{not json", encoding="utf-8")
-    (bad / "symbols.json").write_text("[]", encoding="utf-8")
-    assert dr.resolve_units(bad / "deals.json").is_default
+    stated = dr.resolve_units(tmp_path / "missing" / "deals.json", account_currency=" usd ")
+    assert stated.is_default and stated.currency == "usd"
+
+
+def _no_evidence_dir(tmp_path, status_text=None):
+    folder = tmp_path / "noevidence"
+    folder.mkdir()
+    (folder / "deals.json").write_text('{"schema_version": 1, "deals": []}', encoding="utf-8")
+    if status_text is not None:
+        (folder / "status.json").write_text(status_text, encoding="utf-8")
+    return folder
+
+
+@pytest.mark.parametrize("status_text", [None, "{not json", "[]", "{}", '{"account_currency": ""}',
+                                         '{"account_currency": "  "}', '{"account_currency": 5}'])
+def test_resolve_units_without_currency_evidence_raises(tmp_path, status_text):
+    folder = _no_evidence_dir(tmp_path, status_text)
+    with pytest.raises(dr.UnitsUnknownError, match="--account-currency"):
+        dr.resolve_units(folder / "deals.json")
+    with pytest.raises(dr.UnitsUnknownError):
+        dr.resolve_units(folder / "deals.json", account_currency="  ")
+    with pytest.raises(dr.UnitsUnknownError):
+        dr.resolve_units(tmp_path / "missing" / "deals.json")
+
+
+def test_resolve_units_flag_stated_without_files_is_accepted(tmp_path):
+    folder = _no_evidence_dir(tmp_path)
+    assert dr.resolve_units(folder / "deals.json", account_currency="USD").is_default
+    assert dr.resolve_units(folder / "deals.json", account_currency="USC").unit_scale == 0.01
+    (folder.parent / "status.json").write_text('{"account_currency": "USC"}', encoding="utf-8")  # bridge root
+    assert dr.resolve_units(folder / "deals.json").unit_scale == 0.01
 
 
 def test_loaders_convert_cents(usd_dir, usc_dir):
@@ -201,3 +227,77 @@ def test_burnin_status_labels_usd(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(burnin_status, "_health", lambda: None)
     assert burnin_status.main([]) == 0
     assert "net P/L (USD)" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------
+# BR-004: unknown currency is never assumed to be USD (R7, R8, R9)
+# ----------------------------------------------------------------------
+@pytest.fixture
+def no_status_dir(usd_dir, tmp_path):
+    """The USD fixture copy with status.json removed: no currency evidence."""
+    dst = tmp_path / "nostatus"
+    shutil.copytree(usd_dir, dst)
+    (dst / "status.json").unlink()
+    return dst
+
+
+def _r7_args(fx: Path, out: Path, *extra: str) -> list[str]:
+    return ["--db", str(fx / "trading_state.db"), "--deals", str(fx / "deals.json"),
+            "--bars-dir", str(fx / "bars"), "--feedback-dir", str(fx / "feedback"), "--out", str(out), *extra]
+
+
+def _r8_args(fx: Path, out: Path, *extra: str) -> list[str]:
+    return ["--db", str(fx / "trading_state.db"), "--replay-trades-csv", str(fx / "replay_trades.csv"),
+            "--exits-dir", str(fx / "exits"), "--deals", str(fx / "deals.json"), "--out", str(out), *extra]
+
+
+def _r9_args(fx: Path, out: Path, *extra: str) -> list[str]:
+    return ["--db", str(fx / "trading_state.db"), "--deals", str(fx / "deals.json"),
+            "--bars-dir", str(fx / "bars"), "--exits-dir", str(fx / "exits"),
+            "--feedback-dir", str(fx / "feedback"), "--calendar", str(fx / "economic_calendar.json"),
+            "--out", str(out), *extra]
+
+
+@pytest.mark.parametrize("tool,build_args", [(fr, _r7_args), (dm, _r8_args), (tp, _r9_args)])
+def test_unknown_currency_requires_the_flag_and_writes_nothing(no_status_dir, tmp_path, capsys, tool, build_args):
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as stopped:
+        tool.main(build_args(no_status_dir, out))
+    assert stopped.value.code == 2
+    err = capsys.readouterr().err
+    assert "--account-currency" in err and "unknown" in err
+    assert not out.exists()  # no report, so no dollar or net-R figure from unknown units
+
+
+@pytest.mark.parametrize("tool,build_args,report", [
+    (fr, _r7_args, "fill_reconciliation.json"), (dm, _r8_args, "drift_monitor.json"),
+    (tp, _r9_args, "postmortem.json"),
+])
+def test_flag_unlocks_the_report_and_usd_stays_unchanged(no_status_dir, usd_dir, tmp_path, tool, build_args, report):
+    with_flag = tmp_path / "flag"
+    with_status = tmp_path / "status"
+    assert tool.main(build_args(no_status_dir, with_flag, "--account-currency", "USD")) == 0
+    assert tool.main(build_args(usd_dir, with_status)) == 0
+    flagged = json.loads((with_flag / report).read_text(encoding="utf-8"))
+    evidenced = json.loads((with_status / report).read_text(encoding="utf-8"))
+    for payload in (flagged, evidenced):
+        for key in ("inputs", "metadata", "sources"):
+            payload.pop(key, None)
+    assert flagged == evidenced
+
+
+def test_r9_run_without_units_and_without_evidence_raises(no_status_dir):
+    with pytest.raises(dr.UnitsUnknownError):
+        tp.run(no_status_dir / "trading_state.db", no_status_dir / "deals.json", no_status_dir / "bars",
+               exits_dir=no_status_dir / "exits", calendar=no_status_dir / "economic_calendar.json")
+
+
+def test_usc_flag_converts_when_files_carry_no_currency(usc_dir, tmp_path):
+    """The USC deals with the status file removed give USD-sized figures only through the flag."""
+    bare = tmp_path / "usc_bare"
+    shutil.copytree(usc_dir, bare)
+    (bare / "status.json").unlink()
+    out = tmp_path / "r7"
+    assert fr.main(_r7_args(bare, out, "--account-currency", "USC")) == 0
+    report = json.loads((out / "fill_reconciliation.json").read_text(encoding="utf-8"))
+    assert report["inputs"]["units"]["currency"] == "USC"

@@ -34,7 +34,7 @@ from backtesting.replay_execution import QuoteBar, market_entry
 from backtesting.unified_replay import COST_SCENARIOS, SYMBOLS, CostModel, pip_size, pip_value_usd_per_lot
 from research.common import ARTIFACTS, parse_ts, run_id, write_json
 from research.demo_records import (
-    DEFAULT_STREAM, EA_MAGIC, Deal, guard_output_dir, resolve_units, load_deals, load_execution_feedback, load_feedback_files,
+    DEFAULT_STREAM, EA_MAGIC, Deal, UnitsUnknownError, guard_output_dir, resolve_units, load_deals, load_execution_feedback, load_feedback_files,
     load_funnel, load_m15, load_thresholds, load_trades, open_ro,
 )
 
@@ -456,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cost-scenario", default="base", choices=sorted(COST_SCENARIOS))
     parser.add_argument("--thresholds", type=Path, default=None)
     parser.add_argument("--account-currency", default=None,
-                        help="account currency of the bridge copies (default: status.json beside deals, else USD)")
+                        help="account currency of the bridge copies (required unless status.json with account_currency sits beside the deals file; never assumed)")
     parser.add_argument("--symbols", type=Path, default=None,
                         help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
@@ -465,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
     out = guard_output_dir(args.out or ARTIFACTS / "r7" / run_id())
     thresholds, thresholds_sha = load_thresholds(args.thresholds)
     cost = COST_SCENARIOS[args.cost_scenario]
-    units = resolve_units(args.deals, args.account_currency, args.symbols)
+    try:
+        units = resolve_units(args.deals, args.account_currency, args.symbols)
+    except UnitsUnknownError as exc:
+        parser.error(str(exc))
     deals, deals_meta = load_deals(args.deals, units)
     m15 = load_m15(args.bars_dir)
     feedback = load_feedback_files(args.feedback_dir, units) if args.feedback_dir else None

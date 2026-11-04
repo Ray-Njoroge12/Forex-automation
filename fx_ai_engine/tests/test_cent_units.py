@@ -299,18 +299,109 @@ def test_feedback_reader_converts_snapshot_and_exit_profit(tmp_path):
     assert json.loads((tmp_path / "feedback" / "account_snapshot.json").read_text())["balance"] == 1000.0
 
 
-def test_feedback_reader_without_snapshot_leaves_profit_unchanged(tmp_path):
+def _exit_payload(profit: float = 157651) -> dict:
+    payload = json.loads(FIXTURE.read_text())
+    payload["profit_loss"] = profit
+    return payload
+
+
+def _unusable_snapshot(kind: str, tmp_path: Path, monkeypatch, reader: ExecutionFeedbackReader) -> None:
+    snapshot_path = tmp_path / "feedback" / "account_snapshot.json"
+    if kind == "missing":
+        return
+    if kind == "malformed":
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text("{not json", encoding="utf-8")
+    elif kind == "currency_missing":
+        _write_json(snapshot_path, _snapshot(None))
+    elif kind == "currency_blank":
+        _write_json(snapshot_path, _snapshot("  "))
+    elif kind == "currency_not_text":
+        _write_json(snapshot_path, _snapshot(None) | {"currency": 840})
+    elif kind == "locked":
+        _write_json(snapshot_path, _snapshot("USC"))
+        reader._lock_retry_initial_delay_seconds = 0.0
+        original = Path.read_text
+
+        def locked(self, *args, **kwargs):
+            if self.name == "account_snapshot.json":
+                raise PermissionError("locked by the EA")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", locked)
+    else:  # pragma: no cover
+        raise AssertionError(kind)
+
+
+@pytest.mark.parametrize("kind", ["missing", "locked", "malformed", "currency_missing", "currency_blank",
+                                  "currency_not_text"])
+def test_feedback_reader_defers_everything_until_currency_is_known(tmp_path, monkeypatch, caplog, kind):
+    """BR-001: with no usable currency, nothing is returned or deleted; the next poll can still process it."""
     reader = _reader(tmp_path)
-    assert reader._unit_scale() == 1.0
-    exit_payload = json.loads(FIXTURE.read_text())
-    exit_payload["profit_loss"] = 157651
-    _write_json(tmp_path / "exits" / "exit_59159851261.json", exit_payload)
-    [(_, unchanged)] = reader.collect_trade_exits()
-    assert unchanged["profit_loss"] == 157651
+    exit_path = tmp_path / "exits" / "exit_59159851261.json"
+    execution_path = tmp_path / "feedback" / "execution_AI_X.json"
+    _write_json(exit_path, _exit_payload())
+    _write_json(execution_path, _execution(4930.0))
+    _unusable_snapshot(kind, tmp_path, monkeypatch, reader)
+
+    with caplog.at_level("WARNING", logger="fx_ai_engine.execution_feedback"):
+        assert reader._unit_scale() is None
+        assert reader.collect_trade_exits() == []
+        assert reader.collect_execution_feedback() == []
+        assert reader.consume_trade_exits() == []
+        assert reader.consume_execution_feedback() == []
+        assert reader.read_execution_feedback() == []
+    assert "account currency unknown" in caplog.text
+    assert exit_path.exists() and execution_path.exists()
+    assert json.loads(exit_path.read_text())["profit_loss"] == 157651
+    assert not (tmp_path / "exits" / "quarantine").exists()
+    assert not (tmp_path / "feedback" / "quarantine").exists()
+
+    monkeypatch.undo()
+    _write_json(tmp_path / "feedback" / "account_snapshot.json", _snapshot("USC"))
+    [(_, converted)] = reader.collect_trade_exits()
+    assert converted["profit_loss"] == pytest.approx(1576.51)
+    [(_, execution)] = reader.collect_execution_feedback()
+    assert execution["profit_loss"] == pytest.approx(49.3)
+
+
+def test_feedback_reader_usd_account_processes_feedback_on_the_first_poll(tmp_path):
+    reader = _reader(tmp_path)
+    assert reader._unit_scale() is None  # nothing read yet
+    _write_json(tmp_path / "feedback" / "account_snapshot.json", _snapshot("USD"))
+    _write_json(tmp_path / "exits" / "exit_59159851261.json", _exit_payload(12.5))
+    _write_json(tmp_path / "feedback" / "execution_AI_X.json", _execution(7.25))
+    [(_, exit_payload)] = reader.collect_trade_exits()
+    [(_, execution)] = reader.collect_execution_feedback()
+    assert exit_payload["profit_loss"] == 12.5
+    assert execution["profit_loss"] == 7.25
+    assert [p["profit_loss"] for p in reader.consume_execution_feedback()] == [7.25]
+    assert not (tmp_path / "feedback" / "execution_AI_X.json").exists()
+
+
+def test_feedback_reader_mock_simulator_artifacts_are_known_dollars(tmp_path):
+    """The mock simulator writes dollars and no currency; it is accepted only when mock artifacts are allowed."""
+    reader = _reader(tmp_path)
+    mock_exit = _exit_payload(31.5) | {"feedback_source": "mock_feedback_simulator"}
+    _write_json(tmp_path / "exits" / "exit_59159851261.json", mock_exit)
+    _write_json(tmp_path / "feedback" / "execution_AI_X.json",
+                _execution(0.0) | {"feedback_source": "mock_feedback_simulator"})
+    _write_json(tmp_path / "feedback" / "account_snapshot.json",
+                _snapshot(None) | {"snapshot_source": "mock_feedback_simulator"})
+    [(_, payload)] = reader.collect_trade_exits()
+    assert payload["profit_loss"] == 31.5
+    assert len(reader.collect_execution_feedback()) == 1
+    # A real EA artifact next to it still needs a currency.
+    _write_json(tmp_path / "exits" / "exit_77.json", _exit_payload(5.0) | {"ticket": 77, "position_ticket": 77})
+    assert [p["profit_loss"] for _, p in reader.collect_trade_exits()] == [31.5]
+    # With mock artifacts disallowed the simulator payload is quarantined, never processed.
+    strict = ExecutionFeedbackReader(tmp_path / "feedback", tmp_path / "exits", allow_mock_artifacts=False)
+    assert strict.collect_trade_exits() == []
+    assert (tmp_path / "exits" / "quarantine").exists()
 
 
 def test_feedback_reader_usd_and_unknown_currency_are_identical_to_the_file(tmp_path):
-    for currency in ("USD", "EUR", None):
+    for currency in ("USD", "EUR"):
         reader = _reader(tmp_path / str(currency))
         payload = _snapshot(currency)
         _write_json(tmp_path / str(currency) / "feedback" / "account_snapshot.json", payload)
@@ -319,6 +410,18 @@ def test_feedback_reader_usd_and_unknown_currency_are_identical_to_the_file(tmp_
                     {"ticket": 1, "profit_loss": 12.5, "status": "CLOSED_WIN", "close_time": "x"})
         [(_, exit_payload)] = reader.collect_trade_exits()
         assert exit_payload["profit_loss"] == 12.5
+
+
+def test_read_execution_feedback_returns_dollars_and_keeps_the_file(tmp_path):
+    """BR-003: the public non-deleting reader goes through the same normalising path."""
+    reader = _reader(tmp_path)
+    path = tmp_path / "feedback" / "execution_AI_X.json"
+    _write_json(path, _execution(4930.0))
+    assert reader.read_execution_feedback() == []  # currency unknown: deferred
+    _write_json(tmp_path / "feedback" / "account_snapshot.json", _snapshot("USC"))
+    [execution] = reader.read_execution_feedback()
+    assert execution["profit_loss"] == pytest.approx(49.3)
+    assert path.exists() and json.loads(path.read_text())["profit_loss"] == 4930.0
 
 
 def test_feedback_reader_keeps_last_good_scale_when_snapshot_disappears(tmp_path):
@@ -357,3 +460,138 @@ def test_usc_engine_end_to_end(tmp_path, monkeypatch, isolated_db):
     engine._update_account_state()
     assert engine.account_status.balance == pytest.approx(100000.0)
     assert engine.account_status.state_reconciled, engine.account_status.state_reconciliation_reason
+
+
+# ----------------------------------------------------------------------
+# BR-002: unknown currency is not scale 1.0 (history and contract readers)
+# ----------------------------------------------------------------------
+CURRENCY_UNKNOWN = "FILE_BRIDGE_ACCOUNT_CURRENCY_UNKNOWN"
+
+
+def _assert_history_and_contract_unavailable(conn: FileBridgeConnection, *, contract_code: str = CURRENCY_UNKNOWN) -> None:
+    assert conn.get_position_history_summary(999) is None
+    assert conn.last_error.code == CURRENCY_UNKNOWN
+    conn.last_error = None
+    assert conn.get_trade_history_summary("AI_TEST_1") is None
+    assert conn.last_error.code == CURRENCY_UNKNOWN
+    conn.last_error = None
+    assert conn.get_symbol_execution_contract("EURUSD") is None
+    assert conn.last_error.code == contract_code
+
+
+def test_file_bridge_history_without_currency_evidence_returns_nothing_then_recovers(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    snapshot_path = bridge / "feedback" / "account_snapshot.json"
+    saved = snapshot_path.read_text()
+    snapshot_path.unlink()
+    conn = FileBridgeConnection(bridge)  # fresh: nothing cached, status.json carries no account_currency
+    _assert_history_and_contract_unavailable(conn)
+    snapshot_path.write_text(saved)  # evidence returns: the next poll converts
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+    assert conn.get_trade_history_summary("AI_TEST_1")["profit_loss"] == pytest.approx(49.3)
+    assert conn.get_symbol_execution_contract("EURUSD").tick_value == pytest.approx(0.01)
+
+
+def test_file_bridge_history_with_stale_currency_evidence_returns_nothing(tmp_path):
+    from datetime import timedelta
+
+    bridge = _usc_bridge(tmp_path)
+    # Deals stay fresh (120 s) while status.json and the snapshot are stale (30 s).
+    conn = FileBridgeConnection(bridge, clock=lambda: _now() + timedelta(seconds=60))
+    # The contract reader also needs a fresh status.json, which fails first.
+    _assert_history_and_contract_unavailable(conn, contract_code="FILE_BRIDGE_SYMBOL_SPEC_UNAVAILABLE")
+
+
+def test_file_bridge_history_uses_only_a_validated_cached_currency(tmp_path):
+    from datetime import timedelta
+
+    bridge = _usc_bridge(tmp_path)
+    offset = [0]
+    conn = FileBridgeConnection(bridge, clock=lambda: _now() + timedelta(seconds=offset[0]))
+    assert conn.connect(retry_count=1), conn.last_error
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)  # validated snapshot caches USC
+    offset[0] = 60
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+
+
+def test_file_bridge_history_with_conflicting_currencies_returns_nothing(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    status_path = bridge / "market" / "status.json"
+    status = json.loads(status_path.read_text())
+    status["account_currency"] = "USD"  # snapshot says USC
+    status_path.write_text(json.dumps(status))
+    _assert_history_and_contract_unavailable(FileBridgeConnection(bridge))
+
+
+def _usc_deals():
+    def deal(ticket, entry, deal_type, profit, comment):
+        return SimpleNamespace(
+            ticket=ticket, order=ticket, position_id=999, time_msc=1_793_000_000_000 + ticket * 1000,
+            time=1_793_000_000 + ticket, type=deal_type, entry=entry, symbol="EURUSD", volume=10.0,
+            price=1.1, profit=profit, commission=-70.0 if entry == 1 else 0.0, swap=0.0, fee=0.0,
+            magic=1, comment=comment,
+        )
+
+    return [deal(1, 0, 0, 0.0, "AI_TEST_1"), deal(2, 1, 1, 5000.0, "")]
+
+
+@pytest.mark.parametrize("failure", ["none", "raises", "no_currency", "blank_currency"])
+def test_mt5_connection_history_without_currency_returns_nothing_then_recovers(usc_mock, monkeypatch, failure):
+    monkeypatch.setattr(mt5_bridge.mt5, "history_deals_get", lambda start, end: _usc_deals(), raising=False)
+    healthy = usc_mock._account_info
+
+    def broken():
+        if failure == "none":
+            return None
+        if failure == "raises":
+            raise RuntimeError("account_info unavailable")
+        return SimpleNamespace(balance=1000.0, equity=1000.0, margin_free=1000.0,
+                               currency=None if failure == "no_currency" else "  ")
+
+    monkeypatch.setattr(usc_mock, "_account_info", broken)
+    assert usc_mock._unit_scale() is None
+    assert usc_mock.get_position_history_summary(999) is None
+    assert usc_mock.last_error.code == "MT5_ACCOUNT_CURRENCY_UNAVAILABLE"
+    usc_mock.last_error = None
+    assert usc_mock.get_trade_history_summary("AI_TEST_1") is None
+    assert usc_mock.last_error.code == "MT5_ACCOUNT_CURRENCY_UNAVAILABLE"
+    usc_mock.last_error = None
+    assert usc_mock.get_symbol_execution_contract("EURUSD") is None
+    assert usc_mock.last_error.code == "MT5_ACCOUNT_CURRENCY_UNAVAILABLE"
+
+    monkeypatch.setattr(usc_mock, "_account_info", healthy)  # next poll
+    assert usc_mock.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+    assert usc_mock.get_trade_history_summary("AI_TEST_1")["profit_loss"] == pytest.approx(49.3)
+
+
+# ----------------------------------------------------------------------
+# BR-006: bridge health prints dollars
+# ----------------------------------------------------------------------
+def _health_bridge(tmp_path: Path, payload: dict) -> Path:
+    _write_json(tmp_path / "feedback" / "account_snapshot.json", payload)
+    return tmp_path
+
+
+def test_bridge_health_balance_is_normalised_to_dollars(tmp_path):
+    from check_bridge_health import check_snapshot_health
+
+    assert check_snapshot_health(_health_bridge(tmp_path / "usc", _snapshot("USC") | {"balance": 1000.0}))["balance"] == pytest.approx(10.0)
+    assert check_snapshot_health(_health_bridge(tmp_path / "usd", _snapshot("USD") | {"balance": 1000.0}))["balance"] == 1000.0
+    assert check_snapshot_health(_health_bridge(tmp_path / "eur", _snapshot("EUR") | {"balance": 1000.0}))["balance"] == 1000.0
+    unknown = check_snapshot_health(_health_bridge(tmp_path / "none", _snapshot(None)))
+    assert unknown["status"] == "FRESH" and unknown["balance"] is None  # currency unknown: no figure
+    mock = _snapshot(None) | {"snapshot_source": "mock_feedback_simulator", "balance": 950.0}
+    assert check_snapshot_health(_health_bridge(tmp_path / "mock", mock))["balance"] == 950.0
+
+
+def test_bridge_health_cli_prints_ten_dollars_for_a_thousand_cents(tmp_path, monkeypatch, capsys):
+    import check_bridge_health
+    import core.bridge_utils as bridge_utils
+
+    bridge = _health_bridge(tmp_path, _snapshot("USC") | {"balance": 1000.0})
+    monkeypatch.setenv("USE_MT5_MOCK", "1")
+    monkeypatch.setattr(bridge_utils, "get_mt5_bridge_path", lambda: bridge)
+    check_bridge_health.main()
+    out = capsys.readouterr().out
+    assert "Balance:     $10.00" in out
+    assert "$1000.00" not in out

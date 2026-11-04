@@ -9,8 +9,26 @@ from pathlib import Path
 _SNAPSHOT_STALE_SECONDS = 180
 
 
+def _balance_usd(data: dict) -> float | None:
+    """Snapshot balance in US dollars, or None when the account currency is unknown.
+
+    A cent (USC) account reports its balance in cents, so the raw value must go
+    through the shared unit helper before it is shown with a dollar sign. The mock
+    feedback simulator writes dollars and no currency.
+    """
+    from core.mt5_bridge import account_unit_scale, usd_from_account_units
+
+    balance = float(data.get("balance", 0.0))
+    currency = data.get("currency")
+    if isinstance(currency, str) and currency.strip():
+        return usd_from_account_units(balance, account_unit_scale(currency))
+    if data.get("snapshot_source") == "mock_feedback_simulator":
+        return balance
+    return None
+
+
 def check_snapshot_health(bridge_path: Path | str | None = None) -> dict:
-    """Return health dict: status (FRESH/STALE/MISSING/CORRUPT), age_seconds, balance, path."""
+    """Return health dict: status (FRESH/STALE/MISSING/CORRUPT), age_seconds, balance (US dollars, None if the currency is unknown), path."""
     if bridge_path is None:
         from core.bridge_utils import get_mt5_bridge_path
         bridge_path = get_mt5_bridge_path()
@@ -23,8 +41,8 @@ def check_snapshot_health(bridge_path: Path | str | None = None) -> dict:
     age = time.time() - snap.stat().st_mtime
     try:
         data = json.loads(snap.read_text(encoding="utf-8"))
-        balance = float(data.get("balance", 0.0))
-    except (json.JSONDecodeError, OSError):
+        balance = _balance_usd(data)
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
         return {"status": "CORRUPT", "age_seconds": round(age, 1), "balance": None, "path": str(snap)}
 
     status = "FRESH" if age < _SNAPSHOT_STALE_SECONDS else "STALE"
@@ -82,7 +100,9 @@ def main() -> None:
     if result["age_seconds"] is not None:
         print(f"  Age:         {result['age_seconds']:.0f}s")
     if result["balance"] is not None:
-        print(f"  Balance:     ${result['balance']:.2f}")
+        print(f"  Balance:     ${result['balance']:.2f} USD")
+    elif result["status"] in ("FRESH", "STALE"):
+        print("  Balance:     unavailable (snapshot has no account currency)")
 
     drift = check_ea_deployment_drift(bridge_path)
     print("\nEA deployment:")

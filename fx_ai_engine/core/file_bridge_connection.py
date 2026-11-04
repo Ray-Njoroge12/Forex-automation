@@ -193,7 +193,8 @@ class FileBridgeConnection(MT5Connection):
         if status.get("terminal_connected") is not True:
             raise FileBridgeDataError("MT5 terminal reports no server connection")
         self._validate_profile_fields(status)
-        if require_symbols_ok and status.get("symbols_ok") is False:
+        # Gate on symbols_ok=false, and also on a non-empty symbol_errors when symbols_ok is absent.
+        if require_symbols_ok and (status.get("symbols_ok") is False or status.get("symbol_errors")):
             listed = ", ".join(status.get("symbol_errors") or []) or "unspecified"
             raise FileBridgeSymbolError(
                 f"EA could not resolve broker symbols (suffix={status.get('symbol_suffix', '')!r}): {listed}"
@@ -263,28 +264,48 @@ class FileBridgeConnection(MT5Connection):
             self._last_currency = currency
         return snapshot
 
-    def _account_currency(self) -> str:
-        """Account currency from status.json, else the snapshot, else the last good value, else USD.
+    def _account_currency(self) -> str | None:
+        """Account currency from validated evidence, else the last validated value, else ``None``.
 
-        Reads without the freshness requirement and records no error: it only
-        selects the money unit, and the callers validate freshness themselves.
+        Evidence is a fresh, schema-valid status.json (``account_currency``) or a
+        fresh account snapshot (``currency``), read without the ``symbols_ok``
+        gate so history stays available. ``None`` means the currency is unknown;
+        it is never defaulted to USD. When both files name a currency and they
+        differ, the answer is ``None``. Records no error: callers do.
         """
-        for path, key in (
-            (self.market_dir / "status.json", "account_currency"),
-            (self.feedback_dir / "account_snapshot.json", "currency"),
-        ):
-            try:
-                payload = self._read_json(path)
-            except FileBridgeDataError:
-                continue
-            value = payload.get(key) if isinstance(payload, dict) else None
+        found: list[str] = []
+        try:
+            value = self._read_status(require_symbols_ok=False).get("account_currency")
             if isinstance(value, str) and value.strip():
-                self._last_currency = value
-                return value
-        return self._last_currency or "USD"
+                found.append(value)
+        except ValueError:  # FileBridgeDataError or an unparsable timestamp
+            pass
+        try:
+            snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
+            if isinstance(snapshot, dict):
+                self._require_fresh(snapshot.get("timestamp"), ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS, "account snapshot")
+                value = snapshot.get("currency")
+                if isinstance(value, str) and value.strip():
+                    found.append(value)
+        except ValueError:
+            pass
+        if len({item.strip().upper() for item in found}) > 1:
+            return None
+        if found:
+            self._last_currency = found[0]
+            return found[0]
+        return self._last_currency
 
-    def _unit_scale(self) -> float:
-        return account_unit_scale(self._account_currency())
+    def _unit_scale(self) -> float | None:
+        """Account-currency to USD multiplier, or ``None`` (with a bridge error) when the currency is unknown."""
+        currency = self._account_currency()
+        if currency is None:
+            self._fail(
+                "FILE_BRIDGE_ACCOUNT_CURRENCY_UNKNOWN",
+                "account currency cannot be established from a fresh status or account snapshot",
+            )
+            return None
+        return account_unit_scale(currency)
 
     def _fail(self, code: str, exc: Exception | str) -> None:
         self._make_error(code, str(exc))
@@ -455,11 +476,14 @@ class FileBridgeConnection(MT5Connection):
         if deals is None:
             return None
         matched = [d for d in deals if d.position_id == int(position_ticket)]
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return _closed_history_summary_from_deals(
             matched,
             position_ticket_hint=int(position_ticket),
             constants=DEAL_CONSTANTS,
-            unit_scale=self._unit_scale(),
+            unit_scale=unit_scale,
         )
 
     def get_trade_history_summary(self, trade_id: str, *, lookback_days: int = 30) -> dict[str, Any] | None:
@@ -474,8 +498,11 @@ class FileBridgeConnection(MT5Connection):
             return None
         positions = {d.position_id for d in seed if d.position_id > 0}
         matched = [d for d in deals if d.position_id in positions] if positions else seed
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return _closed_history_summary_from_deals(
-            matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS, unit_scale=self._unit_scale()
+            matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS, unit_scale=unit_scale
         )
 
     # ------------------------------------------------------------------
@@ -561,6 +588,11 @@ class FileBridgeConnection(MT5Connection):
 
     def get_live_spread(self, symbol: str) -> float | None:
         try:
+            self._status()  # symbols_ok gate and fresh-status check
+        except ValueError as exc:  # FileBridgeDataError or an unparsable timestamp
+            self._fail(_code_for(exc, "FILE_BRIDGE_STATUS_UNAVAILABLE"), exc)
+            return None
+        try:
             quotes = load_demo_quotes(
                 self.feedback_dir / "market_quotes.json",
                 now=self._now(),
@@ -578,6 +610,7 @@ class FileBridgeConnection(MT5Connection):
 
     def get_symbol_execution_contract(self, symbol: str) -> SymbolExecutionContract | None:
         try:
+            self._status()  # symbols_ok gate and fresh-status check
             payload = self._read_json(self.market_dir / "symbols.json")
             if not isinstance(payload, dict) or payload.get("schema_version") != 1:
                 raise FileBridgeDataError("unsupported symbol spec schema")
@@ -595,12 +628,15 @@ class FileBridgeConnection(MT5Connection):
         except FileBridgeDataError as exc:
             self._fail(_code_for(exc, "FILE_BRIDGE_SYMBOL_SPEC_UNAVAILABLE"), exc)
             return None
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return SymbolExecutionContract(
             symbol=symbol,
             min_lot=float(values["volume_min"]),
             lot_step=float(values["volume_step"]),
             max_lot=float(values["volume_max"]),
-            tick_value=usd_from_account_units(float(values["tick_value"]), self._unit_scale()),
+            tick_value=usd_from_account_units(float(values["tick_value"]), unit_scale),
             tick_size=float(values["tick_size"]),
             point=float(values["point"]),
         )

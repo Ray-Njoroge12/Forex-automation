@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-stream", default=dr.DEFAULT_STREAM)
     parser.add_argument("--thresholds", type=Path, default=None)
     parser.add_argument("--account-currency", default=None,
-                        help="account currency of the bridge copies (default: status.json beside deals, else USD)")
+                        help="account currency of the bridge copies (required unless status.json with account_currency sits beside the deals file; never assumed)")
     parser.add_argument("--symbols", type=Path, default=None,
                         help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
@@ -311,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out = dr.guard_output_dir(args.out or ARTIFACTS / "r8" / run_id())
     cfg, version, sha = load_config(args.thresholds)
-    units = dr.resolve_units(args.deals, args.account_currency, args.symbols)
+    try:
+        units = dr.resolve_units(args.deals, args.account_currency, args.symbols)
+    except dr.UnitsUnknownError as exc:
+        parser.error(str(exc))
     ids, live_r, live_meta = load_live(args.db, args.evidence_stream, args.exits_dir, args.deals, units)
     replay_r = load_replay(args.replay_trades_csv)
     report = drift_report(replay_r, live_r, cfg, live_ids=ids)

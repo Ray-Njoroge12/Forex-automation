@@ -48,7 +48,7 @@ from backtesting.unified_replay import COST_SCENARIOS
 from research.common import ARTIFACTS, parse_ts, run_id, write_json
 from research.demo_records import (
     DEFAULT_CALENDAR, DEFAULT_STREAM, R_DEFINITION, calendar_coverage, closed_trades, guard_output_dir, load_calendar_events,
-    load_deals, load_exits, resolve_units, load_feedback_files, load_funnel, load_m15, load_open_issues, load_thresholds, open_ro,
+    load_deals, load_exits, resolve_units, UnitsUnknownError, load_feedback_files, load_funnel, load_m15, load_open_issues, load_thresholds, open_ro,
     parse_details,
 )
 from research.fill_reconciliation import reconcile
@@ -526,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-stream", default=DEFAULT_STREAM)
     parser.add_argument("--thresholds", type=Path, default=None)
     parser.add_argument("--account-currency", default=None,
-                        help="account currency of the bridge copies (default: status.json beside deals, else USD)")
+                        help="account currency of the bridge copies (required unless status.json with account_currency sits beside the deals file; never assumed)")
     parser.add_argument("--symbols", type=Path, default=None,
                         help="symbols.json copy for contract sizes (default: beside the deals file)")
     parser.add_argument("--out", type=Path, default=None)
@@ -535,9 +535,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--week must look like 2026-W45, got {args.week!r}")
 
     out = guard_output_dir(args.out or ARTIFACTS / "r9" / run_id())
+    try:
+        units = resolve_units(args.deals, args.account_currency, args.symbols)
+    except UnitsUnknownError as exc:
+        parser.error(str(exc))
     report = run(args.db, args.deals, args.bars_dir, exits_dir=args.exits_dir, feedback_dir=args.feedback_dir,
                  calendar=args.calendar, thresholds=args.thresholds, evidence_stream=args.evidence_stream,
-                 week=args.week, units=resolve_units(args.deals, args.account_currency, args.symbols))
+                 week=args.week, units=units)
     report["metadata"] = {"run_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     out.mkdir(parents=True, exist_ok=True)
     written = []

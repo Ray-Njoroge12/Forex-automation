@@ -89,6 +89,7 @@ def test_drawdown_and_loss_streak_helpers():
 def test_main_on_fixture_writes_outputs(tmp_path):
     fixture = tmp_path / "fixture"
     build_fixture(fixture, seed=3)
+    (fixture / "status.json").write_text('{"account_currency": "USD"}', encoding="utf-8")  # currency evidence (BR-004)
     out = tmp_path / "r8"
     rc = dm.main(["--db", str(fixture / "trading_state.db"), "--replay-trades-csv", str(fixture / "replay_trades.csv"),
                   "--exits-dir", str(fixture / "exits"), "--deals", str(fixture / "deals.json"), "--out", str(out)])
@@ -150,6 +151,7 @@ def test_gate_verdict_is_checked_against_the_replay_csv(tmp_path):
 def test_main_with_mismatched_gate_reports_not_evidence(tmp_path):
     fixture = tmp_path / "fixture"
     build_fixture(fixture, seed=3)
+    (fixture / "status.json").write_text('{"account_currency": "USD"}', encoding="utf-8")  # currency evidence (BR-004)
     out = tmp_path / "r8"
     gate = _gate(tmp_path, trades=19)
     assert dm.main(["--db", str(fixture / "trading_state.db"), "--replay-trades-csv", str(fixture / "replay_trades.csv"),

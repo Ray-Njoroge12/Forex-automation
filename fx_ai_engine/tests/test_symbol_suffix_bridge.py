@@ -118,6 +118,51 @@ def test_symbols_not_ok_fails_closed_with_symbol_list(tmp_path, now):
     assert profile["symbols_ok"] is False and profile["symbol_errors"] == ["EURUSD", "GBPUSD"]
 
 
+def test_symbols_not_ok_gates_spread_and_contract_but_not_history_or_profile(tmp_path, now):
+    """BR-005: the two decision inputs are gated; history and profile stay available on purpose."""
+    good = convert_bridge_to_suffixed(_usd(tmp_path, now), tmp_path / "good", "c", profile=SUFFIXED_PROFILE)
+    conn = _conn(good, now)
+    assert conn.connect(retry_count=1), conn.last_error
+    assert conn.get_live_spread("EURUSD") is not None
+    assert conn.get_symbol_execution_contract("EURUSD") is not None
+    _edit(good, "market/status.json", symbols_ok=False, symbol_errors=["EURUSD", "GBPUSD"])  # flips after connect
+    conn.last_error = None
+    assert conn.get_live_spread("EURUSD") is None
+    assert conn.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    assert "EURUSD, GBPUSD" in conn.last_error.message
+    conn.last_error = None
+    assert conn.get_symbol_execution_contract("EURUSD") is None
+    assert conn.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    # Intentionally ungated.
+    assert conn.get_position_history_summary(999) is not None
+    assert conn.get_trade_history_summary("AI_TEST_1") is not None
+    assert conn.get_ea_profile()["symbols_ok"] is False
+
+
+def test_non_empty_symbol_errors_without_symbols_ok_gate_every_reader(tmp_path, now):
+    """The EA writes symbols_ok and symbol_errors together; a status with only the error list still gates."""
+    bad = convert_bridge_to_suffixed(_usd(tmp_path, now), tmp_path / "bad", "c", profile=SUFFIXED_PROFILE)
+    status_path = bad / "market" / "status.json"
+    status = json.loads(status_path.read_text())
+    del status["symbols_ok"]
+    status["symbol_errors"] = ["USDJPY"]
+    status_path.write_text(json.dumps(status))
+    conn = _conn(bad, now)
+    assert conn.connect(retry_count=1) is False
+    assert conn.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    fresh = _conn(bad, now)
+    assert fresh.get_live_spread("EURUSD") is None and fresh.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    assert fresh.get_symbol_execution_contract("EURUSD") is None and fresh.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    assert fresh.fetch_ohlc_data("EURUSD", TF_M15, 5).attrs["error"]["code"] == "FILE_BRIDGE_SYMBOLS_NOT_OK"
+    # An absent or empty list without symbols_ok (old EA) is not gated.
+    for value in (None, []):
+        status.pop("symbol_errors", None)
+        if value is not None:
+            status["symbol_errors"] = value
+        status_path.write_text(json.dumps(status))
+        assert _conn(bad, now).connect(retry_count=1) is True
+
+
 def test_symbols_not_ok_without_errors_says_unspecified(tmp_path, now):
     bad = convert_bridge_to_suffixed(_usd(tmp_path, now), tmp_path / "bad", "", symbols_ok=False)
     conn = _conn(bad, now)

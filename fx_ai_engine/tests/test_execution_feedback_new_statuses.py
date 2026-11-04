@@ -52,6 +52,8 @@ def test_reader_collects_new_status_without_quarantine(tmp_path, status):
     feedback_dir = tmp_path / "feedback"
     reader = ExecutionFeedbackReader(feedback_dir, tmp_path / "exits")
     artifact = feedback_dir / "execution_T1.json"
+    # Currency evidence is required before any artifact is processed (BR-001).
+    (feedback_dir / "account_snapshot.json").write_text(json.dumps({"currency": "USD"}))
     artifact.write_text(json.dumps(payload(status)))
     collected = reader.collect_execution_feedback()
     assert [(path, data["status"]) for path, data in collected] == [(artifact, status)]

@@ -411,15 +411,27 @@ class MT5Connection:
         }
         return SimpleNamespace(**payload)
 
-    def _unit_scale(self) -> float:
-        """Account-currency to USD multiplier; 1.0 when the currency is unavailable. Records no error."""
+    def _unit_scale(self) -> float | None:
+        """Account-currency to USD multiplier from a successful account lookup.
+
+        Returns ``None`` and records a bridge error when the lookup fails or
+        reports no currency: the currency is unknown, which is not scale 1.0.
+        Callers must then return no money value and retry on the next poll.
+        A non-empty currency that is not a known cent denomination is scale 1.0.
+        """
         try:
             account_info = self._account_info()
-        except Exception:
-            return 1.0
-        if account_info is None:
-            return 1.0
-        return account_unit_scale(getattr(account_info, "currency", None))
+        except Exception as exc:
+            self._make_error("MT5_ACCOUNT_CURRENCY_UNAVAILABLE", f"account_info raised {type(exc).__name__}: {exc}")
+            return None
+        currency = getattr(account_info, "currency", None) if account_info is not None else None
+        if not isinstance(currency, str) or not currency.strip():
+            self._make_error(
+                "MT5_ACCOUNT_CURRENCY_UNAVAILABLE",
+                "Account currency is unavailable, so broker money values cannot be converted to USD.",
+            )
+            return None
+        return account_unit_scale(currency)
 
     def is_demo_account(self) -> bool | None:
         """Return True for demo, False for non-demo, or None if account mode cannot be assessed."""
@@ -540,8 +552,11 @@ class MT5Connection:
         if not matched:
             return None
 
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return _closed_history_summary_from_deals(
-            matched, position_ticket_hint=int(position_ticket), unit_scale=self._unit_scale()
+            matched, position_ticket_hint=int(position_ticket), unit_scale=unit_scale
         )
 
     def get_trade_history_summary(
@@ -587,8 +602,11 @@ class MT5Connection:
         else:
             matched = seed_deals
 
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return _closed_history_summary_from_deals(
-            matched, trade_id_hint=trade_id, unit_scale=self._unit_scale()
+            matched, trade_id_hint=trade_id, unit_scale=unit_scale
         )
 
     def fetch_ohlc_data(
@@ -691,6 +709,9 @@ class MT5Connection:
             )
             return None
 
+        unit_scale = self._unit_scale()
+        if unit_scale is None:
+            return None
         return SymbolExecutionContract(
             symbol=symbol,
             min_lot=float(getattr(info, "volume_min", 0.0) or 0.0),
@@ -698,7 +719,7 @@ class MT5Connection:
             max_lot=float(getattr(info, "volume_max", 0.0) or 0.0),
             tick_value=usd_from_account_units(
                 float(getattr(info, "trade_tick_value", getattr(info, "tick_value", 0.0)) or 0.0),
-                self._unit_scale(),
+                unit_scale,
             ),
             tick_size=float(
                 getattr(info, "trade_tick_size", getattr(info, "tick_size", 0.0)) or 0.0
