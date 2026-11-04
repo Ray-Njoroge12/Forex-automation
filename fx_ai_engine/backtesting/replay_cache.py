@@ -34,6 +34,7 @@ CANDIDATE_CODE_PATHS: tuple[str, ...] = (
     "core/indicators/**/*.py",
     "core/filters/session_filter.py",
     "core/types.py",
+    "core/strategy/**/*.py",
     "backtesting/unified_replay.py",
 )
 
