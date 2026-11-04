@@ -490,6 +490,74 @@ def test_database_failure_reading_the_latch_halts(loop, monkeypatch):
     _halted(loop, "LIVE_GATE_INTERNAL_ERROR", loop.tick())
 
 
+def test_clean_loop_halts_when_transition_persistence_fails(loop):
+    # A transition (kill switch appears) cannot be stored: the loop must still halt, with
+    # the internal-error code, and must retry the write on the next loop.
+    (loop.scenario.bridge_dir / "KILL_SWITCH").write_text("stop", encoding="utf-8")
+    original = loop.engine._insert_risk_event
+
+    def broken(*_a, **_k):
+        raise RuntimeError("db down")
+
+    loop.engine._insert_risk_event = broken
+    codes = loop.tick()
+    _halted(loop, "LIVE_GATE_INTERNAL_ERROR", codes)
+    assert "LIVE_KILL_SWITCH" in codes
+    loop.engine._insert_risk_event = original
+    codes = loop.tick()
+    assert "LIVE_KILL_SWITCH" in codes
+    assert "LIVE_KILL_SWITCH" in loop.engine.rules()
+
+
+def test_clean_loop_halts_when_only_the_cleared_event_cannot_be_stored(loop):
+    (loop.scenario.bridge_dir / "KILL_SWITCH").write_text("stop", encoding="utf-8")
+    _halted(loop, "LIVE_KILL_SWITCH", loop.tick())
+    (loop.scenario.bridge_dir / "KILL_SWITCH").unlink()
+
+    def broken(*_a, **_k):
+        raise RuntimeError("db down")
+
+    loop.engine._insert_risk_event = broken
+    _halted(loop, "LIVE_GATE_INTERNAL_ERROR", loop.tick())
+
+
+def test_clean_loop_halts_when_the_waiver_reminder_cannot_be_stored_and_retries(tmp_path, isolated_db):  # noqa: F811
+    loop = Loop(make_scenario(tmp_path, waiver=True))
+    assert loop.tick() == []
+    loop.now = loop.scenario.now + timedelta(hours=4, seconds=1)
+    original = loop.engine._insert_risk_event
+
+    def broken(rule, *_a, **_k):
+        if rule == "LIVE_EVIDENCE_WAIVER":
+            raise RuntimeError("db down")
+        return original(rule, *_a, **_k)
+
+    loop.engine._insert_risk_event = broken
+    _halted(loop, "LIVE_GATE_INTERNAL_ERROR", loop.tick(0))
+    assert "LIVE_EVIDENCE_WAIVER" not in loop.engine.rules()
+    # The timestamp did not advance, so the next loop retries at once instead of in four hours.
+    loop.engine._insert_risk_event = original
+    loop.tick(1)
+    assert loop.engine.rules().count("LIVE_EVIDENCE_WAIVER") == 1
+    assert loop.engine.account_status.is_trading_halted is False
+    loop.tick(60)
+    assert loop.engine.rules().count("LIVE_EVIDENCE_WAIVER") == 1  # and the next reminder is four hours away
+
+
+def test_clean_loop_halts_when_the_health_update_fails(loop, monkeypatch):
+    def broken(**_kwargs):
+        raise RuntimeError("health lock")
+
+    working = live_gate.update_health_status
+    monkeypatch.setattr(live_gate, "update_health_status", broken)
+    codes = loop.tick()
+    _halted(loop, "LIVE_GATE_INTERNAL_ERROR", codes)
+    assert ("LIVE_GATE_INTERNAL_ERROR", "CRITICAL") in [(e[0], e[1]) for e in loop.engine.events]
+    monkeypatch.setattr(live_gate, "update_health_status", working)
+    assert loop.tick() == []
+    assert loop.engine.account_status.is_trading_halted is False
+
+
 def test_event_persistence_failure_does_not_lift_the_halt(loop):
     (loop.scenario.bridge_dir / "KILL_SWITCH").write_text("stop", encoding="utf-8")
 

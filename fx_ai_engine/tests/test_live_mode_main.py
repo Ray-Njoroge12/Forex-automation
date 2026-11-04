@@ -209,8 +209,11 @@ def test_valid_live_start_runs_one_iteration(tmp_path, runtime, isolated_db):  #
     assert engine.policy["MODE_ID"] == "micro_live"
     assert engine.run_mode == "live"
     assert engine.use_mock is False
-    assert engine._live_gate_session is live_gate.active_session()
-    assert live_gate.active_session().policy_hash == MICRO_LIVE_HASH
+    session = engine._live_gate_session
+    assert session.policy_hash == MICRO_LIVE_HASH
+    # The run is over, so the session no longer authorizes anything.
+    assert session.closed is True
+    assert live_gate.active_session() is None
     approvals = risk_events(isolated_db, "NON_SRS_POLICY_APPROVAL")
     assert approvals and approvals[0]["severity"] == "INFO"
     assert "MICRO_LIVE_LIVE_GATE_APPROVED" in approvals[0]["reason"]
@@ -245,11 +248,12 @@ def test_live_start_refuses_when_the_engine_cannot_attach(tmp_path, runtime, iso
 # ----------------------------------------------------------------------
 def test_kill_switch_stops_the_decision_cycle_of_a_real_engine(tmp_path, runtime, isolated_db):  # noqa: F811
     scenario = _live_scenario(tmp_path, runtime)
-    session = scenario.gate(env=None)  # os.environ now carries the approval and confirm text
-    assert session is not None
     conn = FileBridgeConnection(scenario.bridge_dir)
     assert conn.connect(retry_count=1), conn.last_error
     assert conn.is_demo_account() is False
+    scenario.bridge = conn
+    session = scenario.gate(env=None)  # os.environ now carries the approval and confirm text
+    assert session is not None
     engine = main.Engine(conn, init_tracing("test"), init_metrics(), use_mock=False, run_mode="live", policy=session.policy)
     assert session.attach(engine) is True
 
@@ -273,9 +277,10 @@ def test_kill_switch_stops_the_decision_cycle_of_a_real_engine(tmp_path, runtime
 
 def test_without_a_halt_the_decision_cycle_runs(tmp_path, runtime, isolated_db):  # noqa: F811
     scenario = _live_scenario(tmp_path, runtime)
-    session = scenario.gate(env=None)
     conn = FileBridgeConnection(scenario.bridge_dir)
     assert conn.connect(retry_count=1)
+    scenario.bridge = conn
+    session = scenario.gate(env=None)
     engine = main.Engine(conn, init_tracing("test"), init_metrics(), use_mock=False, run_mode="live", policy=session.policy)
     assert session.attach(engine) is True
     cycles: list[int] = []
@@ -284,3 +289,53 @@ def test_without_a_halt_the_decision_cycle_runs(tmp_path, runtime, isolated_db):
     engine.run(mode="live", iterations=1)
     assert cycles == [1]
     assert engine.account_status.is_trading_halted is False
+
+
+# ----------------------------------------------------------------------
+# A finished or abandoned live session never authorizes a later invocation
+# ----------------------------------------------------------------------
+def _assert_smoke_micro_live_blocked(isolated_db):  # noqa: F811
+    argv = ["--mode", "smoke", "--policy-mode", "micro_live", "--iterations", "1"]
+    assert main.main(argv) == 4
+    approvals = risk_events(isolated_db, "NON_SRS_POLICY_APPROVAL")
+    assert approvals and approvals[-1]["severity"] == "BLOCK"
+    assert "MICRO_LIVE_LIVE_GATE_APPROVED" not in approvals[-1]["reason"]
+    assert "NON_SRS_POLICY_EXPLICIT_APPROVAL_REQUIRED" in approvals[-1]["reason"]
+
+
+def test_smoke_micro_live_after_a_finished_live_run_is_blocked(tmp_path, runtime, isolated_db):  # noqa: F811
+    _live_scenario(tmp_path, runtime)
+    assert main.main(["--mode", "live", "--iterations", "1"]) == 0
+    assert live_gate.active_session() is None
+    _assert_smoke_micro_live_blocked(isolated_db)
+
+
+def test_smoke_micro_live_after_an_abandoned_live_session_is_blocked(tmp_path, runtime, isolated_db):  # noqa: F811
+    # The gate passed but the run never reached engine.run (and its bridge never shut down).
+    scenario = _live_scenario(tmp_path, runtime)
+    assert scenario.gate(env=None) is not None
+    assert live_gate.active_session() is not None
+    _assert_smoke_micro_live_blocked(isolated_db)
+
+
+def test_smoke_micro_live_after_the_approval_expired_is_blocked(tmp_path, runtime, isolated_db):  # noqa: F811
+    scenario = _live_scenario(tmp_path, runtime)
+    session = scenario.gate(env=None)
+    session._clock = lambda: session.approval.expires_at_utc
+    _assert_smoke_micro_live_blocked(isolated_db)
+
+
+def test_live_run_that_fails_to_attach_leaves_no_session_behind(tmp_path, runtime, isolated_db):  # noqa: F811
+    _live_scenario(tmp_path, runtime)
+    real_engine = main.Engine
+
+    def drifted(*args, **kwargs):
+        engine = real_engine(*args, **kwargs)
+        engine.policy = dict(engine.policy, BASE_RISK_PCT=0.02)
+        return engine
+
+    runtime.setattr(main, "Engine", drifted)
+    assert main.main(["--mode", "live", "--iterations", "1"]) == 2
+    assert live_gate.active_session() is None
+    runtime.setattr(main, "Engine", real_engine)
+    _assert_smoke_micro_live_blocked(isolated_db)

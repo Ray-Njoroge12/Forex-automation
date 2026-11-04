@@ -149,6 +149,36 @@ class LiveSession:
         self._approval_changed = False
         self._approval_changed_detail = ""
         self._memory_streak_latch = False
+        self.closed = False
+        self.bound_bridge: Any = None
+
+    # ------------------------------------------------------------------
+    # Lifetime: a session authorizes one run on one bridge object, never a later run
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """End the session. ``live_session_covers`` is false from here on."""
+        self.closed = True
+        self.bound_bridge = None
+        _deactivate(self)
+
+    def bind_bridge(self, bridge: Any) -> None:
+        """Bind to the bridge object of this run and close when that bridge shuts down."""
+        self.bound_bridge = bridge
+        original = getattr(bridge, "shutdown", None)
+        if not callable(original):
+            return
+        session = self
+
+        def shutdown_and_close(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return original(*args, **kwargs)
+            finally:
+                session.close()
+
+        try:
+            bridge.shutdown = shutdown_and_close
+        except Exception:
+            logger.warning("Could not hook bridge.shutdown; the session stays bound to this bridge object only")
 
     # ------------------------------------------------------------------
     # Waiver
@@ -200,11 +230,21 @@ class LiveSession:
 
             engine._enforce_execution_feedback_integrity = enforce_with_live_checks
             engine._record_consecutive_loss_update = record_loss_with_latch
+            original_run = getattr(engine, "run", None)
+            if callable(original_run):
+
+                def run_then_close(*args: Any, **kwargs: Any) -> Any:
+                    try:
+                        return original_run(*args, **kwargs)
+                    finally:
+                        session.close()
+
+                engine.run = run_then_close
             engine._live_gate_session = self
             return True
         except Exception:
             logger.exception("Live gate could not attach to the engine")
-            _deactivate(self)
+            self.close()
             return False
 
     def _refuse_attach(self, engine: Any, code: str, detail: str) -> bool:
@@ -216,7 +256,7 @@ class LiveSession:
             alert_risk_halt("LIVE_STARTUP_REFUSED", f"{code} {detail}", "BLOCK")
         except Exception:
             logger.exception("Could not persist the attach refusal")
-        _deactivate(self)
+        self.close()
         return False
 
     # ------------------------------------------------------------------
@@ -265,30 +305,54 @@ class LiveSession:
             codes["LIVE_GATE_INTERNAL_ERROR"] = f"{type(exc).__name__}: {exc}"
             current = now or _utcnow()
         # The halt comes first: nothing below may stop it from being applied.
+        self._halt(engine, codes)
+        # Audit and health side effects fail closed: a failure is itself a halt reason.
+        try:
+            self._record_transitions(engine, codes)
+        except Exception as exc:
+            logger.exception("Could not persist live-gate transitions")
+            self._internal_error(engine, codes, f"transition persistence failed: {type(exc).__name__}: {exc}")
+        try:
+            self._waiver_reminder(engine, current)
+        except Exception as exc:
+            logger.exception("Could not emit the waiver reminder")
+            self._internal_error(engine, codes, f"waiver reminder failed: {type(exc).__name__}: {exc}")
+        try:
+            self._update_health(codes)
+        except Exception as exc:
+            logger.exception("Could not update live health fields")
+            self._internal_error(engine, codes, f"health update failed: {type(exc).__name__}: {exc}")
+        return list(codes)
+
+    @staticmethod
+    def _halt(engine: Any, codes: Mapping[str, str]) -> None:
         try:
             if codes:
                 engine.account_status.is_trading_halted = True
         except Exception:
             logger.exception("Could not set the trading halt flag")
-        try:
-            self._record_transitions(engine, codes)
-        except Exception:
-            logger.exception("Could not persist live-gate transitions")
-        try:
-            self._waiver_reminder(engine, current)
-        except Exception:
-            logger.exception("Could not emit the waiver reminder")
-        try:
-            update_health_status(
-                live_mode=True,
-                live_evidence_waiver=self.waiver_active,
-                live_waiver_reason=self.approval.waiver_reason if self.waiver_active else None,
-                live_halt_reasons=list(codes),
-                live_approval_expires_at=self.approval.expires_at_utc.isoformat(),
-            )
-        except Exception:
-            logger.exception("Could not update live health fields")
-        return list(codes)
+
+    def _internal_error(self, engine: Any, codes: dict[str, str], detail: str) -> None:
+        """Halt on a failed side effect and make a best-effort attempt to record why."""
+        first = "LIVE_GATE_INTERNAL_ERROR" not in codes
+        codes["LIVE_GATE_INTERNAL_ERROR"] = (
+            detail if first else f"{codes['LIVE_GATE_INTERNAL_ERROR']}; {detail}"
+        )
+        self._halt(engine, codes)
+        if first:
+            try:
+                self._record_transitions(engine, codes)
+            except Exception:
+                logger.exception("Could not persist the LIVE_GATE_INTERNAL_ERROR transition")
+
+    def _update_health(self, codes: Mapping[str, str]) -> None:
+        update_health_status(
+            live_mode=True,
+            live_evidence_waiver=self.waiver_active,
+            live_waiver_reason=self.approval.waiver_reason if self.waiver_active else None,
+            live_halt_reasons=list(codes),
+            live_approval_expires_at=self.approval.expires_at_utc.isoformat(),
+        )
 
     def _evaluate(self, engine: Any, now: datetime, codes: dict[str, str]) -> None:
         approval = self.approval
@@ -376,26 +440,27 @@ class LiveSession:
     # Events
     # ------------------------------------------------------------------
     def _record_transitions(self, engine: Any, codes: dict[str, str]) -> None:
-        previous = self._active
+        # _active changes only after each event is stored, so a failed write is retried next loop.
         for code, detail in codes.items():
-            if code not in previous:
+            if code not in self._active:
                 severity = "CRITICAL" if code in _CRITICAL_CODES else "BLOCK"
                 log = logger.critical if severity == "CRITICAL" else logger.error
                 log("LIVE HALT %s: %s", code, detail)
                 engine._insert_risk_event(code, severity, detail)
-        for code in list(previous):
+                self._active[code] = detail
+        for code in list(self._active):
             if code not in codes and code not in _PROCESS_LATCHED_CODES:
                 logger.warning("Live halt cleared: %s", code)
                 engine._insert_risk_event("LIVE_HALT_CLEARED", "INFO", f"{code} cleared")
-        self._active = dict(codes)
+                del self._active[code]
 
     def _waiver_reminder(self, engine: Any, now: datetime) -> None:
         if not self.waiver_active or now - self.last_waiver_notice < WAIVER_REMINDER_INTERVAL:
             return
-        self.last_waiver_notice = now
         message = self.waiver_message()
         logger.critical(message)
         engine._insert_risk_event("LIVE_EVIDENCE_WAIVER", "CRITICAL", message)
+        self.last_waiver_notice = now  # only after the event is stored, so a failure retries next loop
 
 
 # ----------------------------------------------------------------------
@@ -418,17 +483,20 @@ def active_session() -> "LiveSession | None":
 
 
 def live_session_covers(policy: Mapping[str, Any], bridge: Any) -> bool:
-    """True only for the policy and account the active session was approved for."""
+    """True only for the policy, bridge object and account the open session was approved for."""
     session = _ACTIVE_SESSION
-    if session is None:
+    if session is None or session.closed:
         return False
     try:
+        if bridge is not session.bound_bridge:
+            return False
+        if session._clock() >= session.approval.expires_at_utc:
+            return False
         if str(policy.get("MODE_ID", "")).strip().lower() != LIVE_POLICY_MODE:
             return False
         if canonical_policy_hash(policy) != session.policy_hash:
             return False
-        login = getattr(bridge, "login", None)
-        return type(login) is int and login == session.login
+        return _same_identity(getattr(bridge, "login", None), getattr(bridge, "server", None), session.login, session.server)
     except Exception:
         return False
 
@@ -508,6 +576,7 @@ def startup_gate(
         logger.exception("Live startup gate failed")
         _refuse("LIVE_GATE_INTERNAL_ERROR", f"{type(exc).__name__}: {exc}", context)
         return None
+    session.bind_bridge(bridge)
     _ACTIVE_SESSION = session
     return session
 

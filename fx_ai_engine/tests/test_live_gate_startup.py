@@ -400,6 +400,59 @@ def test_live_session_covers_only_the_approved_policy_and_login(scenario, isolat
     assert live_gate.live_session_covers(policy, scenario.bridge) is False
 
 
+def test_live_session_covers_ends_with_the_session(scenario, isolated_db):  # noqa: F811
+    session = scenario.gate()
+    policy = dict(session.policy)
+    assert live_gate.live_session_covers(policy, scenario.bridge) is True
+    session.close()
+    assert session.closed is True
+    assert live_gate.active_session() is None
+    assert live_gate.live_session_covers(policy, scenario.bridge) is False
+
+
+def test_live_session_covers_only_the_bridge_object_of_that_run(scenario, isolated_db):  # noqa: F811
+    session = scenario.gate()
+    policy = dict(session.policy)
+    # Same login and server, but a different bridge object: that is a different invocation.
+    twin = FakeBridge(LOGIN, SERVER, False, scenario.bridge_dir)
+    assert live_gate.live_session_covers(policy, twin) is False
+    assert live_gate.live_session_covers(policy, scenario.bridge) is True
+
+
+def test_live_session_covers_checks_server_and_expiry(scenario, isolated_db):  # noqa: F811
+    session = scenario.gate()
+    policy = dict(session.policy)
+    scenario.bridge.server = "Another-Server"
+    assert live_gate.live_session_covers(policy, scenario.bridge) is False
+    scenario.bridge.server = SERVER
+    assert live_gate.live_session_covers(policy, scenario.bridge) is True
+    session._clock = lambda: session.approval.expires_at_utc
+    assert live_gate.live_session_covers(policy, scenario.bridge) is False
+
+
+def test_bridge_shutdown_closes_the_session(scenario, isolated_db):  # noqa: F811
+    calls = []
+    scenario.bridge.shutdown = lambda: calls.append("shutdown")
+    session = scenario.gate()
+    policy = dict(session.policy)
+    assert live_gate.live_session_covers(policy, scenario.bridge) is True
+    scenario.bridge.shutdown()
+    assert calls == ["shutdown"]
+    assert session.closed is True
+    assert live_gate.live_session_covers(policy, scenario.bridge) is False
+
+
+def test_bridge_shutdown_closes_the_session_even_if_shutdown_raises(scenario, isolated_db):  # noqa: F811
+    def failing():
+        raise RuntimeError("terminal gone")
+
+    scenario.bridge.shutdown = failing
+    session = scenario.gate()
+    with pytest.raises(RuntimeError):
+        scenario.bridge.shutdown()
+    assert session.closed is True
+
+
 def session_sha(scenario):
     return live_gate.active_session().approval_sha256
 
