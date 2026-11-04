@@ -1,0 +1,224 @@
+{
+  "tool": "r9_trade_postmortem",
+  "note": "Rules-based and deterministic classification of closed demo trades by probable cause, from recorded data only (no LLM, no network). A cause is a hypothesis for a human to check.",
+  "report_only": "Report only: no halt or veto authority; nothing in the engine reads this output, and trading behaviour is unchanged.",
+  "precedence": [
+    "EXECUTION",
+    "NEWS_CALENDAR",
+    "SPREAD_COST",
+    "REGIME_MISMATCH",
+    "ORDINARY_NOISE"
+  ],
+  "ordinary_noise_meaning": "outcome consistent with the model; nothing abnormal recorded",
+  "pattern_share": 0.25,
+  "r_definition": "net R = sum over the position's deals of (profit + commission + swap + fee) / risk USD, with risk USD = lots x stop pips (trades.stop_loss) x USD pip value at the entry price; the same definition as unified_replay's r_multiple (net_usd / risk_usd). The EA's r_multiple is price-based and leaves out commission and swap.",
+  "cfg": {
+    "execution_entry_adverse_pips": 1.0,
+    "execution_exit_adverse_pips": 1.0,
+    "execution_latency_seconds": 60,
+    "news_before_entry_minutes": 30,
+    "news_after_exit_minutes": 15,
+    "cost_r_fraction": 0.25,
+    "regime_adx_margin": 2.0,
+    "min_trades_for_pattern": 10
+  },
+  "thresholds_version": 1,
+  "thresholds_sha256_16": "04b13538c8afd78e",
+  "sources": [
+    {
+      "name": "state DB (read-only, max trades.id 23, stream runtime_mt5_core_srs)",
+      "path": "../tmp/wave3-real/trading_state_snapshot.db",
+      "sha256_16": "755a1809d8d8f928"
+    },
+    {
+      "name": "deals.json copy",
+      "path": "artifacts/research/wave3-real/inputs/deals.json",
+      "sha256_16": "53d74b95df197c5f"
+    },
+    {
+      "name": "M15 bars (6 files)",
+      "path": "artifacts/research/wave3-real/inputs",
+      "sha256_16": "99181ccfbabb4765"
+    },
+    {
+      "name": "exit files (1)",
+      "path": "artifacts/research/wave3-real/inputs/exits",
+      "sha256_16": "6789181e812096c6"
+    },
+    {
+      "name": "feedback files (11)",
+      "path": "artifacts/demo-evidence/2026-11-03/run_160754",
+      "sha256_16": "d0035a2618ac858c"
+    },
+    {
+      "name": "economic calendar (31 events)",
+      "path": "data/economic_calendar.json",
+      "sha256_16": "702b077b9758e135"
+    },
+    {
+      "name": "thresholds",
+      "path": "research/live_vs_replay_thresholds.json",
+      "sha256_16": "04b13538c8afd78e"
+    }
+  ],
+  "selected_weeks": [
+    "2026-W45"
+  ],
+  "weeks": {
+    "2026-W45": {
+      "week": "2026-W45",
+      "start": "2026-11-02T00:00:00+00:00",
+      "end": "2026-11-09T00:00:00+00:00",
+      "n_trades": 1,
+      "inconclusive": true,
+      "sample": "INCONCLUSIVE: 1 closed trades; no pattern claims",
+      "cause_counts": {
+        "EXECUTION": 1,
+        "NEWS_CALENDAR": 0,
+        "SPREAD_COST": 0,
+        "REGIME_MISMATCH": 0,
+        "ORDINARY_NOISE": 0
+      },
+      "patterns": null,
+      "trade_ids": [
+        "AI_20261103_163004_0564f3"
+      ],
+      "funnel_rejections": [
+        {
+          "stage": "REGIME",
+          "reason_code": "REGIME_NO_TRADE",
+          "count": 32
+        },
+        {
+          "stage": "REGIME",
+          "reason_code": "REGIME_TRANSITION",
+          "count": 26
+        },
+        {
+          "stage": "TECHNICAL",
+          "reason_code": "TECH_CANDLE_CONFIRMATION_FAILED",
+          "count": 12
+        },
+        {
+          "stage": "PORTFOLIO",
+          "reason_code": "PM_SYMBOL_ALREADY_OPEN",
+          "count": 11
+        },
+        {
+          "stage": "PORTFOLIO",
+          "reason_code": "PM_EXPOSURE_LIMIT",
+          "count": 10
+        },
+        {
+          "stage": "TECHNICAL",
+          "reason_code": "TECH_RR_BELOW_MIN",
+          "count": 4
+        },
+        {
+          "stage": "NEWS",
+          "reason_code": "NEWS_BLACKOUT",
+          "count": 2
+        },
+        {
+          "stage": "TECHNICAL",
+          "reason_code": "TECH_MARKET_DATA_UNAVAILABLE",
+          "count": 2
+        },
+        {
+          "stage": "REGIME",
+          "reason_code": "REGIME_DATA_UNAVAILABLE",
+          "count": 1
+        },
+        {
+          "stage": "RESERVATION",
+          "reason_code": "RESERVATION_MAX_EXPOSURE",
+          "count": 1
+        }
+      ]
+    }
+  },
+  "funnel_rejections_all": [
+    {
+      "stage": "REGIME",
+      "reason_code": "REGIME_NO_TRADE",
+      "count": 32
+    },
+    {
+      "stage": "REGIME",
+      "reason_code": "REGIME_TRANSITION",
+      "count": 26
+    },
+    {
+      "stage": "TECHNICAL",
+      "reason_code": "TECH_CANDLE_CONFIRMATION_FAILED",
+      "count": 12
+    },
+    {
+      "stage": "PORTFOLIO",
+      "reason_code": "PM_SYMBOL_ALREADY_OPEN",
+      "count": 11
+    },
+    {
+      "stage": "PORTFOLIO",
+      "reason_code": "PM_EXPOSURE_LIMIT",
+      "count": 10
+    },
+    {
+      "stage": "TECHNICAL",
+      "reason_code": "TECH_RR_BELOW_MIN",
+      "count": 4
+    },
+    {
+      "stage": "NEWS",
+      "reason_code": "NEWS_BLACKOUT",
+      "count": 2
+    },
+    {
+      "stage": "TECHNICAL",
+      "reason_code": "TECH_MARKET_DATA_UNAVAILABLE",
+      "count": 2
+    },
+    {
+      "stage": "REGIME",
+      "reason_code": "REGIME_DATA_UNAVAILABLE",
+      "count": 1
+    },
+    {
+      "stage": "RESERVATION",
+      "reason_code": "RESERVATION_MAX_EXPOSURE",
+      "count": 1
+    }
+  ],
+  "trades": [
+    {
+      "trade_id": "AI_20261103_163004_0564f3",
+      "symbol": "GBPUSD",
+      "direction": "BUY",
+      "status": "CLOSED_WIN",
+      "source": "bridge_exit_copy",
+      "decision_time": "2026-11-03T16:30:04.544125+00:00",
+      "entry_time": "2026-11-03T16:30:05.422000+00:00",
+      "exit_time": "2026-11-03T19:03:16.520000+00:00",
+      "iso_week": "2026-W45",
+      "net_r": 0.492647,
+      "ea_r_multiple": 0.4926,
+      "risk_usd": 3200.08,
+      "profit_loss": 1576.51,
+      "stop_pips": 13.6,
+      "stop_source": "funnel TECHNICAL stop_pips",
+      "cost_r": 0.0221,
+      "r7_reason": "COMPARABLE",
+      "primary_cause": "EXECUTION",
+      "flags": [
+        {
+          "cause": "EXECUTION",
+          "evidence": "exit deal not placed by the EA (magic 0, no sl/tp tag): possible manual close"
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "metadata": {
+    "run_utc": "2026-11-04T08:40:27Z"
+  }
+}

@@ -1,0 +1,388 @@
+{
+  "tool": "r7_fill_reconciliation",
+  "note": "Offline comparison of demo broker fills with the replay cost and fill model (backtesting.unified_replay). Positive differences are worse for the trader than the model.",
+  "report_only": "Report only: no halt or veto authority; the cost model is unchanged.",
+  "cost_scenario": "base",
+  "cost_model": {
+    "multiplier": 1.0,
+    "slippage_pips": 0.2,
+    "commission_per_lot_usd": 7.0
+  },
+  "thresholds_r7": {
+    "min_deals_for_bias": 20,
+    "bootstrap_runs": 2000,
+    "bootstrap_seed": 7,
+    "ci_level": 0.95,
+    "suggested_spread_percentile": 75,
+    "cost_ratio_limit": 1.5
+  },
+  "counts": {
+    "rows": 2,
+    "entry_deals": 2,
+    "comparable": 1,
+    "not_comparable": {
+      "NO_STRATEGY_SIGNAL": 1
+    }
+  },
+  "verdict": "INCONCLUSIVE",
+  "verdict_metrics": [
+    "fill_diff_pips",
+    "spread_diff_pips",
+    "slippage_diff_pips",
+    "exit_slippage_diff_pips",
+    "commission_diff_usd_per_lot"
+  ],
+  "informational_metrics": [
+    "fill_latency_s"
+  ],
+  "metrics": {
+    "fill_diff_pips": {
+      "overall": {
+        "n": 1,
+        "mean": -1.1,
+        "median": -1.1,
+        "std": 0.0,
+        "p5": -1.1,
+        "p25": -1.1,
+        "p75": -1.1,
+        "p95": -1.1,
+        "min": -1.1,
+        "max": -1.1,
+        "ci_low": -1.1,
+        "ci_high": -1.1,
+        "status": "INCONCLUSIVE",
+        "reason": "n=1 < min_deals_for_bias=20"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 1,
+          "mean": -1.1,
+          "median": -1.1,
+          "std": 0.0,
+          "p5": -1.1,
+          "p25": -1.1,
+          "p75": -1.1,
+          "p95": -1.1,
+          "min": -1.1,
+          "max": -1.1,
+          "ci_low": -1.1,
+          "ci_high": -1.1,
+          "status": "INCONCLUSIVE",
+          "reason": "n=1 < min_deals_for_bias=20"
+        }
+      }
+    },
+    "spread_diff_pips": {
+      "overall": {
+        "n": 1,
+        "mean": -1.1,
+        "median": -1.1,
+        "std": 0.0,
+        "p5": -1.1,
+        "p25": -1.1,
+        "p75": -1.1,
+        "p95": -1.1,
+        "min": -1.1,
+        "max": -1.1,
+        "ci_low": -1.1,
+        "ci_high": -1.1,
+        "status": "INCONCLUSIVE",
+        "reason": "n=1 < min_deals_for_bias=20"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 1,
+          "mean": -1.1,
+          "median": -1.1,
+          "std": 0.0,
+          "p5": -1.1,
+          "p25": -1.1,
+          "p75": -1.1,
+          "p95": -1.1,
+          "min": -1.1,
+          "max": -1.1,
+          "ci_low": -1.1,
+          "ci_high": -1.1,
+          "status": "INCONCLUSIVE",
+          "reason": "n=1 < min_deals_for_bias=20"
+        }
+      }
+    },
+    "slippage_diff_pips": {
+      "overall": {
+        "n": 1,
+        "mean": 0.0,
+        "median": 0.0,
+        "std": 0.0,
+        "p5": 0.0,
+        "p25": 0.0,
+        "p75": 0.0,
+        "p95": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "ci_low": 0.0,
+        "ci_high": 0.0,
+        "status": "INCONCLUSIVE",
+        "reason": "n=1 < min_deals_for_bias=20"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 1,
+          "mean": 0.0,
+          "median": 0.0,
+          "std": 0.0,
+          "p5": 0.0,
+          "p25": 0.0,
+          "p75": 0.0,
+          "p95": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "ci_low": 0.0,
+          "ci_high": 0.0,
+          "status": "INCONCLUSIVE",
+          "reason": "n=1 < min_deals_for_bias=20"
+        }
+      }
+    },
+    "exit_slippage_diff_pips": {
+      "overall": {
+        "n": 0,
+        "status": "INCONCLUSIVE",
+        "reason": "no comparable values"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 0,
+          "status": "INCONCLUSIVE",
+          "reason": "no comparable values"
+        }
+      }
+    },
+    "fill_latency_s": {
+      "overall": {
+        "n": 1,
+        "mean": 5.422,
+        "median": 5.422,
+        "std": 0.0,
+        "p5": 5.422,
+        "p25": 5.422,
+        "p75": 5.422,
+        "p95": 5.422,
+        "min": 5.422,
+        "max": 5.422,
+        "ci_low": 5.422,
+        "ci_high": 5.422,
+        "status": "INCONCLUSIVE",
+        "reason": "n=1 < min_deals_for_bias=20"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 1,
+          "mean": 5.422,
+          "median": 5.422,
+          "std": 0.0,
+          "p5": 5.422,
+          "p25": 5.422,
+          "p75": 5.422,
+          "p95": 5.422,
+          "min": 5.422,
+          "max": 5.422,
+          "ci_low": 5.422,
+          "ci_high": 5.422,
+          "status": "INCONCLUSIVE",
+          "reason": "n=1 < min_deals_for_bias=20"
+        }
+      }
+    },
+    "commission_diff_usd_per_lot": {
+      "overall": {
+        "n": 1,
+        "mean": -7.0,
+        "median": -7.0,
+        "std": 0.0,
+        "p5": -7.0,
+        "p25": -7.0,
+        "p75": -7.0,
+        "p95": -7.0,
+        "min": -7.0,
+        "max": -7.0,
+        "ci_low": -7.0,
+        "ci_high": -7.0,
+        "status": "INCONCLUSIVE",
+        "reason": "n=1 < min_deals_for_bias=20"
+      },
+      "by_symbol": {
+        "GBPUSD": {
+          "n": 1,
+          "mean": -7.0,
+          "median": -7.0,
+          "std": 0.0,
+          "p5": -7.0,
+          "p25": -7.0,
+          "p75": -7.0,
+          "p95": -7.0,
+          "min": -7.0,
+          "max": -7.0,
+          "ci_low": -7.0,
+          "ci_high": -7.0,
+          "status": "INCONCLUSIVE",
+          "reason": "n=1 < min_deals_for_bias=20"
+        }
+      }
+    }
+  },
+  "cost_ratio": {
+    "n": 1,
+    "limit": 1.5,
+    "mean": 0.142857,
+    "status": "INCONCLUSIVE"
+  },
+  "strict_reference": {
+    "n": 1,
+    "mean_strict_diff_pips": 0.9,
+    "note": "replay_execution.market_entry on the first bar opening after the decision; informational, not in the verdict"
+  },
+  "suggested_adjustment": {
+    "actionable": false,
+    "note": "data only; unified_replay.COST_SCENARIOS is not changed by this tool",
+    "caveat": "MetaQuotes-Demo spreads and fills differ from a funded broker's (plan Phase 6); re-measure on the funded account before using any suggestion.",
+    "slippage_pips": 0.2,
+    "commission_per_lot_usd": 0.0,
+    "spread_floor_pips": {
+      "GBPUSD": 0.1
+    },
+    "spread_floor_percentile": 75.0,
+    "current": {
+      "cost_scenario": "base",
+      "multiplier": 1.0,
+      "slippage_pips": 0.2,
+      "commission_per_lot_usd": 7.0,
+      "spread_floor_pips": {
+        "GBPUSD": 1.2
+      }
+    }
+  },
+  "not_comparable": [
+    {
+      "trade_id": "DEMO_MATRIX_VALID",
+      "deal_ticket": 58758036737,
+      "symbol": "EURUSD",
+      "reason": "NO_STRATEGY_SIGNAL"
+    }
+  ],
+  "thresholds_version": 1,
+  "inputs": {
+    "db": "../tmp/wave3-real/trading_state_snapshot.db",
+    "max_trades_id_read": 23,
+    "evidence_stream": "runtime_mt5_core_srs",
+    "deals": "artifacts/research/wave3-real/inputs/deals.json",
+    "deals_sha256_16": "53d74b95df197c5f",
+    "deals_generated_at": "2026-11-04T06:36:18Z",
+    "bars_dir": "artifacts/research/wave3-real/inputs",
+    "bar_symbols": [
+      "AUDUSD",
+      "EURUSD",
+      "GBPUSD",
+      "USDCAD",
+      "USDCHF",
+      "USDJPY"
+    ],
+    "feedback_dir": "artifacts/demo-evidence/2026-11-03/run_160754",
+    "thresholds": "research/live_vs_replay_thresholds.json",
+    "thresholds_sha256_16": "04b13538c8afd78e"
+  },
+  "rows": [
+    {
+      "trade_id": "DEMO_MATRIX_VALID",
+      "deal_ticket": 58758036737,
+      "position_id": 59159531410,
+      "symbol": "EURUSD",
+      "direction": "BUY",
+      "volume": 3.33,
+      "comparable": false,
+      "reason": "NO_STRATEGY_SIGNAL",
+      "decision_time": null,
+      "decision_time_source": null,
+      "bar_close": null,
+      "fill_time": "2026-11-03T16:07:55.692000+00:00",
+      "signal_latency_s": null,
+      "fill_latency_s": null,
+      "route_to_fill_s": null,
+      "deal_price": 1.11926,
+      "bid_open": null,
+      "bar_spread_points": null,
+      "modelled_spread_pips": null,
+      "replay_fill": null,
+      "actual_spread_pips": null,
+      "actual_spread_source": null,
+      "ea_slippage_pips": null,
+      "fill_diff_pips": null,
+      "spread_diff_pips": null,
+      "implied_slippage_pips": null,
+      "slippage_diff_pips": null,
+      "strict_fill": null,
+      "strict_diff_pips": null,
+      "exit_deal_ticket": 58758207477,
+      "exit_time": "2026-11-03T16:19:52.506000+00:00",
+      "exit_price": 1.11936,
+      "exit_magic": 20261103,
+      "exit_kind": "STOP",
+      "exit_level": 1.11936,
+      "exit_slippage_pips": 0.0,
+      "model_exit_slippage_pips": 0.2,
+      "exit_slippage_diff_pips": -0.2,
+      "commission_per_lot_usd": 0.0,
+      "commission_diff_usd_per_lot": -7.0,
+      "live_cost_pips": null,
+      "model_cost_pips": null,
+      "cost_ratio": null,
+      "price_mismatch_pips": null
+    },
+    {
+      "trade_id": "AI_20261103_163004_0564f3",
+      "deal_ticket": 58758348702,
+      "position_id": 59159851261,
+      "symbol": "GBPUSD",
+      "direction": "BUY",
+      "volume": 23.53,
+      "comparable": true,
+      "reason": null,
+      "decision_time": "2026-11-03T16:30:04.544125+00:00",
+      "decision_time_source": "ROUTER",
+      "bar_close": "2026-11-03T16:30:00+00:00",
+      "fill_time": "2026-11-03T16:30:05.422000+00:00",
+      "signal_latency_s": 4.544,
+      "fill_latency_s": 5.422,
+      "route_to_fill_s": 0.878,
+      "deal_price": 1.34175,
+      "bid_open": 1.34172,
+      "bar_spread_points": 0.0,
+      "modelled_spread_pips": 1.2,
+      "replay_fill": 1.34186,
+      "actual_spread_pips": 0.1,
+      "actual_spread_source": "feedback",
+      "ea_slippage_pips": 0.0,
+      "fill_diff_pips": -1.1,
+      "spread_diff_pips": -1.1,
+      "implied_slippage_pips": 0.2,
+      "slippage_diff_pips": 0.0,
+      "strict_fill": 1.34166,
+      "strict_diff_pips": 0.9,
+      "exit_deal_ticket": 58760169499,
+      "exit_time": "2026-11-03T19:03:16.520000+00:00",
+      "exit_price": 1.34242,
+      "exit_magic": 0,
+      "exit_kind": "NOT_BY_EA",
+      "exit_level": null,
+      "exit_slippage_pips": null,
+      "model_exit_slippage_pips": null,
+      "exit_slippage_diff_pips": null,
+      "commission_per_lot_usd": 0.0,
+      "commission_diff_usd_per_lot": -7.0,
+      "live_cost_pips": 0.3,
+      "model_cost_pips": 2.1,
+      "cost_ratio": 0.142857,
+      "price_mismatch_pips": null
+    }
+  ]
+}
