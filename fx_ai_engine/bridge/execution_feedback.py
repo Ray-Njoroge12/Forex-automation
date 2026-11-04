@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.mt5_bridge import account_unit_scale, usd_from_account_units
 from core.schemas import (
     SchemaError,
     validate_account_snapshot,
@@ -33,6 +34,7 @@ class ExecutionFeedbackReader:
         self.allow_mock_artifacts = allow_mock_artifacts
         self._lock_retry_attempts = 3
         self._lock_retry_initial_delay_seconds = 0.05
+        self._last_unit_scale = 1.0
 
     def _quarantine_invalid(self, path: Path, reason: str) -> Path:
         quarantine_dir = path.parent / "quarantine"
@@ -88,6 +90,28 @@ class ExecutionFeedbackReader:
 
         return None, "locked"
 
+    def _unit_scale(self) -> float:
+        """Account-currency to USD multiplier from the sibling account snapshot.
+
+        Caches the last good value; 1.0 until a snapshot has been read.
+        """
+        payload, state = self._read_json(self.feedback_dir / "account_snapshot.json")
+        if state == "ok" and isinstance(payload, dict):
+            currency = payload.get("currency")
+            if isinstance(currency, str) and currency.strip():
+                self._last_unit_scale = account_unit_scale(currency)
+        return self._last_unit_scale
+
+    @staticmethod
+    def _scale_profit_loss(payload: dict[str, Any], scale: float) -> dict[str, Any]:
+        """Return a copy with profit_loss in USD; the file on disk is never rewritten."""
+        value = payload.get("profit_loss")
+        if scale == 1.0 or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return payload
+        converted = dict(payload)
+        converted["profit_loss"] = usd_from_account_units(value, scale)
+        return converted
+
     def _should_block_mock_payload(self, payload: dict[str, Any]) -> bool:
         if self.allow_mock_artifacts or not isinstance(payload, dict):
             return False
@@ -124,6 +148,7 @@ class ExecutionFeedbackReader:
     def collect_execution_feedback(self) -> list[tuple[Path, dict[str, Any]]]:
         """Collect validated execution payloads without deleting source files."""
         results: list[tuple[Path, dict[str, Any]]] = []
+        scale = self._unit_scale()
         for path in sorted(self.feedback_dir.glob("execution_*.json")):
             payload, state = self._read_json(path)
             if payload is None:
@@ -140,7 +165,7 @@ class ExecutionFeedbackReader:
                 logger.warning("Execution feedback schema invalid path=%s error=%s", path, exc)
                 self._quarantine_invalid(path, "schema_invalid")
                 continue
-            results.append((path, payload))
+            results.append((path, self._scale_profit_loss(payload, scale)))
         return results
 
     def consume_execution_feedback(self) -> list[dict[str, Any]]:
@@ -153,6 +178,7 @@ class ExecutionFeedbackReader:
     def collect_trade_exits(self) -> list[tuple[Path, dict[str, Any]]]:
         """Collect validated trade-exit payloads without deleting source files."""
         results: list[tuple[Path, dict[str, Any]]] = []
+        scale = self._unit_scale()
         for path in sorted(self.exits_dir.glob("exit_*.json")):
             payload, state = self._read_json(path)
             if payload is None:
@@ -169,7 +195,7 @@ class ExecutionFeedbackReader:
                 logger.warning("Trade exit schema invalid path=%s error=%s", path, exc)
                 self._quarantine_invalid(path, "schema_invalid")
                 continue
-            results.append((path, payload))
+            results.append((path, self._scale_profit_loss(payload, scale)))
         return results
 
     def consume_trade_exits(self) -> list[dict[str, Any]]:
@@ -190,8 +216,18 @@ class ExecutionFeedbackReader:
             self._quarantine_invalid(path, "mock_source_blocked")
             return None
         try:
-            return validate_account_snapshot(payload)
+            snapshot = validate_account_snapshot(payload)
         except SchemaError as exc:
             logger.warning("Account snapshot schema invalid path=%s error=%s", path, exc)
             self._quarantine_invalid(path, "schema_invalid")
             return None
+        scale = account_unit_scale(snapshot.get("currency"))
+        if scale == 1.0:
+            return snapshot
+        converted = dict(snapshot)
+        for key in ("balance", "equity", "margin_free", "floating_pnl"):
+            converted[key] = usd_from_account_units(snapshot[key], scale)
+        converted["money_unit"] = "USD"
+        converted["unit_scale"] = scale
+        self._last_unit_scale = scale
+        return converted
