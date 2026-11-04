@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import socket
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -152,6 +155,44 @@ def test_probe_raising_refuses(isolated_db):  # noqa: F811
 
     assert _run(health_probe=broken) == 2
     assert _latch() is not None
+
+
+def _urlopen_raising(exc):
+    def fake(url, timeout=None):
+        raise exc
+
+    return fake
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        socket.timeout("timed out"),
+        TimeoutError("timed out"),
+        urllib.error.URLError(socket.timeout("timed out")),
+        urllib.error.URLError(TimeoutError("timed out")),
+    ],
+)
+def test_default_probe_timeout_is_indeterminate_and_refuses(isolated_db, monkeypatch, exc):  # noqa: F811
+    _seed()  # old metrics row, so only the probe stands between the command and the reset
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen_raising(exc))
+    with pytest.raises(type(exc)):
+        reset_loss_streak.default_health_probe()
+    assert reset_loss_streak.main(_argv(), now=NOW, health_probe=None) == 2
+    assert _latch() is not None
+    assert risk_events(isolated_db, "LIVE_LOSS_STREAK_RESET") == []
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ConnectionRefusedError(), urllib.error.URLError(ConnectionRefusedError())],
+)
+def test_default_probe_connection_refused_means_no_engine(isolated_db, monkeypatch, exc):  # noqa: F811
+    _seed()
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen_raising(exc))
+    assert reset_loss_streak.default_health_probe() is None
+    assert reset_loss_streak.main(_argv(), now=NOW, health_probe=None) == 0
+    assert _latch() is None
 
 
 def test_database_read_failure_refuses(isolated_db, monkeypatch):  # noqa: F811

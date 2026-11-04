@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import socket
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -36,9 +35,10 @@ def expected_confirmation(login: int) -> str:
 
 
 def default_health_probe() -> Any:
-    """Return the /health body, or None when nothing is listening (refused or timed out).
+    """Return the /health body, or None when the connection was refused (nothing listens).
 
-    Any other failure raises, which the caller treats as "cannot assess" and refuses.
+    A timeout means a process may still hold the port, so it is indeterminate. Timeouts and
+    every other failure raise, which the caller treats as "cannot assess" and refuses.
     """
     url = f"http://127.0.0.1:{int(os.getenv('HEALTH_PORT', '8080'))}/health"
     try:
@@ -47,10 +47,10 @@ def default_health_probe() -> Any:
     except urllib.error.HTTPError as exc:  # something answered
         return exc.read()
     except urllib.error.URLError as exc:
-        if isinstance(exc.reason, (ConnectionRefusedError, socket.timeout, TimeoutError)):
+        if isinstance(exc.reason, ConnectionRefusedError):
             return None
         raise
-    except (ConnectionRefusedError, socket.timeout, TimeoutError):
+    except ConnectionRefusedError:
         return None
 
 
