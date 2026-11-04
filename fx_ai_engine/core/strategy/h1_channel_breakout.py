@@ -68,9 +68,10 @@ class H1ChannelBreakoutStrategy(StrategyBase):
         direction = "BUY" if regime.regime == "TRENDING_BULL" else "SELL"
         base = (f"direction={direction} channel_high={high:.5f} channel_low={low:.5f} "
                 f"close={last_close:.5f} prev_close={prev_close:.5f}")
-        if direction == "BUY" and last_close > high and prev_close <= high:
+        prev_inside = low <= prev_close <= high
+        if direction == "BUY" and last_close > high and prev_inside:
             stop_pips = (last_close - (float(swing["low"].min()) - p.stop_buffer_pips * self.pip)) / self.pip
-        elif direction == "SELL" and last_close < low and prev_close >= low:
+        elif direction == "SELL" and last_close < low and prev_inside:
             stop_pips = ((float(swing["high"].max()) + p.stop_buffer_pips * self.pip) - last_close) / self.pip
         else:
             return self._reject("NO_BREAKOUT", base)

@@ -77,6 +77,21 @@ def test_only_the_first_close_through_counts():
     assert decide(frames, BREAK_OPEN + pd.Timedelta(minutes=30)).reason_code == "HCB_NO_BREAKOUT"
 
 
+@pytest.mark.parametrize("name, prev_close, last_close", [
+    ("TRENDING_BULL", 1.1005, 1.1035),  # previous close below the channel low, last close above the high
+    ("TRENDING_BEAR", 1.1035, 1.1005),  # previous close above the channel high, last close below the low
+])
+def test_previous_close_outside_the_opposite_boundary_is_no_breakout(name, prev_close, last_close):
+    frames, frame = channel_frames(prev_close, last_close, amp=0.0005)
+    channel = frame.iloc[:PRE_BARS].tail(4 * 48)
+    assert not channel["low"].min() <= prev_close <= channel["high"].max()
+    swing = frame.tail(16)
+    stop = (last_close - swing["low"].min() if name == "TRENDING_BULL" else swing["high"].max() - last_close) / 0.0001 + 1
+    assert 20 <= stop <= 60  # the stop range would pass, so only the trigger rule rejects
+    d = decide(frames, BREAK_OPEN + pd.Timedelta(minutes=30), stub=regime(name))
+    assert d.signal is None and d.reason_code == "HCB_NO_BREAKOUT"
+
+
 def test_bar_closing_on_the_hour_is_inside_the_closed_channel():
     frames, _ = channel_frames(*oscillation(3), 1.1050)  # breakout bar opens 10:45, decision 11:00
     d = decide(frames, BREAK_OPEN + pd.Timedelta(hours=1))
