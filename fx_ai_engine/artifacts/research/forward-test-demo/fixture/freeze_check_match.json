@@ -1,0 +1,14 @@
+{
+  "tool": "r10_freeze_check",
+  "checked_at_utc": "2026-11-04T06:29:33.035958+00:00",
+  "repo_root": "/private/tmp/fx-r10-fixture-repo",
+  "manifest_sha256": "300feb7108ac9a0c85b68a2dee20decdb01f38f7759d830e97fbfdd09323df8e",
+  "verdict": "MATCH",
+  "frozen_at_utc": "2026-11-04T06:29:32.869836+00:00",
+  "label": "fixture-demo",
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "git_commit": null,
+  "protected_files_checked": 12,
+  "mismatches": [],
+  "notes": []
+}

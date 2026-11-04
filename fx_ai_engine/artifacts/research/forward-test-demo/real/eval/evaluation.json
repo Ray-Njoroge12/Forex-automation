@@ -1,0 +1,205 @@
+{
+  "tool": "r10_forward_evaluate",
+  "evaluated_at_utc": "2026-11-04T06:30:49.380399+00:00",
+  "as_of_utc": "2026-11-04T06:30:49.380142+00:00",
+  "criteria_path": "docs/research/forward-test/criteria-srs-v1.1-draft.json",
+  "seal_path": "artifacts/research/forward-test-demo/real/seal.json",
+  "seal_sha256": "e4bbb507fc25a67883a5e57eb29c6c2cda71e96b484a395acef300c76863405e",
+  "db_path": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/database/trading_state.db",
+  "preregistration": {
+    "ok": true,
+    "reasons": [],
+    "warnings": [
+      "CRITERIA_TOUCHED_AFTER_START: mtime is after the start but the content hash is unchanged",
+      "BACKDATED_SEAL: sealed after the start; results are not pre-registered evidence",
+      "CRITERIA_DRAFT_NOT_APPROVED: criteria are a draft; no go/no-go decision can rest on them"
+    ],
+    "start_utc": "2026-11-03T15:00:00+00:00",
+    "criteria_sha256": "55a38ca1333b7cb53138cb5b6c9ea982d71972b0b0b742654bd14ff5be61fc76",
+    "sealed_sha256": "55a38ca1333b7cb53138cb5b6c9ea982d71972b0b0b742654bd14ff5be61fc76",
+    "criteria_mtime_utc": "2026-11-04T06:26:33.157414+00:00"
+  },
+  "criteria_id": "srs-v1.1-30-day-demo",
+  "criteria_version": "0.1.0-draft",
+  "criteria_status": "DRAFT_NOT_APPROVED",
+  "scope": {
+    "policy_mode": "core_srs",
+    "execution_mode": "mt5",
+    "evidence_stream": null,
+    "account_scope": null
+  },
+  "sample": {
+    "min_closed_trades": 25,
+    "min_closed_trades_note": "SRS v1 section 12.2 value. Plan Phase 3 item 3: raise it or label 25 as an operational check only (open decision O1).",
+    "min_trading_days": 30,
+    "min_trading_days_note": "Plan Phase 6: 30 trading days minimum (weekdays, UTC)."
+  },
+  "window": {
+    "start_utc": "2026-11-03T15:00:00+00:00",
+    "end_utc": "2026-11-04T06:30:49.380142+00:00"
+  },
+  "manual_checks": [
+    {
+      "id": "M1_ORDERS_ONLY_FROM_EA",
+      "text": "No order outside the EA (plan Phase 6 abort; AGENTS.md invariant 1). Check MT5 deal history magic numbers against the EA's MagicNumber."
+    },
+    {
+      "id": "M2_NO_HARD_RISK_FAILURE",
+      "text": "No hard-risk failure (plan Phase 6 abort; SRS 12.3 item 5)."
+    },
+    {
+      "id": "M3_SPREAD_SLIPPAGE_CONTROLS",
+      "text": "No repeated spread or slippage control failures (SRS 12.3 item 4)."
+    },
+    {
+      "id": "M4_LIVE_COSTS",
+      "text": "Live cost per trade within the replay's 1.5x cost assumption (plan Phase 6 exit)."
+    },
+    {
+      "id": "M5_RISK_TRIGGERS_VERIFIED",
+      "text": "Risk engine triggers verified (SRS 12.2 item 5)."
+    },
+    {
+      "id": "M6_NO_CRITICAL_ANOMALY",
+      "text": "No critical execution anomalies (SRS 12.2 item 6)."
+    },
+    {
+      "id": "M7_NO_CHANGE_RULE",
+      "text": "Freeze check MATCH on every day of the window (plan Phase 6 no-change rule); a behaviour-changing fix restarts the clock."
+    }
+  ],
+  "not_decision_grade_because": [
+    "criteria status DRAFT_NOT_APPROVED",
+    "seal is backdated (not pre-registered)"
+  ],
+  "freeze": {
+    "verdict": "MATCH",
+    "manifest_sha256": "9cda1e086c42a6c1e72bf0a0439fe391b0802341a9aa538afb29cd1baaddfc46",
+    "mismatches": []
+  },
+  "metrics": {
+    "closed_trades": 0,
+    "trading_days_elapsed": 1,
+    "win_rate": null,
+    "avg_r_all": null,
+    "avg_r_winners_srs": null,
+    "expectancy_r": null,
+    "expectancy_r_ci95_low": null,
+    "expectancy_r_ci95_high": null,
+    "profit_factor": null,
+    "avg_winner_r": null,
+    "avg_loser_r": null,
+    "max_consecutive_losses": null,
+    "max_drawdown": 0.0179,
+    "unresolved_feedback_conflicts": 0,
+    "equity_samples": 1801,
+    "warnings": []
+  },
+  "results": [
+    {
+      "group": "go",
+      "id": "G1_EXPECTANCY",
+      "metric": "expectancy_r",
+      "op": ">=",
+      "value": 0.25,
+      "actual": null,
+      "status": "PROPOSED_IN_PLAN_NOT_APPROVED",
+      "source": "plan D2 recommended default: expectancy >= +0.25R per trade after costs",
+      "result": "NOT_EVALUABLE"
+    },
+    {
+      "group": "go",
+      "id": "G2_PROFIT_FACTOR",
+      "metric": "profit_factor",
+      "op": ">=",
+      "value": 1.3,
+      "actual": null,
+      "status": "PROPOSED_IN_PLAN_NOT_APPROVED",
+      "source": "plan D2 recommended default: profit factor >= 1.3",
+      "result": "NOT_EVALUABLE"
+    },
+    {
+      "group": "go",
+      "id": "G3_AVG_WINNER",
+      "metric": "avg_winner_r",
+      "op": ">=",
+      "value": 1.5,
+      "actual": null,
+      "status": "PROPOSED_IN_PLAN_NOT_APPROVED",
+      "source": "plan D2 recommended default: average winner >= 1.5R",
+      "result": "NOT_EVALUABLE"
+    },
+    {
+      "group": "go",
+      "id": "G4_WIN_RATE",
+      "metric": "win_rate",
+      "op": ">=",
+      "value": 0.45,
+      "actual": null,
+      "status": "SRS_V1_UNCHANGED",
+      "source": "SRS v1 section 12.2 item 2; plan D2 does not replace it (open decision O2)",
+      "result": "NOT_EVALUABLE"
+    },
+    {
+      "group": "go",
+      "id": "G5_MAX_DRAWDOWN",
+      "metric": "max_drawdown",
+      "op": "<=",
+      "value": 0.15,
+      "actual": 0.0179,
+      "status": "SRS_V1_UNCHANGED",
+      "source": "SRS v1 section 12.2 item 4; reachability depends on D3",
+      "result": "PASS"
+    },
+    {
+      "group": "go",
+      "id": "G6_RECONCILIATION",
+      "metric": "unresolved_feedback_conflicts",
+      "op": "<=",
+      "value": 0,
+      "actual": 0,
+      "status": "PROPOSED_IN_PLAN_NOT_APPROVED",
+      "source": "plan Phase 6 exit: zero unexplained reconciliation conflicts",
+      "result": "PASS"
+    },
+    {
+      "group": "abort",
+      "id": "A1_DRAWDOWN",
+      "metric": "max_drawdown",
+      "op": ">",
+      "value": 0.2,
+      "actual": 0.0179,
+      "status": "SRS_V1_UNCHANGED",
+      "source": "SRS v1 section 12.3 item 1",
+      "result": "CLEAR"
+    },
+    {
+      "group": "abort",
+      "id": "A2_WIN_RATE",
+      "metric": "win_rate",
+      "op": "<",
+      "value": 0.4,
+      "actual": null,
+      "status": "SRS_V1_UNCHANGED",
+      "source": "SRS v1 section 12.3 item 2, applied from 25 closed trades as validate_demo does (open decision O2)",
+      "result": "NOT_YET"
+    },
+    {
+      "group": "abort",
+      "id": "A3_AVG_R_REPLACEMENT",
+      "metric": "expectancy_r",
+      "op": "<",
+      "value": null,
+      "actual": null,
+      "status": "OPEN_OWNER_DECISION",
+      "source": "SRS v1 section 12.3 item 3 (avg R < 1.8) depends on D2; the plan proposes no replacement abort line",
+      "result": "OPEN"
+    }
+  ],
+  "verdict": "INCONCLUSIVE",
+  "reasons": [
+    "SAMPLE_BELOW_MINIMUM closed_trades 0 < 25",
+    "WINDOW_BELOW_MINIMUM trading_days 1 < 30"
+  ],
+  "decision_grade": false
+}

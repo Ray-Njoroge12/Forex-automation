@@ -1,0 +1,27 @@
+{
+  "tool": "r10_forward_evaluate",
+  "evaluated_at_utc": "2026-11-04T06:30:33.621754+00:00",
+  "as_of_utc": "2027-02-15T00:00:00+00:00",
+  "criteria_path": "/tmp/fx-r10-refusal/criteria.json",
+  "seal_path": "artifacts/research/forward-test-demo/fixture/refusal/seal.json",
+  "seal_sha256": "3ff468698e70a8fbe9c3d9df8e3edbe483f0f6349b4375d1d0b129d920cab818",
+  "db_path": "/tmp/fx-r10-fixture.db",
+  "preregistration": {
+    "ok": false,
+    "reasons": [
+      "CRITERIA_MODIFIED_AFTER_START"
+    ],
+    "warnings": [
+      "CRITERIA_DRAFT_NOT_APPROVED: criteria are a draft; no go/no-go decision can rest on them"
+    ],
+    "start_utc": "2027-01-04T00:00:00+00:00",
+    "criteria_sha256": "fc16267632f257a35a92ecbf61752183c1ab19da77ef431cbac2fda4ddd62ed1",
+    "sealed_sha256": "55a38ca1333b7cb53138cb5b6c9ea982d71972b0b0b742654bd14ff5be61fc76",
+    "criteria_mtime_utc": "2027-01-09T21:00:00+00:00"
+  },
+  "verdict": "REFUSED",
+  "reasons": [
+    "CRITERIA_MODIFIED_AFTER_START"
+  ],
+  "decision_grade": false
+}

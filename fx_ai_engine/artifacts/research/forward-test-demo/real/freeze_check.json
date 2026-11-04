@@ -1,0 +1,14 @@
+{
+  "tool": "r10_freeze_check",
+  "checked_at_utc": "2026-11-04T06:29:48.211637+00:00",
+  "repo_root": "/Users/raynj/Desktop/Forex-automation/.worktrees/validation-wave4-forward-test",
+  "manifest_sha256": "9cda1e086c42a6c1e72bf0a0439fe391b0802341a9aa538afb29cd1baaddfc46",
+  "verdict": "MATCH",
+  "frozen_at_utc": "2026-11-04T06:29:48.159507+00:00",
+  "label": "demo: research/validation-wave4-forward-test worktree",
+  "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+  "git_commit": "fa466d8ba396f74f5ee2c8b63b1d8c5ba97dcd8a",
+  "protected_files_checked": 12,
+  "mismatches": [],
+  "notes": []
+}
