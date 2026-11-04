@@ -74,5 +74,8 @@ def test_record_consecutive_loss_update_keeps_dirty_when_checkpoint_fails(monkey
 
 
 def test_engine_evaluate_symbol_has_no_ai_tp_scaling_hook() -> None:
-    source = inspect.getsource(Engine._evaluate_symbol)
+    from application import decision_cycle
+
+    # Engine._evaluate_symbol delegates to decision_cycle.evaluate_symbol since the Phase 4 split.
+    source = inspect.getsource(Engine._evaluate_symbol) + inspect.getsource(decision_cycle.evaluate_symbol)
     assert "_apply_ai_tp_scaling" not in source
