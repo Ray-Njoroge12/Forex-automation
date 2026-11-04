@@ -124,6 +124,8 @@ class FileBridgeConnection(MT5Connection):
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._cache: dict[Path, _CachedFile] = {}
         self._last_currency: str | None = None
+        # (login, server) of the validated snapshot that supplied ``_last_currency``.
+        self._last_currency_identity: tuple[int, str] | None = None
 
     # ------------------------------------------------------------------
     # File helpers
@@ -262,6 +264,7 @@ class FileBridgeConnection(MT5Connection):
         currency = snapshot.get("currency")
         if isinstance(currency, str) and currency.strip():
             self._last_currency = currency
+            self._last_currency_identity = (login, server)
         return snapshot
 
     def _account_currency(self) -> str | None:
@@ -277,8 +280,36 @@ class FileBridgeConnection(MT5Connection):
         try:
             currency = self._account_snapshot_payload(require_symbols_ok=False).get("currency")
         except ValueError:  # FileBridgeDataError or an unparsable timestamp
-            return self._last_currency if self._snapshot_unavailable() else None
+            return self._identity_confirmed_cached_currency() if self._snapshot_unavailable() else None
         return currency if isinstance(currency, str) and currency.strip() else None
+
+    def _identity_confirmed_cached_currency(self) -> str | None:
+        """The cached validated currency, only while a fresh status confirms the same account.
+
+        The cache is bound to the login and server of the snapshot that supplied it. A status that
+        cannot be read, names another account, or names another currency gives ``None`` (and drops
+        the cache when the account differs), so one account's scale is never applied to another's money.
+        """
+        if self._last_currency is None or self._last_currency_identity is None:
+            return None
+        try:
+            status = self._read_status(require_symbols_ok=False)
+        except ValueError:  # FileBridgeDataError or an unparsable timestamp
+            return None
+        identity = (status.get("login"), status.get("server"))
+        if identity != self._last_currency_identity or (self.connected and identity != (self.login, self.server)):
+            if identity != self._last_currency_identity:
+                self._clear_cached_currency()
+            return None
+        status_currency = status.get("account_currency")
+        if isinstance(status_currency, str) and status_currency.strip().upper() != self._last_currency.strip().upper():
+            return None
+        return self._last_currency
+
+    def _clear_cached_currency(self) -> None:
+        self._last_currency = None
+        self._last_currency_identity = None
+
     def _snapshot_unavailable(self) -> bool:
         """True when the account snapshot is missing, unreadable, not an object, or stale (not merely invalid)."""
         try:
@@ -322,6 +353,8 @@ class FileBridgeConnection(MT5Connection):
                     raise FileBridgeDataError("EA reports no authenticated account")
                 if not isinstance(status.get("server"), str) or not status["server"].strip():
                     raise FileBridgeDataError("EA reports no account server")
+                if self._last_currency_identity != (login, status["server"]):
+                    self._clear_cached_currency()  # another account: never reuse the old scale
                 self.login = login
                 self.server = str(status.get("server") or "")
                 self.connected = True

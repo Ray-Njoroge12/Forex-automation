@@ -504,15 +504,76 @@ def test_file_bridge_history_with_stale_currency_evidence_returns_nothing(tmp_pa
 
 
 def test_file_bridge_history_uses_only_a_validated_cached_currency(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    conn = _connect(bridge)
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)  # validated snapshot caches USC
+    (bridge / "feedback" / "account_snapshot.json").unlink()  # snapshot gone, same account still reported
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+
+
+def test_file_bridge_cached_currency_needs_a_fresh_status_confirming_the_account(tmp_path):
     from datetime import timedelta
 
     bridge = _usc_bridge(tmp_path)
     offset = [0]
     conn = FileBridgeConnection(bridge, clock=lambda: _now() + timedelta(seconds=offset[0]))
     assert conn.connect(retry_count=1), conn.last_error
-    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)  # validated snapshot caches USC
-    offset[0] = 60
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)
+    offset[0] = 60  # status and snapshot both stale: the account cannot be confirmed
+    assert conn._account_currency() is None
+
+
+@pytest.mark.parametrize("snapshot_state", ["missing", "stale", "malformed"])
+def test_file_bridge_account_switch_with_unavailable_snapshot_never_reuses_the_old_scale(tmp_path, snapshot_state):
+    """BR-002 review: account A (USC) is cached, then the terminal reports account B (USD)."""
+    from datetime import timedelta
+
+    bridge = _usc_bridge(tmp_path)
+    snapshot_path = bridge / "feedback" / "account_snapshot.json"
+    status_path = bridge / "market" / "status.json"
+    saved_snapshot = json.loads(snapshot_path.read_text())
+    conn = _connect(bridge)
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)  # caches USC for account A
     assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+
+    _edit_json(status_path, login=777001, server="Other-Server")  # account B, no account_currency
+    if snapshot_state == "missing":
+        snapshot_path.unlink()
+    elif snapshot_state == "malformed":
+        snapshot_path.write_text("{not json")
+    else:
+        saved_snapshot["timestamp"] = (_now() - timedelta(seconds=300)).isoformat()
+        snapshot_path.write_text(json.dumps(saved_snapshot))
+    # Still connected as A: B's money must not be scaled with A's currency.
+    _assert_history_and_contract_unavailable(conn, contract_code=None)
+    # Reconnect to B: the cache is dropped for good.
+    assert conn.connect(retry_count=1), conn.last_error
+    assert conn._last_currency is None and conn._last_currency_identity is None
+    _assert_history_and_contract_unavailable(conn)
+    # A matching validated USD snapshot for B is the only way back, with the identity scale.
+    usd_snapshot = dict(saved_snapshot, login=777001, server="Other-Server", currency="USD",
+                        timestamp=_now().isoformat())
+    snapshot_path.write_text(json.dumps(usd_snapshot))
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(4930.0)
+
+
+def test_file_bridge_cached_currency_is_dropped_when_status_names_another_account_without_reconnect(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    conn = _connect(bridge)
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)
+    (bridge / "feedback" / "account_snapshot.json").unlink()
+    _edit_json(bridge / "market" / "status.json", login=777001)
+    assert conn._account_currency() is None
+    assert conn._last_currency is None
+
+
+def test_file_bridge_cached_currency_is_ignored_when_status_currency_differs(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    conn = _connect(bridge)
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)
+    (bridge / "feedback" / "account_snapshot.json").unlink()
+    _edit_json(bridge / "market" / "status.json", account_currency="USD")
+    assert conn._account_currency() is None
 
 
 def test_file_bridge_history_with_conflicting_currencies_returns_nothing(tmp_path):
