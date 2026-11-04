@@ -3,9 +3,13 @@
 ``build_full_usd_bridge`` writes a complete, fresh set of EA exports for all six
 symbols. ``convert_bridge_to_usc`` rewrites a copy of it the way a cent (USC)
 account reports money: every money field and deal volume in cents.
+``convert_bridge_to_suffixed`` rewrites a copy the way an EA reports a broker
+that suffixes symbols (``EURUSDc``): the status gains the symbol and EA profile
+fields, symbols.json gains ``broker_symbol``; file names and payload symbols
+stay canonical.
 
 CLI (timestamps are fresh, so run a checker right after generating):
-``python -m tests.bridge_fixtures --kind usd|usc --out DIR``
+``python -m tests.bridge_fixtures --kind usd|usc|suffixed --out DIR``
 """
 from __future__ import annotations
 
@@ -63,6 +67,10 @@ def build_full_usd_bridge(
         "symbols": {symbol: _symbol_spec(symbol) for symbol in SYMBOLS},
     })
     _write(root / "market" / "calendar.json", [])
+    status_path = root / "market" / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status.update(terminal_trade_allowed=True, ea_trade_allowed=True, account_trade_allowed=True)
+    _write(status_path, status)
     return root
 
 
@@ -113,18 +121,61 @@ def convert_bridge_to_usc(src: Path, dst: Path, balance_usd: float | None = None
     return dst
 
 
+SUFFIXED_PROFILE = {
+    "account_margin_mode": "HEDGING",
+    "account_currency": "USD",
+    "max_spread_pips_input": 2.0,
+    "live_guard": {"enabled": False},
+}
+
+
+def convert_bridge_to_suffixed(
+    src: Path,
+    dst: Path,
+    suffix: str = "c",
+    symbols_ok: bool = True,
+    symbol_errors: tuple[str, ...] | list[str] = (),
+    profile: dict | None = None,
+) -> Path:
+    """Copy *src* to *dst* and add the EA symbol-suffix and profile fields."""
+    src, dst = Path(src), Path(dst)
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    status_path = dst / "market" / "status.json"
+    status = _load(status_path)
+    status["symbol_suffix"] = suffix
+    status["symbols_ok"] = bool(symbols_ok)
+    status["symbol_errors"] = list(symbol_errors)
+    for key in ("account_margin_mode", "account_currency", "max_spread_pips_input", "live_guard"):
+        if profile and key in profile:
+            status[key] = profile[key]
+    _write(status_path, status)
+
+    symbols_path = dst / "market" / "symbols.json"
+    if symbols_path.exists():
+        symbols = _load(symbols_path)
+        for canonical, spec in symbols.get("symbols", {}).items():
+            spec["broker_symbol"] = canonical + suffix
+        _write(symbols_path, symbols)
+    return dst
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write a fixture bridge with fresh timestamps.")
-    parser.add_argument("--kind", choices=("usd", "usc"), required=True)
+    parser.add_argument("--kind", choices=("usd", "usc", "suffixed"), required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     now = datetime.now(timezone.utc)
     if args.kind == "usd":
         build_full_usd_bridge(args.out, now)
-    else:
+    elif args.kind == "usc":
         with tempfile.TemporaryDirectory() as tmp:
             usd = build_full_usd_bridge(Path(tmp) / "usd", now)
             convert_bridge_to_usc(usd, args.out)
+    else:
+        with tempfile.TemporaryDirectory() as tmp:
+            usd = build_full_usd_bridge(Path(tmp) / "usd", now)
+            convert_bridge_to_suffixed(usd, args.out, "c", profile=SUFFIXED_PROFILE)
     print(f"wrote {args.kind} bridge to {args.out}")
     return 0
 
