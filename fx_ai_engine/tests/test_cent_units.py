@@ -468,7 +468,7 @@ def test_usc_engine_end_to_end(tmp_path, monkeypatch, isolated_db):
 CURRENCY_UNKNOWN = "FILE_BRIDGE_ACCOUNT_CURRENCY_UNKNOWN"
 
 
-def _assert_history_and_contract_unavailable(conn: FileBridgeConnection, *, contract_code: str = CURRENCY_UNKNOWN) -> None:
+def _assert_history_and_contract_unavailable(conn: FileBridgeConnection, *, contract_code: str | None = CURRENCY_UNKNOWN) -> None:
     assert conn.get_position_history_summary(999) is None
     assert conn.last_error.code == CURRENCY_UNKNOWN
     conn.last_error = None
@@ -476,7 +476,8 @@ def _assert_history_and_contract_unavailable(conn: FileBridgeConnection, *, cont
     assert conn.last_error.code == CURRENCY_UNKNOWN
     conn.last_error = None
     assert conn.get_symbol_execution_contract("EURUSD") is None
-    assert conn.last_error.code == contract_code
+    if contract_code is not None:
+        assert conn.last_error.code == contract_code
 
 
 def test_file_bridge_history_without_currency_evidence_returns_nothing_then_recovers(tmp_path):
@@ -523,6 +524,67 @@ def test_file_bridge_history_with_conflicting_currencies_returns_nothing(tmp_pat
     _assert_history_and_contract_unavailable(FileBridgeConnection(bridge))
 
 
+def _edit_json(path: Path, **changes) -> None:
+    payload = json.loads(path.read_text())
+    payload.update(changes)
+    path.write_text(json.dumps(payload))
+REJECTED_SNAPSHOTS = {
+    "wrong_login": ("feedback/account_snapshot.json", {"login": 1}),
+    "wrong_server": ("feedback/account_snapshot.json", {"server": "Other-Server"}),
+    "not_authenticated": ("feedback/account_snapshot.json", {"account_authenticated": False}),
+    "terminal_disconnected": ("feedback/account_snapshot.json", {"terminal_connected": False}),
+    "account_type_differs": ("feedback/account_snapshot.json", {"account_is_demo": True, "_status_demo": False}),
+    "balance_not_finite": ("feedback/account_snapshot.json", {"balance": "NaN"}),
+    "equity_missing": ("feedback/account_snapshot.json", {"equity": None}),
+    "status_server_offset_invalid": ("market/status.json", {"server_offset_valid": False}),
+    "status_terminal_disconnected": ("market/status.json", {"terminal_connected": False}),
+}
+@pytest.mark.parametrize("case", sorted(REJECTED_SNAPSHOTS))
+def test_file_bridge_history_rejects_currency_from_an_invalid_fresh_snapshot_then_recovers(tmp_path, case):
+    bridge = _usc_bridge(tmp_path)
+    snapshot_path = bridge / "feedback" / "account_snapshot.json"
+    status_path = bridge / "market" / "status.json"
+    good_snapshot, good_status = snapshot_path.read_text(), status_path.read_text()
+    relative, changes = REJECTED_SNAPSHOTS[case]
+    changes = dict(changes)
+    if "_status_demo" in changes:  # snapshot and status disagree on the account type
+        _edit_json(status_path, account_is_demo=changes.pop("_status_demo"))
+        changes["account_is_demo"] = not json.loads(status_path.read_text())["account_is_demo"]
+    _edit_json(bridge / relative, **changes)
+    conn = FileBridgeConnection(bridge)
+    assert conn._account_currency() is None
+    _assert_history_and_contract_unavailable(conn, contract_code=None)
+    snapshot_path.write_text(good_snapshot)
+    status_path.write_text(good_status)
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+    assert conn.get_trade_history_summary("AI_TEST_1")["profit_loss"] == pytest.approx(49.3)
+def test_file_bridge_invalid_fresh_snapshot_ignores_a_previously_cached_currency(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    conn = _connect(bridge)
+    assert conn.get_account_snapshot()["balance"] == pytest.approx(10.0)  # validated snapshot caches USC
+    _edit_json(bridge / "feedback" / "account_snapshot.json", login=1)  # a different account answers
+    assert conn.get_position_history_summary(999) is None
+    assert conn.last_error.code == CURRENCY_UNKNOWN
+    assert conn.get_trade_history_summary("AI_TEST_1") is None
+def test_file_bridge_status_currency_alone_is_not_evidence_and_is_not_cached(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    snapshot_path = bridge / "feedback" / "account_snapshot.json"
+    saved = snapshot_path.read_text()
+    snapshot_path.unlink()
+    _edit_json(bridge / "market" / "status.json", account_currency="USC")
+    conn = _connect(bridge)
+    assert conn._account_currency() is None
+    _assert_history_and_contract_unavailable(conn)
+    snapshot_path.write_text(saved)
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+def test_file_bridge_history_still_works_when_only_the_symbols_gate_fails(tmp_path):
+    bridge = _usc_bridge(tmp_path)
+    _edit_json(bridge / "market" / "status.json", symbols_ok=False, symbol_errors=["EURUSD"])
+    conn = FileBridgeConnection(bridge)
+    assert conn.get_position_history_summary(999)["profit_loss"] == pytest.approx(49.3)
+    assert conn.get_trade_history_summary("AI_TEST_1")["profit_loss"] == pytest.approx(49.3)
+    assert conn.get_symbol_execution_contract("EURUSD") is None  # the contract reader stays gated
+    assert conn.last_error.code == "FILE_BRIDGE_SYMBOLS_NOT_OK"
 def _usc_deals():
     def deal(ticket, entry, deal_type, profit, comment):
         return SimpleNamespace(

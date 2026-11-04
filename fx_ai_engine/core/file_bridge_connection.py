@@ -231,12 +231,12 @@ class FileBridgeConnection(MT5Connection):
             return None
         return offset if type(offset) is int else None
 
-    def _account_snapshot_payload(self) -> dict[str, Any]:
+    def _account_snapshot_payload(self, *, require_symbols_ok: bool = True) -> dict[str, Any]:
         snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
         if not isinstance(snapshot, dict):
             raise FileBridgeDataError("account snapshot is not an object")
         self._require_fresh(snapshot.get("timestamp"), ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS, "account snapshot")
-        status = self._status()
+        status = self._read_status(require_symbols_ok=require_symbols_ok)
         login, server = status.get("login"), status.get("server")
         if (type(login) is not int or login <= 0 or not isinstance(server, str) or not server.strip()
                 or type(snapshot.get("login")) is not int or snapshot.get("login") != login
@@ -265,44 +265,40 @@ class FileBridgeConnection(MT5Connection):
         return snapshot
 
     def _account_currency(self) -> str | None:
-        """Account currency from validated evidence, else the last validated value, else ``None``.
-
-        Evidence is a fresh, schema-valid status.json (``account_currency``) or a
-        fresh account snapshot (``currency``), read without the ``symbols_ok``
-        gate so history stays available. ``None`` means the currency is unknown;
-        it is never defaulted to USD. When both files name a currency and they
-        differ, the answer is ``None``. Records no error: callers do.
+        """Account currency from a fully validated snapshot, else the last validated value, else ``None``.
+        The snapshot passes the same validation as every account read (freshness,
+        identity, authentication, connectivity, account type, money fields); only
+        the ``symbols_ok`` gate is skipped so history stays available. A status
+        ``account_currency`` alone is never enough and never cached. ``None``
+        means the currency is unknown and is never defaulted to USD. The cached
+        value covers only a missing, unreadable or stale snapshot; a fresh
+        snapshot that fails validation gives ``None``. Records no error: callers do.
         """
-        found: list[str] = []
         try:
-            value = self._read_status(require_symbols_ok=False).get("account_currency")
-            if isinstance(value, str) and value.strip():
-                found.append(value)
+            currency = self._account_snapshot_payload(require_symbols_ok=False).get("currency")
         except ValueError:  # FileBridgeDataError or an unparsable timestamp
-            pass
+            return self._last_currency if self._snapshot_unavailable() else None
+        return currency if isinstance(currency, str) and currency.strip() else None
+    def _snapshot_unavailable(self) -> bool:
+        """True when the account snapshot is missing, unreadable, not an object, or stale (not merely invalid)."""
         try:
             snapshot = self._read_json(self.feedback_dir / "account_snapshot.json")
-            if isinstance(snapshot, dict):
-                self._require_fresh(snapshot.get("timestamp"), ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS, "account snapshot")
-                value = snapshot.get("currency")
-                if isinstance(value, str) and value.strip():
-                    found.append(value)
+        except FileBridgeDataError:
+            return True
+        if not isinstance(snapshot, dict):
+            return True
+        try:
+            age = (self._now() - _parse_utc(snapshot.get("timestamp"))).total_seconds()
         except ValueError:
-            pass
-        if len({item.strip().upper() for item in found}) > 1:
-            return None
-        if found:
-            self._last_currency = found[0]
-            return found[0]
-        return self._last_currency
-
+            return False  # unparsable timestamp: invalid, not merely unavailable
+        return age > ACCOUNT_SNAPSHOT_MAX_AGE_SECONDS
     def _unit_scale(self) -> float | None:
         """Account-currency to USD multiplier, or ``None`` (with a bridge error) when the currency is unknown."""
         currency = self._account_currency()
         if currency is None:
             self._fail(
                 "FILE_BRIDGE_ACCOUNT_CURRENCY_UNKNOWN",
-                "account currency cannot be established from a fresh status or account snapshot",
+                "account currency cannot be established from a validated account snapshot",
             )
             return None
         return account_unit_scale(currency)
@@ -328,9 +324,6 @@ class FileBridgeConnection(MT5Connection):
                     raise FileBridgeDataError("EA reports no account server")
                 self.login = login
                 self.server = str(status.get("server") or "")
-                currency = status.get("account_currency")
-                if isinstance(currency, str) and currency.strip():
-                    self._last_currency = currency
                 self.connected = True
                 self.last_error = None
                 logger.info(
