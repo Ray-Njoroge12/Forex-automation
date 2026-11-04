@@ -368,3 +368,177 @@ def test_spread_cap_logic_and_default_are_unchanged(source):
     assert "double effectiveSpreadLimit = MathMin(MaxSpreadPips, signalMaxSpreadPips);" in body
     assert "if(spreadPips > effectiveSpreadLimit)" in body
     assert '"REJECTED_SPREAD"' in body
+
+
+# ---------------------------------------------------------------- C5 live-account guard
+
+
+def test_live_guard_inputs_default_to_closed(source):
+    assert "input bool RequireDemoAccount = true;" in source
+    assert "input bool AllowLiveAccount = false;" in source
+    assert "input double LiveMaxLotPerOrder = 0.0;" in source
+    assert "input int LiveMaxOrdersPerDay = 0;" in source
+
+
+def test_real_account_means_trade_mode_is_not_demo(source):
+    body = _function_body(source, "IsRealAccount")
+    assert "AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO" in body
+
+
+def test_kill_switch_file_lives_in_the_root_folder(source):
+    assert 'string KillSwitchPath() { return RootFolder + "\\\\KILL_SWITCH"; }' in source
+    assert "FileIsExist(KillSwitchPath())" in _function_body(source, "KillSwitchPresent")
+
+
+def test_live_guard_checks_every_condition_with_a_reason(source):
+    body = _function_body(source, "LiveGuardAllowsSignal")
+    real_block = body[body.index("if(IsRealAccount())") : body.index("if(KillSwitchPresent())")]
+    for condition in (
+        "if(RequireDemoAccount)",
+        "if(!AllowLiveAccount)",
+        "if(!(LiveMaxLotPerOrder > 0.0))",
+        "if(!(LiveMaxOrdersPerDay > 0))",
+    ):
+        assert condition in real_block, condition
+    assert real_block.count('reason = "') == 4
+    assert "if(KillSwitchPresent())" in body and "kill switch file present" in body
+    assert "if(LiveMaxOrdersPerDay > 0)" in body
+    assert "ReadLiveOrderCount(count, lastTradeId)" in body
+    assert "count >= LiveMaxOrdersPerDay" in body
+    assert "daily order cap reached" in body
+    assert body.count("return false;") >= 7
+    assert body.rstrip().endswith("return true;")
+
+
+def test_live_guard_gate_rejects_with_feedback_and_consumes_the_signal(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    start = body.index("if(!LiveGuardAllowsSignal(liveGuardReason))")
+    gate = body[start : body.index("return;", start)]
+    assert 'WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);' in gate
+    assert "FileDelete(filePath);" in gate
+    assert 'LogDebug("Live guard reject: " + liveGuardReason' in gate  # precise reason in ea_debug.log
+
+
+def test_gate_order_is_expiry_then_account_mode_then_live_guard_then_symbol(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    order = [
+        "REJECTED_EXPIRED",
+        "if(!AccountModeAllowsTrading())",
+        "if(!LiveGuardAllowsSignal(liveGuardReason))",
+        "if(!g_symbols_ok)",
+        "string symbol = BrokerSymbol(canonicalSymbol);",
+        "SymbolSelect(symbol",
+    ]
+    positions = [body.index(item) for item in order]
+    assert positions == sorted(positions)
+
+
+def test_old_top_of_function_demo_return_is_gone(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    assert "Demo account required; refusing" not in source
+    # RequireDemoAccount is now only evaluated inside the live guard
+    assert "RequireDemoAccount" not in body
+    assert "RequireDemoAccount" in _function_body(source, "LiveGuardAllowsSignal")
+
+
+def test_lot_ceiling_steps_down_with_an_epsilon_and_rejects_below_minimum(source):
+    body = _function_body(source, "ApplyLiveLotCeiling")
+    assert "MathFloor(cap / step + 1e-9) * step" in body
+    assert "NormalizeDouble(" in body and "VolumeDigits(sym)" in body
+    assert "capped < minLot - 1e-9" in body
+    assert "return false;" in body
+    assert "if(capped < lot)" in body  # never raises the lot
+    assert "lot = capped;" in body
+    assert "lot = cap" not in body.replace("lot = capped", "")
+    assert "if(!(cap > 0.0) || lot <= cap)" in body
+
+
+def test_lot_ceiling_runs_after_the_minimum_lot_check_and_rejects_with_live_guard(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    assert body.index("finalLot < SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN)") < body.index("ApplyLiveLotCeiling(symbol, finalLot, lotGuardReason)")
+    assert body.index("ApplyLiveLotCeiling(symbol, finalLot, lotGuardReason)") < body.index("PreflightMarketOrder(symbol")
+    start = body.index("if(!ApplyLiveLotCeiling(")
+    gate = body[start : body.index("return;", start)]
+    assert 'WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);' in gate
+    assert "FileDelete(filePath);" in gate
+
+
+def test_order_counter_file_is_under_the_feedback_folder_and_not_an_execution_file(source):
+    assert 'string LiveOrdersFilePath() { return FeedbackFolder() + "\\\\live_orders_day.json"; }' in source
+    # bridge/execution_feedback.py reads execution_*.json; the EA globs management_state_*.json
+    assert not "live_orders_day.json".startswith(("execution_", "management_state_", "submission_", "market_quotes"))
+
+
+def test_order_counter_is_keyed_by_utc_day_and_fails_closed_on_read(source):
+    day = _function_body(source, "UtcDayString")
+    assert "StringSubstr(IsoTimestampUtc(), 0, 10)" in day
+    body = _function_body(source, "ReadLiveOrderCount")
+    assert "if(!FileIsExist(path))" in body  # missing file means zero orders
+    assert "return true;" in body[body.index("if(!FileIsExist(path))") :][:80]
+    assert "if(!ReadTextFile(path, content))" in body
+    assert 'ExtractJsonString(content, "utc_day", day)' in body
+    assert 'ExtractJsonDouble(content, "orders", orders)' in body
+    assert "if(day != today)" in body
+    assert '"1970"' in body  # unavailable clock must not reset the day
+
+
+def test_order_counter_write_is_atomic_verified_and_fails_closed(source):
+    body = _function_body(source, "RecordLiveOrderIntent")
+    assert "if(!(LiveMaxOrdersPerDay > 0))" in body
+    assert "PublishAtomic(LiveOrdersFilePath(), payload)" in body
+    assert "ReadLiveOrderCount(verifyCount, verifyTradeId)" in body
+    assert "verifyCount != next" in body
+    assert "if(lastTradeId == tradeId)" in body  # idempotent for a retried trade id
+    assert "count >= LiveMaxOrdersPerDay" in body
+    assert body.count("return false;") == 4
+    assert '\\"utc_day\\":\\"" + UtcDayString()' in body
+
+
+def test_order_counter_is_recorded_before_the_submission_marker(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    record = body.index("RecordLiveOrderIntent(tradeId, counterReason)")
+    marker = body.index("WriteTextFile(submissionMarker, tradeId)")
+    assert body.index("PreflightMarketOrder(symbol") < record < marker
+    start = body.index("if(!RecordLiveOrderIntent(")
+    gate = body[start : body.index("return;", start)]
+    assert '"REJECTED_LIVE_GUARD"' in gate
+    assert "FileDelete(filePath);" in gate
+
+
+def test_status_publishes_the_live_guard_object(source):
+    status = _function_body(source, "WriteMarketStatus")
+    assert '\\"live_guard\\":" + BuildLiveGuardJson()' in status
+    body = _function_body(source, "BuildLiveGuardJson")
+    for key in ("account_real", "require_demo", "allow_live", "max_lot", "max_orders_per_day", "orders_today", "kill_switch"):
+        assert f'\\"{key}\\":' in body, key
+    assert "ReadLiveOrderCount(count, lastTradeId) ? count : -1" in body
+    assert "DoubleToString(LiveMaxLotPerOrder, 8)" in body
+
+
+def test_kill_switch_never_touches_position_management(source):
+    for name in (
+        "ManageOpenPositions",
+        "SweepClosedManagedPositions",
+        "FinalizeClosedPosition",
+        "OnTradeTransaction",
+        "OnTimer",
+    ):
+        body = _function_body(source, name)
+        for token in ("KillSwitch", "LiveGuard", "KILL_SWITCH"):
+            assert token not in body, f"{name} references {token}"
+    assert "PositionClose(" not in source.replace("PositionClosePartial(", "")
+    callers = [m.start() for m in re.finditer(r"KillSwitchPresent\(\)", _mask(source))]
+    assert len(callers) == 3  # definition, LiveGuardAllowsSignal, BuildLiveGuardJson
+
+
+def test_trade_functions_are_only_reached_after_the_guards(source):
+    body = _function_body(source, "ProcessPendingSignal")
+    first_send = min(body.index(call) for call in ("trade.Buy(", "trade.Sell(", "trade.BuyLimit(", "trade.SellLimit("))
+    for gate in (
+        "if(!AccountModeAllowsTrading())",
+        "if(!LiveGuardAllowsSignal(liveGuardReason))",
+        "if(!g_symbols_ok)",
+        "if(!ApplyLiveLotCeiling(",
+        "if(!RecordLiveOrderIntent(",
+    ):
+        assert body.index(gate) < first_send, gate

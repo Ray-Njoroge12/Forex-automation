@@ -168,7 +168,13 @@ int OnInit()
    EventSetTimer(PollIntervalSeconds);
    LogDebug("OnInit: FX_Execution Started version=" + EA_VERSION + " magic=" + IntegerToString(MagicNumber));
    ResolveSymbols();
-   LogDebug("OnInit: symbol_suffix='" + SymbolSuffix + "' symbols_ok=" + (g_symbols_ok ? "true" : "false"));
+   LogDebug("OnInit: symbol_suffix='" + SymbolSuffix + "' symbols_ok=" + (g_symbols_ok ? "true" : "false") +
+            " margin_mode=" + AccountMarginModeName() + " max_spread_pips_input=" + DoubleToString(MaxSpreadPips, 4));
+   LogDebug("OnInit: live_guard account_real=" + (IsRealAccount() ? "true" : "false") +
+            " require_demo=" + (RequireDemoAccount ? "true" : "false") +
+            " allow_live=" + (AllowLiveAccount ? "true" : "false") +
+            " max_lot=" + DoubleToString(LiveMaxLotPerOrder, 8) +
+            " max_orders_per_day=" + IntegerToString(LiveMaxOrdersPerDay));
    WriteAccountSnapshot();
    ExportMarketData(true);
    return(INIT_SUCCEEDED);
@@ -437,6 +443,7 @@ void WriteMarketStatus(const long offset, const bool offsetValid)
    payload += "\"account_margin_mode\":\"" + AccountMarginModeName() + "\",";
    payload += "\"account_currency\":\"" + JsonEscape(AccountInfoString(ACCOUNT_CURRENCY)) + "\",";
    payload += "\"max_spread_pips_input\":" + DoubleToString(MaxSpreadPips, 4) + ",";
+   payload += "\"live_guard\":" + BuildLiveGuardJson() + ",";
    payload += "\"latest_closed_bars\":{";
    for(int s = 0; s < EXPORT_SYMBOLS; s++)
    {
@@ -1652,13 +1659,177 @@ string BuildManagementStateError()
    return "managed_positions=" + IntegerToString(managed) + "/" + IntegerToString(total) + " missing_tickets=" + BuildManagedTicketsJson(false);
 }
 
+//+------------------------------------------------------------------+
+//| Live-account guard (C5): real-account gate, kill switch, lot      |
+//| ceiling and a restart-safe per-UTC-day order counter              |
+//+------------------------------------------------------------------+
+bool IsRealAccount()
+{
+   return (AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO);
+}
+
+// Any file at this path blocks new orders. It never closes or stops managing positions.
+string KillSwitchPath() { return RootFolder + "\\KILL_SWITCH"; }
+
+bool KillSwitchPresent()
+{
+   return FileIsExist(KillSwitchPath());
+}
+
+// Not named execution_*: bridge/execution_feedback.py reads every execution_*.json in this folder.
+string LiveOrdersFilePath() { return FeedbackFolder() + "\\live_orders_day.json"; }
+
+string UtcDayString()
+{
+   return StringSubstr(IsoTimestampUtc(), 0, 10);
+}
+
+// Orders recorded for the current UTC day. A missing file means 0. A file that
+// exists but cannot be read or parsed, or an unavailable clock, returns false (fail closed).
+bool ReadLiveOrderCount(int &count, string &lastTradeId)
+{
+   count = 0;
+   lastTradeId = "";
+   string today = UtcDayString();
+   if(StringSubstr(today, 0, 4) == "1970")
+      return false;
+   string path = LiveOrdersFilePath();
+   if(!FileIsExist(path))
+      return true;
+   string content;
+   if(!ReadTextFile(path, content))
+      return false;
+   string day = "";
+   double orders = 0.0;
+   if(!ExtractJsonString(content, "utc_day", day) || !ExtractJsonDouble(content, "orders", orders) || orders < 0.0)
+      return false;
+   if(day != today)
+      return true;
+   count = (int)MathRound(orders);
+   ExtractJsonString(content, "last_trade_id", lastTradeId);
+   return true;
+}
+
+// Counts one order for today before the submission marker is written. Idempotent per
+// trade id, so a retry after a failed marker write does not count twice. Fails closed.
+bool RecordLiveOrderIntent(const string tradeId, string &reason)
+{
+   reason = "";
+   if(!(LiveMaxOrdersPerDay > 0))
+      return true;
+   int count = 0;
+   string lastTradeId = "";
+   if(!ReadLiveOrderCount(count, lastTradeId))
+   {
+      reason = "order counter file cannot be read: " + LiveOrdersFilePath();
+      return false;
+   }
+   if(lastTradeId == tradeId)
+      return true;
+   if(count >= LiveMaxOrdersPerDay)
+   {
+      reason = "daily order cap reached: " + IntegerToString(count) + "/" + IntegerToString(LiveMaxOrdersPerDay);
+      return false;
+   }
+   int next = count + 1;
+   string payload = "{\"utc_day\":\"" + UtcDayString() + "\",\"orders\":" + IntegerToString(next) +
+                    ",\"last_trade_id\":\"" + JsonEscape(tradeId) + "\"}";
+   if(!PublishAtomic(LiveOrdersFilePath(), payload))
+   {
+      reason = "order counter file cannot be written: " + LiveOrdersFilePath();
+      return false;
+   }
+   int verifyCount = 0;
+   string verifyTradeId = "";
+   if(!ReadLiveOrderCount(verifyCount, verifyTradeId) || verifyCount != next || verifyTradeId != tradeId)
+   {
+      reason = "order counter file failed read-back verification";
+      return false;
+   }
+   return true;
+}
+
+// Account, kill-switch and daily-cap conditions. On a real account every live
+// condition must hold. The kill switch and the daily cap also apply on demo
+// (the cap only when LiveMaxOrdersPerDay > 0 is set explicitly).
+bool LiveGuardAllowsSignal(string &reason)
+{
+   reason = "";
+   if(IsRealAccount())
+   {
+      if(RequireDemoAccount) { reason = "real account and RequireDemoAccount=true"; return false; }
+      if(!AllowLiveAccount) { reason = "real account and AllowLiveAccount=false"; return false; }
+      if(!(LiveMaxLotPerOrder > 0.0)) { reason = "real account and LiveMaxLotPerOrder is not > 0"; return false; }
+      if(!(LiveMaxOrdersPerDay > 0)) { reason = "real account and LiveMaxOrdersPerDay is not > 0"; return false; }
+   }
+   if(KillSwitchPresent())
+   {
+      reason = "kill switch file present: " + KillSwitchPath();
+      return false;
+   }
+   if(LiveMaxOrdersPerDay > 0)
+   {
+      int count = 0;
+      string lastTradeId = "";
+      if(!ReadLiveOrderCount(count, lastTradeId))
+      {
+         reason = "order counter file cannot be read: " + LiveOrdersFilePath();
+         return false;
+      }
+      if(count >= LiveMaxOrdersPerDay)
+      {
+         reason = "daily order cap reached: " + IntegerToString(count) + "/" + IntegerToString(LiveMaxOrdersPerDay);
+         return false;
+      }
+   }
+   return true;
+}
+
+// Reduces the lot to LiveMaxLotPerOrder, stepped down to the broker lot step. Only ever
+// lowers risk. Returns false when the capped lot would fall below the broker minimum.
+bool ApplyLiveLotCeiling(const string sym, double &lot, string &reason)
+{
+   reason = "";
+   const double cap = LiveMaxLotPerOrder;
+   if(!(cap > 0.0) || lot <= cap)
+      return true;
+   double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+   if(step <= 0.0)
+   {
+      reason = "lot step unavailable for " + sym;
+      return false;
+   }
+   double capped = NormalizeDouble(MathFloor(cap / step + 1e-9) * step, VolumeDigits(sym));
+   if(capped < minLot - 1e-9)
+   {
+      reason = "capped lot " + DoubleToString(capped, 8) + " is below broker minimum " + DoubleToString(minLot, 8);
+      return false;
+   }
+   if(capped < lot)
+      lot = capped;
+   return true;
+}
+
+string BuildLiveGuardJson()
+{
+   int count = 0;
+   string lastTradeId = "";
+   int ordersToday = ReadLiveOrderCount(count, lastTradeId) ? count : -1;
+   string out = "{";
+   out += "\"account_real\":" + (IsRealAccount() ? "true" : "false") + ",";
+   out += "\"require_demo\":" + (RequireDemoAccount ? "true" : "false") + ",";
+   out += "\"allow_live\":" + (AllowLiveAccount ? "true" : "false") + ",";
+   out += "\"max_lot\":" + DoubleToString(LiveMaxLotPerOrder, 8) + ",";
+   out += "\"max_orders_per_day\":" + IntegerToString(LiveMaxOrdersPerDay) + ",";
+   out += "\"orders_today\":" + IntegerToString(ordersToday) + ",";
+   out += "\"kill_switch\":" + (KillSwitchPresent() ? "true" : "false");
+   out += "}";
+   return out;
+}
+
 void ProcessPendingSignal()
 {
-   if(RequireDemoAccount && AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
-   {
-      LogDebug("Demo account required; refusing to process pending signals");
-      return;
-   }
    string fileName;
    if(!GetFirstPendingSignalFile(fileName))
       return;
@@ -1746,6 +1917,17 @@ void ProcessPendingSignal()
    {
       LogDebug("Account mode gate reject: margin mode is " + AccountMarginModeName() + ", hedging required trade_id=" + tradeId);
       WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_ACCOUNT_MODE", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+
+   // Live-account gate: real accounts need every live condition; the kill switch and an
+   // explicitly set daily cap apply on any account. No request was sent.
+   string liveGuardReason = "";
+   if(!LiveGuardAllowsSignal(liveGuardReason))
+   {
+      LogDebug("Live guard reject: " + liveGuardReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
       FileDelete(filePath);
       return;
    }
@@ -1848,6 +2030,20 @@ void ProcessPendingSignal()
       return;
    }
 
+   // Lot ceiling: only ever reduces the lot (stepped down to the lot step).
+   string lotGuardReason = "";
+   double lotBeforeCeiling = finalLot;
+   if(!ApplyLiveLotCeiling(symbol, finalLot, lotGuardReason))
+   {
+      LogDebug("Live guard reject: " + lotGuardReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
+   }
+   if(finalLot < lotBeforeCeiling)
+      LogDebug("Live lot ceiling applied: " + DoubleToString(lotBeforeCeiling, 8) + " -> " + DoubleToString(finalLot, 8) +
+               " (LiveMaxLotPerOrder=" + DoubleToString(LiveMaxLotPerOrder, 8) + ")");
+
    trade.SetTypeFilling(ResolveFilling(symbol));
    if(orderType != "LIMIT")
    {
@@ -1875,6 +2071,17 @@ void ProcessPendingSignal()
          FileDelete(filePath);
          return;
       }
+   }
+
+   // Count the order for today's cap before the submission marker exists, so a counter
+   // failure cannot leave a marker that later reads as EXECUTION_UNCERTAIN. Fails closed.
+   string counterReason = "";
+   if(!RecordLiveOrderIntent(tradeId, counterReason))
+   {
+      LogDebug("Live guard reject: " + counterReason + " trade_id=" + tradeId);
+      WriteExecutionFeedback(tradeId, 0, 0, "REJECTED_LIVE_GUARD", 0.0, 0.0, spread, finalLot, 0.0, 0.0);
+      FileDelete(filePath);
+      return;
    }
 
    // Persist intent before sending. If a restart occurs at any subsequent
