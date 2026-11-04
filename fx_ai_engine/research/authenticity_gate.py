@@ -33,10 +33,11 @@ from backtesting.unified_replay import (
     COST_SCENARIOS, EXIT_MODES, SYMBOLS, Candidate, CostModel, Frames, SimulationResult, pip_size,
 )
 from core.policy.envelope import canonical_policy_hash
+from core.strategy import DEFAULT_STRATEGY_ID
 from research import bias_audit, cost_stress
 from research.common import (
-    ARTIFACTS, add_source_args, dataset_hashes, load_frames, parse_ts, policy_for_variant, run_id,
-    run_replay_in_process, source_dir, write_json,
+    ARTIFACTS, add_source_args, add_strategy_args, dataset_hashes, load_frames, parse_ts, policy_for_variant,
+    resolve_strategy_args, run_id, run_replay_in_process, source_dir, write_json,
 )
 
 CHECK_ORDER = (
@@ -258,10 +259,15 @@ def render_gate_markdown(verdict: Mapping[str, Any]) -> str:
 def audit_replay(*, frames: Frames, policy: Mapping[str, object], cost: CostModel, candidates: Sequence[Candidate],
                  result: SimulationResult, exit_mode: str = "policy", r1_report: Mapping[str, Any] | None = None,
                  max_decisions: int = 60, seed: int = 7, min_breakeven_multiple: float = 2.0,
-                 context: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Gate one replay result. Integration hook for run_replay (see docs/research/validation-wave1-integration-notes.md)."""
+                 context: Mapping[str, Any] | None = None, strategy_id: str = DEFAULT_STRATEGY_ID,
+                 strategy_params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Gate one replay result. Integration hook for run_replay (see docs/research/validation-wave1-integration-notes.md).
+
+    ``strategy_id``/``strategy_params`` are used only when ``r1_report`` is None (R1 is then run on that strategy).
+    """
     if r1_report is None:
-        r1_report = bias_audit.run_bias_audit(frames, policy, COST_SCENARIOS["base"], max_decisions=max_decisions, seed=seed)
+        r1_report = bias_audit.run_bias_audit(frames, policy, COST_SCENARIOS["base"], max_decisions=max_decisions,
+                                              seed=seed, strategy_id=strategy_id, strategy_params=strategy_params)
     trades = result.trades
     checks = _r1_checks(r1_report) + [
         check_same_bar_fill(trades, candidates, frames, cost),
@@ -285,18 +291,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--min-breakeven-multiple", type=float, default=2.0)
     parser.add_argument("--out", type=Path, default=None)
+    add_strategy_args(parser)
     args = parser.parse_args(argv)
+    strategy_params = resolve_strategy_args(parser, args)
 
     frames = load_frames(bridge_dir=args.bridge_dir, data_dir=args.data_dir, symbols=args.symbols)
     policy, _ = policy_for_variant(args.variant)
     cost = COST_SCENARIOS[args.cost]
     start, end = parse_ts(args.start), parse_ts(args.end)
-    candidates, _, result = run_replay_in_process(frames, policy, cost, exit_mode=args.exit_mode, start=start, end=end)
+    strategy_kw = {"strategy_id": args.strategy, "strategy_params": strategy_params}
+    candidates, _, result = run_replay_in_process(frames, policy, cost, exit_mode=args.exit_mode, start=start, end=end,
+                                                  **strategy_kw)
     r1 = bias_audit.run_bias_audit(frames, policy, COST_SCENARIOS["base"], start=start, end=end,
-                                   max_decisions=args.max_decisions, seed=args.seed)
+                                   max_decisions=args.max_decisions, seed=args.seed, **strategy_kw)
     verdict = audit_replay(frames=frames, policy=policy, cost=cost, candidates=candidates, result=result,
                            exit_mode=args.exit_mode, r1_report=r1, min_breakeven_multiple=args.min_breakeven_multiple,
-                           context={"variant": args.variant, "source": str(source_dir(args)),
+                           context={"variant": args.variant, "source": str(source_dir(args)), **strategy_kw,
                                     "dataset_sha256_16": dataset_hashes(source_dir(args)),
                                     "symbols": [s for s in SYMBOLS if s in frames]})
     out = Path(args.out or ARTIFACTS / "r2" / run_id())

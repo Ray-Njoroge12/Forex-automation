@@ -29,12 +29,16 @@ from core.account_status import AccountStatus
 from core.bridge_utils import get_mt5_bridge_path
 from core.agents.adversarial_agent import AdversarialAgent
 from core.agents.portfolio_manager import PortfolioManager
-from core.agents.regime_agent import RegimeAgent
-from core.agents.technical_agent import TechnicalAgent
 from core.credentials import CredentialsError, load_mt5_credentials_from_env
 from core.evidence import build_runtime_evidence_context
 from core.env_loader import load_runtime_env
 from core.sentiment.sentiment_agent import SentimentAgent
+from core.strategy import (
+    DEFAULT_STRATEGY_ID,
+    StrategyNotLiveEligibleError,
+    build_strategy,
+    require_live_eligible,
+)
 from ml.signal_ranker import SignalRanker
 from ml.meta_labeler.shadow_runtime import (
     MetaLabelerShadowRuntime,
@@ -97,6 +101,10 @@ from application.market_data_service import (  # noqa: F401
 )
 
 logger = logging.getLogger("fx_ai_engine.main")
+
+# The only strategy the live/demo engine runs (ADR 0004). No CLI flag and no
+# environment variable: running another strategy live is an owner/SRS decision.
+LIVE_STRATEGY_ID = DEFAULT_STRATEGY_ID
 
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
@@ -554,6 +562,13 @@ class Engine:
         policy: Mapping[str, object] | None = None,
         repository: EngineRepository | None = None,
     ):
+        # Refuse research-only or unknown strategies before the bridge, the DB,
+        # the mock feedback or any agent is touched (owner decision 2026-11-04).
+        try:
+            require_live_eligible(LIVE_STRATEGY_ID)
+        except StrategyNotLiveEligibleError as exc:
+            logger.critical("STRATEGY_NOT_LIVE_ELIGIBLE strategy=%s reason=%s", exc.strategy_id, exc.reason)
+            raise
         self.bridge = bridge
         self.repository = SqliteEngineRepository() if repository is None else repository
         self.tracer = tracer
@@ -647,15 +662,21 @@ class Engine:
         # Only active when USE_SENTIMENT=1.
         _sentiment = SentimentAgent()
 
+        self.strategy_id = LIVE_STRATEGY_ID
+        self.strategies = {
+            sym: build_strategy(
+                LIVE_STRATEGY_ID,
+                symbol=sym,
+                fetch_ohlc=bridge.fetch_ohlc_data,
+                fetch_spread=bridge.get_live_spread,
+                policy=self.policy,
+                run_context="live",
+                on_error="reject",
+            )
+            for sym in SYMBOLS
+        }
         self.agents = {
             sym: {
-                "regime": RegimeAgent(sym, bridge.fetch_ohlc_data, policy=self.policy),
-                "technical": TechnicalAgent(
-                    sym,
-                    bridge.fetch_ohlc_data,
-                    bridge.get_live_spread,
-                    policy=self.policy,
-                ),
                 "adversarial": AdversarialAgent(
                     sym,
                     bridge.fetch_ohlc_data,
@@ -697,13 +718,14 @@ class Engine:
             override_fields["ML_PREDICT_THRESHOLD"]["active"],
         )
         logger.info(
-            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s shadow_enabled=%s shadow_model_loaded=%s shadow_threshold=%.3f canary_enabled=%s canary_mode=%s canary_stage=%s canary_kill_switch=%s",
+            "Runtime config: mode=%s label=%s evidence=%s stream=%s account_scope=%s mock=%s strategy=%s experiment=%s fixed_risk_usd=%s allow_non_srs_policy=%s max_spread_pips=%s ml_threshold=%.3f sentiment=%s ranker_loaded=%s shadow_enabled=%s shadow_model_loaded=%s shadow_threshold=%.3f canary_enabled=%s canary_mode=%s canary_stage=%s canary_kill_switch=%s",
             self.policy["MODE_ID"],
             self.policy["MODE_LABEL"],
             self.policy["EVIDENCE_LABEL"],
             self.evidence_context.evidence_stream,
             self.evidence_context.account_scope,
             self.use_mock,
+            self.strategy_id,
             self.policy.get("EXPERIMENT_TAG", "none"),
             self.policy.get("FIXED_RISK_USD"),
             non_srs_policy_allowed(),

@@ -2,7 +2,9 @@
 
 The order of stages is the SRS decision flow: Regime -> Technical -> Adversarial
 -> Portfolio Manager -> Hard Risk Engine -> [ML shadow/canary] -> reservation
--> Signal Router. Functions take the engine as their first argument.
+-> Signal Router. Regime and Technical are one strategy object per symbol
+(``engine.strategies``, built by ``core.strategy.build_strategy``; ADR 0004).
+Functions take the engine as their first argument.
 Persistence goes through ``engine.repository`` (``application.repository``).
 """
 from __future__ import annotations
@@ -18,7 +20,8 @@ from core.data_quality.freshness import evaluate_calendar_freshness
 from core.filters.calendar_filter import is_news_blackout
 from core.filters.session_filter import get_active_session, is_tradeable_session
 from core.schemas import technical_signal_to_payload
-from core.timeframes import TIMEFRAME_H1, TIMEFRAME_M15
+from core.strategy import STRATEGY_ERROR
+from core.timeframes import TIMEFRAME_M15
 from ml.meta_labeler.shadow_runtime import evaluate_canary_decision, preserve_primary_route_decision
 
 # Same logger name as before the split so log routing is unchanged.
@@ -94,47 +97,51 @@ def evaluate_symbol(engine, sym: str, decision_time: datetime, session_name: str
         return
 
     sym_agents = engine.agents[sym]
-    regime = sym_agents["regime"].evaluate(TIMEFRAME_H1)
-    if regime.regime in {"TRENDING_BULL", "TRENDING_BEAR"}:
+    # Strategy = Regime + Technical stages; the guard inside fails closed on errors (STRATEGY_ERROR).
+    decision = engine.strategies[sym].evaluate()
+    regime = decision.regime
+    if decision.regime_passed:
         engine._insert_funnel_event(
             decision_time=decision_time,
             stage="REGIME",
             outcome="PASS",
-            reason_code=regime.reason_code,
+            reason_code=decision.regime_reason_code,
             symbol=sym,
-            details=sym_agents["regime"].last_details,
+            details=decision.regime_details,
         )
     else:
         engine._insert_funnel_event(
             decision_time=decision_time,
             stage="REGIME",
             outcome="REJECT",
-            reason_code=regime.reason_code,
+            reason_code=decision.regime_reason_code,
             symbol=sym,
-            details=sym_agents["regime"].last_details,
+            details=decision.regime_details,
         )
         engine._insert_funnel_event(
             decision_time=decision_time,
             stage="TECHNICAL",
             outcome="SKIP",
-            reason_code="TECH_SKIPPED_REGIME_REJECTED",
+            reason_code=decision.reason_code,
             symbol=sym,
-            details=(
-                f"regime={regime.regime} regime_reason={regime.reason_code} "
-                f"trend_state={regime.trend_state}"
-            ),
+            details=decision.details,
         )
+        if decision.regime_reason_code == STRATEGY_ERROR:
+            engine._insert_risk_event(
+                STRATEGY_ERROR, "WARN",
+                f"symbol={sym} strategy={decision.strategy_id} {decision.regime_details}",
+            )
         return
-    technical = sym_agents["technical"].evaluate(regime, TIMEFRAME_M15, TIMEFRAME_H1)
+    technical = decision.signal
 
     if technical is None:
         engine._insert_funnel_event(
             decision_time=decision_time,
             stage="TECHNICAL",
             outcome="REJECT",
-            reason_code=sym_agents["technical"].last_reason_code,
+            reason_code=decision.reason_code,
             symbol=sym,
-            details=sym_agents["technical"].last_details,
+            details=decision.details,
         )
         return
     engine._insert_funnel_event(
@@ -143,7 +150,7 @@ def evaluate_symbol(engine, sym: str, decision_time: datetime, session_name: str
         outcome="PASS",
         reason_code=technical.reason_code,
         symbol=sym,
-        details=sym_agents["technical"].last_details,
+        details=decision.details,
         trade_id=technical.trade_id,
     )
 

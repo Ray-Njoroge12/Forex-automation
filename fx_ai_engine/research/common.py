@@ -10,13 +10,14 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
-from backtesting.run_replay import VARIANTS
+from backtesting.run_replay import VARIANTS, add_strategy_args, resolve_strategy_args  # noqa: F401 (re-exported)
 from backtesting.unified_replay import (
     COST_SCENARIOS, SYMBOLS, Candidate, CostModel, Frames, SimulationConfig, SimulationResult,
     generate_candidates, load_bridge_bar_exports, load_csv_frames, simulate,
 )
 from config_microcapital import apply_agent_threshold_overrides, get_policy_config
 from core.policy.envelope import canonical_policy_hash
+from core.strategy import DEFAULT_STRATEGY_ID
 
 PROJECT_ROOT = Path(__file__).parents[1]
 ARTIFACTS = PROJECT_ROOT / "artifacts" / "research"
@@ -67,13 +68,15 @@ def policy_for_variant(name: str) -> tuple[dict, str]:
 
 def run_replay_in_process(frames: Frames, policy: Mapping[str, object], cost: CostModel, *,
                           exit_mode: str = "policy", start: pd.Timestamp | None = None,
-                          end: pd.Timestamp | None = None
+                          end: pd.Timestamp | None = None, strategy_id: str = DEFAULT_STRATEGY_ID,
+                          strategy_params: Mapping[str, Any] | None = None,
                           ) -> tuple[list[Candidate], dict[str, Counter], SimulationResult]:
     """Same two stages as run_replay: candidates at base cost, then simulate at ``cost``."""
     candidates: list[Candidate] = []
     funnels: dict[str, Counter] = {}
     for symbol in [s for s in SYMBOLS if s in frames]:
-        cands, funnel = generate_candidates(symbol, frames, policy, COST_SCENARIOS["base"], start=start, end=end)
+        cands, funnel = generate_candidates(symbol, frames, policy, COST_SCENARIOS["base"], start=start, end=end,
+                                            strategy_id=strategy_id, strategy_params=strategy_params)
         candidates.extend(cands)
         funnels[symbol] = funnel
     candidates.sort(key=lambda c: (c.decision_time, SYMBOLS.index(c.symbol)))

@@ -11,6 +11,11 @@ SRS account halts disabled, so expectancy measures the signal itself:
     are anti-predictive);
   * min-stop rows show how much of the loss comes from costs on tight stops.
 The holdout period is excluded.
+
+--strategy / --strategy-params (as run_replay) produce the same controls at a
+hypothesis strategy's own entry times; the default output is
+artifacts/replay/edge_diagnostics.json for the default strategy and
+edge_diagnostics_<strategy_id>.json otherwise.
 """
 from __future__ import annotations
 
@@ -24,11 +29,14 @@ import numpy as np
 import pandas as pd
 
 from backtesting.replay_report import trade_metrics
-from backtesting.run_replay import DEFAULT_CACHE_DIR, install_sigterm_handler
+from backtesting.run_replay import (
+    DEFAULT_CACHE_DIR, add_strategy_args, install_sigterm_handler, resolve_strategy_args, strategy_report_fields,
+)
 from backtesting.unified_replay import (
     COST_SCENARIOS, SYMBOLS, CostModel, SimulationConfig, generate_all_candidates, load_csv_frames, simulate,
 )
 from config_microcapital import get_policy_config
+from core.strategy import DEFAULT_STRATEGY_ID
 
 ZERO_COST = CostModel("zero", 1.0, slippage_pips=0.0, commission_per_lot_usd=0.0, use_bar_spread=False,
                       spread_floor_pips={s: 0.0 for s in SYMBOLS})
@@ -51,7 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--no-cache", action="store_true")
+    add_strategy_args(parser)
     args = parser.parse_args(argv)
+    strategy_params = resolve_strategy_args(parser, args)
     install_sigterm_handler()
     cache_dir = None if args.no_cache else args.cache_dir.resolve()
     frames = load_csv_frames(args.data_dir)
@@ -61,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     start = pd.Timestamp(args.start, tz="UTC")
     end = min(frames[s]["M15"].index[-1] for s in SYMBOLS) - pd.DateOffset(months=args.holdout_months)
     candidates, _ = generate_all_candidates(args.data_dir, policy, COST_SCENARIOS["base"], start=start, end=end,
-                                            cache_dir=cache_dir)
+                                            cache_dir=cache_dir, strategy_id=args.strategy,
+                                            strategy_params=strategy_params)
     cfg = lambda mode: SimulationConfig(exit_mode=mode, start=start, end=end, fixed_sizing=True)
     rng = random.Random(5)
     randomised = [replace(c, signal=dict(c.signal, direction=rng.choice(["BUY", "SELL"]))) for c in candidates]
@@ -84,9 +95,12 @@ def main(argv: list[str] | None = None) -> int:
                          simulate(sub, frames, policy, COST_SCENARIOS["base"], cfg("policy"))))
         print(rows[-1], flush=True)
     stops = [c.signal["stop_pips"] for c in candidates]
-    summary = {"period": [start.isoformat(), end.isoformat()], "candidates": len(candidates),
-               "stop_pips_quartiles": [round(float(np.percentile(stops, q)), 2) for q in (25, 50, 75)], "rows": rows}
-    out = args.out or args.data_dir.parent.parent / "replay" / "edge_diagnostics.json"
+    summary = {**strategy_report_fields(args.strategy, strategy_params),
+               "period": [start.isoformat(), end.isoformat()], "candidates": len(candidates),
+               "stop_pips_quartiles": [round(float(np.percentile(stops, q)), 2) for q in (25, 50, 75)] if stops else [],
+               "rows": rows}
+    name = "edge_diagnostics.json" if args.strategy == DEFAULT_STRATEGY_ID else f"edge_diagnostics_{args.strategy}.json"
+    out = args.out or args.data_dir.parent.parent / "replay" / name
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"-> {out}")

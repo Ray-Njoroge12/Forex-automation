@@ -15,6 +15,13 @@ gate verdict is written next to the report as <stem>_gate.json, the report's
 first line says whether it is evidence, and the registry row carries
 gate_verdict and evidence_status. --no-gate skips R1/R2 and labels the report
 NOT EVIDENCE (ADR 0003).
+
+--strategy selects a registered strategy (core.strategy, ADR 0004; default
+trend_pullback_v1, the live strategy) and --strategy-params a JSON object of
+its parameters. Variants are threshold overrides of the default rules, so a
+non-default strategy accepts only --variants baseline. Strategy id and params go
+into the candidate and R1 cache keys, the report and the registry row; reports
+for a strategy that is not live-eligible say so on their second line.
 """
 from __future__ import annotations
 
@@ -37,6 +44,9 @@ from backtesting.unified_replay import (
 )
 from config_microcapital import apply_agent_threshold_overrides, get_policy_config
 from core.policy.envelope import canonical_policy_hash
+from core.strategy import (
+    DEFAULT_STRATEGY_ID, available_strategies, canonical_params, is_live_eligible, live_block_reason,
+)
 
 PROJECT_ROOT = Path(__file__).parents[1]
 REGISTRY = PROJECT_ROOT / "artifacts" / "experiments" / "registry.jsonl"
@@ -81,6 +91,39 @@ ASSUMPTIONS = (
 )
 
 
+def _strategy_params_arg(text: str) -> dict:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"--strategy-params is not valid JSON: {exc}") from None
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("--strategy-params must be a JSON object")
+    return value
+
+
+def add_strategy_args(parser: argparse.ArgumentParser) -> None:
+    """--strategy and --strategy-params, shared by run_replay, edge_diagnostics and the research CLIs."""
+    parser.add_argument("--strategy", default=DEFAULT_STRATEGY_ID, choices=available_strategies(),
+                        help=f"registered strategy (default {DEFAULT_STRATEGY_ID}, the live strategy)")
+    parser.add_argument("--strategy-params", type=_strategy_params_arg, default=None,
+                        help="JSON object of strategy parameters (default: the values frozen in its hypothesis card)")
+
+
+def resolve_strategy_args(parser: argparse.ArgumentParser, args) -> dict:
+    """Canonical params for args.strategy; argparse error (exit 2) if they are invalid."""
+    try:
+        return canonical_params(args.strategy, args.strategy_params)
+    except ValueError as exc:
+        parser.error(str(exc))  # exits with status 2
+
+
+def strategy_report_fields(strategy_id: str, params: dict) -> dict:
+    fields = {"strategy_id": strategy_id, "strategy_params": params, "live_eligible": is_live_eligible(strategy_id)}
+    if not fields["live_eligible"]:
+        fields["live_block_reason"] = live_block_reason(strategy_id)
+    return fields
+
+
 def _sha(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -109,13 +152,16 @@ def _section(trades, equity, start_balance, label_range, *, policy, frames, cost
     }
 
 
-def _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, end, cache_dir):
-    """R1 depends only on the policy, the data and the sample settings: compute once and cache."""
+def _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, end, cache_dir,
+                   strategy_id=DEFAULT_STRATEGY_ID, strategy_params=None):
+    """R1 depends only on the policy, the strategy, the data and the sample settings: compute once and cache."""
     from research import bias_audit
 
+    params = canonical_params(strategy_id, strategy_params)
     parts = {"policy_hash": policy_hash, "datasets": dataset_hashes, "symbols": list(symbols),
              "start": start.isoformat(), "end": end.isoformat(), "max_decisions": R1_MAX_DECISIONS,
-             "seed": R1_SEED, "r1_code": replay_cache.code_fingerprint(PROJECT_ROOT, R1_CODE_PATHS)}
+             "seed": R1_SEED, "r1_code": replay_cache.code_fingerprint(PROJECT_ROOT, R1_CODE_PATHS),
+             "strategy_id": strategy_id, "strategy_params": params}
     key = replay_cache.cache_key(R1_CACHE_KIND, **parts)
     meta = replay_cache.key_parts(R1_CACHE_KIND, **parts)
     if cache_dir is not None:
@@ -123,7 +169,8 @@ def _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, 
         if cached is not None:
             return cached
     report = bias_audit.run_bias_audit(frames, policy, COST_SCENARIOS["base"], start=start, end=end,
-                                       max_decisions=R1_MAX_DECISIONS, seed=R1_SEED)
+                                       max_decisions=R1_MAX_DECISIONS, seed=R1_SEED,
+                                       strategy_id=strategy_id, strategy_params=params)
     report = json.loads(json.dumps(report, default=str))  # same shape whether computed or cached
     if cache_dir is not None:
         replay_cache.store(cache_dir, R1_CACHE_KIND, key, report, meta)
@@ -173,7 +220,16 @@ def main(argv: list[str] | None = None) -> int:
                              "(position limits, exposure cap, correlation and throttle unchanged)")
     parser.add_argument("--no-gate", action="store_true",
                         help="skip the R1 bias audit and R2 authenticity gate; reports are labelled NOT EVIDENCE")
+    add_strategy_args(parser)
     args = parser.parse_args(argv)
+    strategy_id = args.strategy
+    strategy_params = resolve_strategy_args(parser, args)
+    if strategy_id != DEFAULT_STRATEGY_ID and list(args.variants) != ["baseline"]:
+        parser.error(f"--strategy {strategy_id} accepts only --variants baseline "
+                     "(variants are threshold overrides of the default rules)")
+    strategy_fields = strategy_report_fields(strategy_id, strategy_params)
+    research_only_line = ("" if strategy_fields["live_eligible"]
+                          else f"Research only: {strategy_fields['live_block_reason']}\n")
     install_sigterm_handler()
     symbols = tuple(s for s in SYMBOLS if s in set(args.symbols))
     cache_dir = None if args.no_cache else args.cache_dir.resolve()
@@ -198,12 +254,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[{variant}] generating candidates {start.date()} .. {data_end.date()} ...", flush=True)
         candidates, funnels = generate_all_candidates(data_dir, policy, COST_SCENARIOS["base"], symbols=symbols,
                                                       start=start, end=data_end, workers=args.workers,
-                                                      cache_dir=cache_dir)
+                                                      cache_dir=cache_dir, strategy_id=strategy_id,
+                                                      strategy_params=strategy_params)
         print(f"[{variant}] {len(candidates)} candidates", flush=True)
         r1_report = None
         if not args.no_gate:
             print(f"[{variant}] R1 bias audit ...", flush=True)
-            r1_report = _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, data_end, cache_dir)
+            r1_report = _r1_bias_audit(frames, policy, policy_hash, dataset_hashes, symbols, start, data_end, cache_dir,
+                                       strategy_id, strategy_params)
         for exit_mode in args.exit_modes:
             for cost_name in args.costs:
                 cost = COST_SCENARIOS[cost_name]
@@ -216,7 +274,10 @@ def main(argv: list[str] | None = None) -> int:
                 hold = [t for t in result.trades if pd.Timestamp(t["entry_time"]) >= holdout_start]
                 eq = result.equity
                 label = f"{variant}__{exit_mode}__{args.halts}"
-                gate_context = {"variant": label, "dataset_sha256_16": dataset_hashes}
+                if strategy_id != DEFAULT_STRATEGY_ID:
+                    label = f"{strategy_id}__{label}"
+                gate_context = {"variant": label, "dataset_sha256_16": dataset_hashes, "strategy_id": strategy_id,
+                                "strategy_params": strategy_params}
                 if r1_report is None:
                     gate = _skipped_gate(policy_hash, {**gate_context, "exit_mode": exit_mode, "cost": cost.name})
                 else:
@@ -227,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                 section_kw = {"policy": policy, "frames": frames, "cost": cost}
                 report = {
                     "variant": label, "cost": cost_name, "generated_at": run_id, "policy_hash": policy_hash,
+                    **strategy_fields,
                     "datasets": datasets, "dataset_sha256_16": dataset_hashes, "assumptions": ASSUMPTIONS,
                     "holdout_start": holdout_start.isoformat(),
                     "gate_verdict": gate["verdict"], "evidence_status": gate["evidence_status"],
@@ -242,11 +304,13 @@ def main(argv: list[str] | None = None) -> int:
                 stem.with_name(stem.name + "_gate.json").write_text(json.dumps(gate, indent=2, default=str),
                                                                     encoding="utf-8")
                 stem.with_suffix(".json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-                stem.with_suffix(".md").write_text(_gate_line(gate) + "\n\n" + render_markdown(report), encoding="utf-8")
+                stem.with_suffix(".md").write_text(_gate_line(gate) + "\n" + research_only_line + "\n"
+                                                   + render_markdown(report), encoding="utf-8")
                 pd.DataFrame(result.trades).to_csv(stem.with_name(stem.name + "_trades.csv"), index=False)
                 d = report["development"]["trades"]
                 h = report["holdout"]["trades"]
                 row = {"run_id": run_id, "variant": label, "cost": cost_name, "policy_hash": policy_hash,
+                       **strategy_fields,
                        "datasets": dataset_hashes, "dev": {k: d.get(k) for k in ("trades", "win_rate", "expectancy_r", "profit_factor")},
                        "dev_max_dd": report["development"]["equity"].get("max_drawdown"),
                        "holdout": {k: h.get(k) for k in ("trades", "win_rate", "expectancy_r", "profit_factor")},

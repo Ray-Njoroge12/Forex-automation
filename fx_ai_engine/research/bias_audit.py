@@ -1,8 +1,11 @@
 """R1: lookahead and recursive-bias audit of the replay decision path.
 
 Checks, all on the same functions the live engine and the unified replay use
-(``generate_candidates`` -> RegimeAgent/TechnicalAgent, then AdversarialAgent and
-PortfolioManager):
+(``generate_candidates`` -> the registered strategy object, default
+trend_pullback_v1 = RegimeAgent/TechnicalAgent, then AdversarialAgent and
+PortfolioManager). ``strategy_id``/``strategy_params`` select the strategy
+(``--strategy``/``--strategy-params`` on the CLI), so a hypothesis replay is
+audited on its own code:
 
   (a) truncation: the decision at bar close t is identical when every bar that
       has not closed by t is removed;
@@ -22,6 +25,7 @@ Usage (from fx_ai_engine/):
 from __future__ import annotations
 
 import argparse
+import functools
 import random
 from collections import Counter
 from dataclasses import replace
@@ -38,15 +42,15 @@ from backtesting.unified_replay import (
 from core.account_status import AccountStatus
 from core.agents.adversarial_agent import AdversarialAgent
 from core.agents.portfolio_manager import PortfolioManager
-from core.agents.regime_agent import RegimeAgent
-from core.agents.technical_agent import TechnicalAgent
 from core.filters.session_filter import is_tradeable_session
 from core.indicators.calculators import calculate_adx, calculate_ema, calculate_rsi
 from core.policy.envelope import canonical_policy_hash
+from core.strategy import DEFAULT_STRATEGY_ID, build_strategy
+from core.strategy.trend_pullback import TrendPullbackStrategy
 from core.types import RegimeOutput, TechnicalSignal
 from research.common import (
-    ARTIFACTS, add_source_args, decision_fingerprint, load_frames, parse_ts, policy_for_variant, run_id,
-    source_dir, write_json,
+    ARTIFACTS, add_source_args, add_strategy_args, decision_fingerprint, load_frames, parse_ts, policy_for_variant,
+    resolve_strategy_args, run_id, source_dir, write_json,
 )
 
 OHLC = ["open", "high", "low", "close"]
@@ -66,11 +70,13 @@ def _account() -> AccountStatus:
 # Decision path
 # ----------------------------------------------------------------------
 def replay_decision(frames: Frames, policy: Mapping[str, object], cost: CostModel, symbol: str,
-                    t: pd.Timestamp, *, lookback_override: int | None = None) -> dict:
+                    t: pd.Timestamp, *, lookback_override: int | None = None,
+                    strategy_id: str = DEFAULT_STRATEGY_ID, strategy_params: Mapping[str, Any] | None = None) -> dict:
     """Fingerprint of the full decision at t: stage 1 as generate_candidates, stage 2 as simulate."""
     t = pd.Timestamp(t)
     cands, funnel = generate_candidates(symbol, frames, policy, cost, decision_times=[t],
-                                        lookback_override=lookback_override)
+                                        lookback_override=lookback_override, strategy_id=strategy_id,
+                                        strategy_params=strategy_params)
     fp = decision_fingerprint(cands[0] if cands else None, funnel)
     if cands:
         cand = cands[0]
@@ -143,7 +149,9 @@ def _session_times(frames: Frames, symbol: str, start, end) -> list[pd.Timestamp
 
 
 def sample_decision_times(frames: Frames, policy: Mapping[str, object], cost: CostModel, symbol: str, *,
-                          start=None, end=None, max_decisions: int = 60, seed: int = 7) -> dict[str, Any]:
+                          start=None, end=None, max_decisions: int = 60, seed: int = 7,
+                          strategy_id: str = DEFAULT_STRATEGY_ID,
+                          strategy_params: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Up to max_decisions//2 candidate times plus seeded non-candidate times, in-session only.
 
     Also returns the candidates of a sequential run (which uses the regime cache)
@@ -151,7 +159,8 @@ def sample_decision_times(frames: Frames, policy: Mapping[str, object], cost: Co
     """
     rng = random.Random(f"{seed}:{symbol}")
     session = _session_times(frames, symbol, start, end)
-    sequential, _ = generate_candidates(symbol, frames, policy, cost, start=start, end=end)
+    sequential, _ = generate_candidates(symbol, frames, policy, cost, start=start, end=end,
+                                        strategy_id=strategy_id, strategy_params=strategy_params)
     by_time = {c.decision_time: c for c in sequential}
     cand_times = [t for t in session if t in by_time]
     other = [t for t in session if t not in by_time]
@@ -202,8 +211,10 @@ def future_corruption_test(frames: Frames, policy: Mapping[str, object], cost: C
 # (c1) warm-up parity
 # ----------------------------------------------------------------------
 def observe_fetch_lengths(frames: Frames, policy: Mapping[str, object], cost: CostModel, symbol: str,
-                          t: pd.Timestamp, *, lookback_override: int | None = None) -> list[dict[str, Any]]:
-    """Record every fetch_ohlc request the regime and technical agents make at t."""
+                          t: pd.Timestamp, *, lookback_override: int | None = None,
+                          strategy_id: str = DEFAULT_STRATEGY_ID,
+                          strategy_params: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Record every fetch_ohlc request the strategy (built through the registry) makes at t."""
     feed = PointInTimeFeed(frames)
     feed.lookback_override = lookback_override
     feed.set_time(t)
@@ -217,18 +228,23 @@ def observe_fetch_lengths(frames: Frames, policy: Mapping[str, object], cost: Co
         return df
 
     spread_fn = lambda s: _bar_spread_price(frames, feed, s, cost)
-    regime = RegimeAgent(symbol, recording_fetch, policy=policy).evaluate(TIMEFRAME_CODES["H1"])
-    if regime.regime not in {"TRENDING_BULL", "TRENDING_BEAR"}:
+    strategy = build_strategy(strategy_id, symbol=symbol, fetch_ohlc=recording_fetch, fetch_spread=spread_fn,
+                              policy=policy, run_context="research", params=strategy_params)
+    decision = strategy.evaluate()
+    inner = strategy.inner
+    if isinstance(inner, TrendPullbackStrategy) and not decision.regime_passed:
         # Only the fetch lengths matter here; force a trend so the technical agent fetches its frames.
-        regime = replace(regime, regime="TRENDING_BULL", trend_state="BULLISH")
-    TechnicalAgent(symbol, recording_fetch, spread_fn, policy=policy).evaluate(
-        regime, TIMEFRAME_CODES["M15"], TIMEFRAME_CODES["H1"])
+        regime = replace(decision.regime, regime="TRENDING_BULL", trend_state="BULLISH")
+        inner.technical_agent.evaluate(regime, TIMEFRAME_CODES["M15"], TIMEFRAME_CODES["H1"])
     return records
 
 
 def warmup_parity(frames: Frames, policy: Mapping[str, object], cost: CostModel, symbol: str,
-                  t: pd.Timestamp, *, lookback_override: int | None = None) -> dict[str, Any]:
-    records = observe_fetch_lengths(frames, policy, cost, symbol, t, lookback_override=lookback_override)
+                  t: pd.Timestamp, *, lookback_override: int | None = None,
+                  strategy_id: str = DEFAULT_STRATEGY_ID,
+                  strategy_params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    records = observe_fetch_lengths(frames, policy, cost, symbol, t, lookback_override=lookback_override,
+                                    strategy_id=strategy_id, strategy_params=strategy_params)
     bad = [r for r in records if r["served"] != min(r["requested"], r["closed"])]
     live: dict[str, int] = {}
     for r in records:
@@ -381,24 +397,29 @@ def _merge(sections: Sequence[dict[str, Any]]) -> dict[str, Any]:
 def run_bias_audit(frames: Frames, policy: Mapping[str, object], cost: CostModel = COST_SCENARIOS["base"], *,
                    start=None, end=None, max_decisions: int = 60, seed: int = 7, long_bars: int = 2000,
                    eval_points: int = 200, synthetic_long_bars: int | None = None,
-                   extra_times: Mapping[str, Sequence[pd.Timestamp]] | None = None) -> dict[str, Any]:
+                   extra_times: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+                   strategy_id: str = DEFAULT_STRATEGY_ID,
+                   strategy_params: Mapping[str, Any] | None = None) -> dict[str, Any]:
     symbols = [s for s in SYMBOLS if s in frames]
+    strategy_kw = {"strategy_id": strategy_id, "strategy_params": strategy_params}
+    decide = functools.partial(replay_decision, **strategy_kw)
     trunc, corrupt_random, corrupt_nan, flips, parity, seq_checks = [], [], [], [], [], []
     checked: dict[str, list[str]] = {}
     for symbol in symbols:
         sample = sample_decision_times(frames, policy, cost, symbol, start=start, end=end,
-                                       max_decisions=max_decisions, seed=seed)
+                                       max_decisions=max_decisions, seed=seed, **strategy_kw)
         times = sorted(set(sample["times"]) | set(pd.Timestamp(t) for t in (extra_times or {}).get(symbol, [])))
         checked[symbol] = [t.isoformat() for t in times]
         if not times:
             continue
-        base = _baseline(frames, policy, cost, symbol, times, replay_decision)
-        trunc.append({**truncation_test(frames, policy, cost, symbol, times, baseline=base), "symbol": symbol})
+        base = _baseline(frames, policy, cost, symbol, times, decide)
+        trunc.append({**truncation_test(frames, policy, cost, symbol, times, baseline=base, decide=decide),
+                      "symbol": symbol})
         corrupt_random.append({**future_corruption_test(frames, policy, cost, symbol, times, mode="random",
-                                                        seed=seed, baseline=base), "symbol": symbol})
+                                                        seed=seed, baseline=base, decide=decide), "symbol": symbol})
         corrupt_nan.append({**future_corruption_test(frames, policy, cost, symbol, times, mode="nan",
-                                                     seed=seed, baseline=base), "symbol": symbol})
-        flips.append(decision_flips(frames, policy, cost, symbol, times, baseline=base))
+                                                     seed=seed, baseline=base, decide=decide), "symbol": symbol})
+        flips.append(decision_flips(frames, policy, cost, symbol, times, baseline=base, decide=decide))
         seq_bad = []
         for t, cand in sample["sequential"].items():
             if t in base:
@@ -409,7 +430,7 @@ def run_bias_audit(frames: Frames, policy: Mapping[str, object], cost: CostModel
         seq_checks.append({"symbol": symbol, "status": "PASS" if not seq_bad else "FAIL",
                            "mismatches": seq_bad[:MAX_LISTED]})
         cand_times = [t for t in times if base[t].get("signal")]
-        parity.append(warmup_parity(frames, policy, cost, symbol, (cand_times or times)[-1]))
+        parity.append(warmup_parity(frames, policy, cost, symbol, (cand_times or times)[-1], **strategy_kw))
 
     truncation = _merge(trunc) if trunc else {"status": "FAIL", "reason": "no decision times"}
     corruption = {"status": "PASS" if trunc and all(s["status"] == "PASS" for s in corrupt_random + corrupt_nan)
@@ -438,7 +459,7 @@ def run_bias_audit(frames: Frames, policy: Mapping[str, object], cost: CostModel
         "sequential_vs_pointwise": {"status": "PASS" if all(c["status"] == "PASS" for c in seq_checks) else "FAIL",
                                     "by_symbol": seq_checks, "blocking": False},
         "decision_times_checked": checked, "policy_hash": canonical_policy_hash(policy), "seed": seed,
-        "cost": cost.name,
+        "cost": cost.name, "strategy_id": strategy_id, "strategy_params": dict(strategy_params or {}),
     }
 
 
@@ -481,13 +502,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eval-points", type=int, default=200)
     parser.add_argument("--synthetic-long-bars", type=int, default=None)
     parser.add_argument("--out", type=Path, default=None)
+    add_strategy_args(parser)
     args = parser.parse_args(argv)
+    strategy_params = resolve_strategy_args(parser, args)
 
     frames = load_frames(bridge_dir=args.bridge_dir, data_dir=args.data_dir, symbols=args.symbols)
     policy, _ = policy_for_variant(args.variant)
     report = run_bias_audit(frames, policy, COST_SCENARIOS["base"], start=parse_ts(args.start), end=parse_ts(args.end),
                             max_decisions=args.max_decisions, seed=args.seed, long_bars=args.long_bars,
-                            eval_points=args.eval_points, synthetic_long_bars=args.synthetic_long_bars)
+                            eval_points=args.eval_points, synthetic_long_bars=args.synthetic_long_bars,
+                            strategy_id=args.strategy, strategy_params=strategy_params)
     report.update(variant=args.variant, source=str(source_dir(args)))
     out = args.out or ARTIFACTS / "r1" / run_id()
     write_json(Path(out) / "r1_report.json", report)

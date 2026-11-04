@@ -1,11 +1,13 @@
 """Event-driven multi-symbol replay that reuses the live decision and risk code (plan build E3).
 
 Pipeline per decision time (an M15 bar close), identical classes to the live engine:
-    RegimeAgent -> TechnicalAgent -> AdversarialAgent -> PortfolioManager -> HardRiskEngine
+    Strategy (default trend_pullback_v1: RegimeAgent -> TechnicalAgent) -> AdversarialAgent
+    -> PortfolioManager -> HardRiskEngine
 
 Two stages:
-  1. Candidate generation, per symbol (parallelisable): session filter, regime and
-     technical agents on a point-in-time feed. Regime results are cached per
+  1. Candidate generation, per symbol (parallelisable): session filter, then the
+     strategy object from ``core.strategy.build_strategy`` (the same registry the
+     live engine uses) on a point-in-time feed. Regime results are cached per
      closed H1 bar because RegimeAgent only reads H1.
   2. Portfolio simulation, chronological across symbols: adversarial agent,
      portfolio manager and hard risk engine against a simulated AccountStatus,
@@ -45,11 +47,10 @@ from backtesting.replay_execution import QuoteBar, protective_exit
 from core.account_status import AccountStatus
 from core.agents.adversarial_agent import AdversarialAgent
 from core.agents.portfolio_manager import PortfolioManager
-from core.agents.regime_agent import RegimeAgent
-from core.agents.technical_agent import TechnicalAgent
 from core.filters.session_filter import is_tradeable_session
 from core.indicators import calculate_atr
 from core.risk.hard_risk_engine import HardRiskEngine
+from core.strategy import DEFAULT_STRATEGY_ID, build_strategy, canonical_params
 from core.types import RegimeOutput, TechnicalSignal
 
 SYMBOLS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF")
@@ -218,6 +219,7 @@ class Candidate:
     symbol: str
     signal: dict[str, Any]
     regime: dict[str, Any]
+    strategy_id: str = DEFAULT_STRATEGY_ID
 
 
 def _bar_spread_price(frames: Frames, feed: PointInTimeFeed, symbol: str, cost: CostModel) -> float:
@@ -237,12 +239,15 @@ def generate_candidates(
     end: pd.Timestamp | None = None,
     decision_times: Sequence[pd.Timestamp] | None = None,
     lookback_override: int | None = None,
+    strategy_id: str = DEFAULT_STRATEGY_ID,
+    strategy_params: Mapping[str, Any] | None = None,
 ) -> tuple[list[Candidate], Counter]:
     feed = PointInTimeFeed(frames)
     feed.lookback_override = lookback_override
     spread_fn: Callable[[str], float] = lambda s: _bar_spread_price(frames, feed, s, cost)
-    regime_agent = RegimeAgent(symbol, feed.fetch_ohlc, policy=policy)
-    technical_agent = TechnicalAgent(symbol, feed.fetch_ohlc, spread_fn, policy=policy)
+    strategy = build_strategy(strategy_id, symbol=symbol, fetch_ohlc=feed.fetch_ohlc, fetch_spread=spread_fn,
+                              policy=policy, run_context="research", params=strategy_params,
+                              regime_cache_key=lambda: feed.closed_count(symbol, "H1"), on_error="raise")
     m15 = frames[symbol]["M15"]
     if decision_times is None:
         times = m15.index + pd.Timedelta(seconds=TIMEFRAME_SECONDS["M15"])
@@ -257,33 +262,28 @@ def generate_candidates(
 
     funnel: Counter = Counter()
     candidates: list[Candidate] = []
-    cached_h1 = -1
-    regime: RegimeOutput | None = None
     for t in times:
         if not is_tradeable_session(t.to_pydatetime()):
             funnel["SESSION_INACTIVE"] += 1
             continue
         feed.set_time(t)
-        h1_count = feed.closed_count(symbol, "H1")
-        if h1_count != cached_h1 or regime is None:
-            regime = regime_agent.evaluate(TIMEFRAME_CODES["H1"])
-            cached_h1 = h1_count
-        if regime.regime not in {"TRENDING_BULL", "TRENDING_BEAR"}:
-            funnel[f"REGIME:{regime.reason_code}"] += 1
+        decision = strategy.evaluate()
+        if not decision.regime_passed:
+            funnel[f"REGIME:{decision.regime_reason_code}"] += 1
             continue
-        signal = technical_agent.evaluate(regime, TIMEFRAME_CODES["M15"], TIMEFRAME_CODES["H1"])
-        if signal is None:
-            funnel[f"TECHNICAL:{technical_agent.last_reason_code}"] += 1
+        if decision.signal is None:
+            funnel[f"TECHNICAL:{decision.reason_code}"] += 1
             continue
         funnel["CANDIDATE"] += 1
-        candidates.append(Candidate(t, symbol, asdict(signal), asdict(regime)))
+        candidates.append(Candidate(t, symbol, asdict(decision.signal), asdict(decision.regime), strategy_id))
     return candidates, funnel
 
 
 def _candidate_worker(args: tuple) -> tuple[list[Candidate], Counter]:
-    symbol, data_dir, policy, cost, start, end = args
+    symbol, data_dir, policy, cost, start, end, strategy_id, strategy_params = args
     frames = load_csv_frames(Path(data_dir), symbols=(symbol,))
-    return generate_candidates(symbol, frames, policy, cost, start=start, end=end)
+    return generate_candidates(symbol, frames, policy, cost, start=start, end=end,
+                               strategy_id=strategy_id, strategy_params=strategy_params)
 
 
 DEFAULT_WORKERS = 2
@@ -330,19 +330,22 @@ def _worker_init(parent_pid: int) -> None:
 def _candidates_to_payload(candidates: Sequence[Candidate], funnel: Counter) -> dict[str, Any]:
     return {
         "candidates": [{"decision_time": pd.Timestamp(c.decision_time).isoformat(), "symbol": c.symbol,
-                        "signal": c.signal, "regime": c.regime} for c in candidates],
+                        "signal": c.signal, "regime": c.regime, "strategy_id": c.strategy_id}
+                       for c in candidates],
         "funnel": dict(funnel),
     }
 
 
 def _candidates_from_payload(payload: Mapping[str, Any]) -> tuple[list[Candidate], Counter]:
     candidates = [Candidate(pd.Timestamp(row["decision_time"]).tz_convert("UTC"), str(row["symbol"]),
-                            dict(row["signal"]), dict(row["regime"])) for row in payload["candidates"]]
+                            dict(row["signal"]), dict(row["regime"]), str(row["strategy_id"]))
+                  for row in payload["candidates"]]
     return candidates, Counter({str(k): int(v) for k, v in payload["funnel"].items()})
 
 
 def _candidate_cache_parts(symbol: str, data_dir: Path, policy: Mapping[str, object], cost: CostModel,
-                           start, end) -> dict[str, Any]:
+                           start, end, strategy_id: str = DEFAULT_STRATEGY_ID,
+                           strategy_params: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from core.policy.envelope import canonical_policy_hash
 
     data = {}
@@ -352,13 +355,17 @@ def _candidate_cache_parts(symbol: str, data_dir: Path, policy: Mapping[str, obj
             data[path.name] = replay_cache.file_sha256_16(path)
     stamp = lambda t: None if t is None else pd.Timestamp(t).isoformat()
     return {"policy_hash": canonical_policy_hash(policy), "symbol": symbol, "data_sha256_16": data,
-            "cost": asdict(cost), "start": stamp(start), "end": stamp(end)}
+            "cost": asdict(cost), "start": stamp(start), "end": stamp(end), "strategy_id": strategy_id,
+            "strategy_params": canonical_params(strategy_id, strategy_params)}
 
 
 def generate_all_candidates(data_dir: Path, policy: Mapping[str, object], cost: CostModel, *,
                             symbols: Sequence[str] = SYMBOLS, start=None, end=None,
                             workers: int = DEFAULT_WORKERS,
-                            cache_dir: Path | None = None) -> tuple[list[Candidate], dict[str, Counter]]:
+                            cache_dir: Path | None = None,
+                            strategy_id: str = DEFAULT_STRATEGY_ID,
+                            strategy_params: Mapping[str, Any] | None = None,
+                            ) -> tuple[list[Candidate], dict[str, Counter]]:
     """Candidates for every symbol, from the cache where possible, else in up to ``workers`` processes.
 
     Worker processes run at niceness >= 10, exit if the parent dies, and are
@@ -366,12 +373,13 @@ def generate_all_candidates(data_dir: Path, policy: Mapping[str, object], cost: 
     """
     import multiprocessing as mp
 
-    jobs = [(s, str(data_dir), dict(policy), cost, start, end) for s in symbols]
+    params = canonical_params(strategy_id, strategy_params)  # fails here, before any worker starts
+    jobs = [(s, str(data_dir), dict(policy), cost, start, end, strategy_id, params) for s in symbols]
     results: list[tuple[list[Candidate], Counter] | None] = [None] * len(jobs)
     cache_entries: dict[int, tuple[str, dict[str, Any]]] = {}
     if cache_dir is not None:
         for i, symbol in enumerate(symbols):
-            parts = _candidate_cache_parts(symbol, Path(data_dir), policy, cost, start, end)
+            parts = _candidate_cache_parts(symbol, Path(data_dir), policy, cost, start, end, strategy_id, params)
             key = replay_cache.cache_key("candidates", **parts)
             meta = replay_cache.key_parts("candidates", **parts)
             cached = replay_cache.load(cache_dir, "candidates", key, meta)
@@ -431,6 +439,7 @@ class Position:
     trail: bool
     regime: str
     volatility_state: str
+    strategy_id: str = DEFAULT_STRATEGY_ID
     open_lots: float = 0.0
     partial_done: bool = False
     be_done: bool = False
@@ -562,7 +571,7 @@ def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[st
             "r_multiple": net / pos.risk_usd if pos.risk_usd > 0 else 0.0,
             "max_favourable_r": pos.max_favourable_r, "partial": pos.partial_done, "break_even": pos.be_done,
             "regime": pos.regime, "volatility_state": pos.volatility_state,
-            "hour_utc": pos.entry_time.hour, "events": ";".join(pos.events),
+            "hour_utc": pos.entry_time.hour, "events": ";".join(pos.events), "strategy_id": pos.strategy_id,
         })
         refresh_exposure()
 
@@ -595,6 +604,7 @@ def simulate(candidates: Sequence[Candidate], frames: Frames, policy: Mapping[st
             be_trigger_r=signal.be_trigger_r, partial_close_r=signal.partial_close_r,
             trailing_atr_mult=signal.trailing_atr_mult, trail=trail,
             regime=cand.regime["regime"], volatility_state=cand.regime["volatility_state"],
+            strategy_id=cand.strategy_id,
         )
         decisions["EXECUTED"] += 1
 
