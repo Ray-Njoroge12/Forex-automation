@@ -1,0 +1,321 @@
+{
+  "tool": "r3_multiple_testing",
+  "verdict": "PASS",
+  "evidence_status": "EVIDENCE_ELIGIBLE",
+  "registry": "/private/tmp/r3-synthetic/artifacts/experiments/registry.jsonl",
+  "registry_sha256_16": "7b586c1dfb91207f",
+  "root": "/private/tmp/r3-synthetic",
+  "rows_read": 6,
+  "unparseable_lines": 0,
+  "rows_evaluated": 6,
+  "trials_n": 6,
+  "trial_keys": [
+    {
+      "policy_hash": "0ba154ab10bb62cbdaa8b8c9164f5e778c3ed87df96a49c5917c74df5402b736",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "pullback_2__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "0ba154ab10bb62cbdaa8b8c9164f5e778c3ed87df96a49c5917c74df5402b736",
+      "exit_mode": "policy",
+      "labels": [
+        "pullback_2__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "808fd278d561dcfab66c6b5b8e0c6fa9ae1213500a66a3667766ef4ddf41ca1b",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "coded_defaults__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "808fd278d561dcfab66c6b5b8e0c6fa9ae1213500a66a3667766ef4ddf41ca1b",
+      "exit_mode": "policy",
+      "labels": [
+        "coded_defaults__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "8ba8496a2525ae171ffd104d632dede6ef418d9b95962a9d88e2fcdbc8d48d24",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "baseline__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "8ba8496a2525ae171ffd104d632dede6ef418d9b95962a9d88e2fcdbc8d48d24",
+      "exit_mode": "policy",
+      "labels": [
+        "baseline__policy__edge"
+      ]
+    }
+  ],
+  "thresholds": {
+    "dsr_min": 0.95,
+    "pbo_max": 0.2,
+    "min_trades": 307,
+    "min_sample_design": {
+      "target_r": 0.25,
+      "reward_r": 2.2,
+      "alpha": 0.05,
+      "power": 0.8,
+      "q": 0.390625,
+      "sigma": 1.5612494995995996,
+      "z_alpha": 1.959963984540054,
+      "z_power": 0.8416212335729143,
+      "n_exact": 306.1063096396144,
+      "n_min": 307,
+      "n_ci_only": 150
+    },
+    "cscv_blocks": 16,
+    "min_weeks": 64
+  },
+  "reason_counts": {
+    "PSR_BELOW_MIN": 5,
+    "PASS": 1
+  },
+  "groups": [
+    {
+      "halts": "edge",
+      "cost": "base",
+      "labels": [
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge"
+      ],
+      "series_labels": [
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge"
+      ],
+      "missing_labels": [],
+      "sr_variance": 0.01878759649554581,
+      "sr0": 0.17820750719168552,
+      "status": "OK",
+      "cscv": {
+        "status": "OK",
+        "pbo": 0.0,
+        "splits": 12870,
+        "n_series": 6,
+        "n_rows": 157,
+        "blocks": 16,
+        "reason": null,
+        "lambda_median": 1.7917594692280545,
+        "grid": "2023-01-02/2023-01-08 .. 2025-12-29/2026-01-04"
+      }
+    }
+  ],
+  "variants": [
+    {
+      "label": "baseline__policy__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "8ba8496a2525ae171ffd104d632dede6ef418d9b95962a9d88e2fcdbc8d48d24",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 1,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/baseline__policy__edge__base.json",
+        "json_sha256_16": "9408c512437e015c",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/baseline__policy__edge__base_trades.csv",
+        "csv_sha256_16": "07ab4a0f891c5554"
+      },
+      "dev_trades": 600,
+      "expectancy_r": 0.05600000000000005,
+      "sharpe_per_trade": 0.03718617111477056,
+      "skew": 0.7230769971004931,
+      "kurtosis": 1.5228403437358673,
+      "psr0": 0.821869883378139,
+      "sr0": 0.17820750719168552,
+      "dsr": 0.00023397887456279268,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "8ba8496a2525ae171ffd104d632dede6ef418d9b95962a9d88e2fcdbc8d48d24",
+      "variant": "baseline",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 2,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/baseline__fixed_tp__edge__base.json",
+        "json_sha256_16": "144ae088ddc2f48f",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/baseline__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "f3f6898841ad7d31"
+      },
+      "dev_trades": 600,
+      "expectancy_r": 0.018666666666666713,
+      "sharpe_per_trade": 0.012512021809429561,
+      "skew": 0.7799704619927462,
+      "kurtosis": 1.6083539215811777,
+      "psr0": 0.6208548636268978,
+      "sr0": 0.17820750719168552,
+      "dsr": 2.2987883323706577e-05,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__policy__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "808fd278d561dcfab66c6b5b8e0c6fa9ae1213500a66a3667766ef4ddf41ca1b",
+      "variant": "coded_defaults",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 3,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/coded_defaults__policy__edge__base.json",
+        "json_sha256_16": "f4f5cd41c55a534d",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/coded_defaults__policy__edge__base_trades.csv",
+        "csv_sha256_16": "bda6f2c7b25ad86b"
+      },
+      "dev_trades": 600,
+      "expectancy_r": -0.08799999999999995,
+      "sharpe_per_trade": -0.06086884050554457,
+      "skew": 0.9525614565086914,
+      "kurtosis": 1.9073733284259595,
+      "psr0": 0.07384188835711471,
+      "sr0": 0.17820750719168552,
+      "dsr": 6.486675111200043e-09,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "808fd278d561dcfab66c6b5b8e0c6fa9ae1213500a66a3667766ef4ddf41ca1b",
+      "variant": "coded_defaults",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 4,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/coded_defaults__fixed_tp__edge__base.json",
+        "json_sha256_16": "a07694c2060568fc",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/coded_defaults__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "603faf31012e0e0a"
+      },
+      "dev_trades": 600,
+      "expectancy_r": -0.03466666666666662,
+      "sharpe_per_trade": -0.023583314558275576,
+      "skew": 0.864232627243999,
+      "kurtosis": 1.746898033993065,
+      "psr0": 0.28387557149505227,
+      "sr0": 0.17820750719168552,
+      "dsr": 5.069966672686787e-07,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__policy__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "0ba154ab10bb62cbdaa8b8c9164f5e778c3ed87df96a49c5917c74df5402b736",
+      "variant": "pullback_2",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 5,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/pullback_2__policy__edge__base.json",
+        "json_sha256_16": "150504e43f5681ec",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/pullback_2__policy__edge__base_trades.csv",
+        "csv_sha256_16": "8d472dfd18b2997b"
+      },
+      "dev_trades": 600,
+      "expectancy_r": -0.06133333333333328,
+      "sharpe_per_trade": -0.04206262422172385,
+      "skew": 0.907846489619005,
+      "kurtosis": 1.8241852487135501,
+      "psr0": 0.1562061428314846,
+      "sr0": 0.17820750719168552,
+      "dsr": 6.116044007977822e-08,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20260701T000000Z",
+      "policy_hash": "0ba154ab10bb62cbdaa8b8c9164f5e778c3ed87df96a49c5917c74df5402b736",
+      "variant": "pullback_2",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 6,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/pullback_2__fixed_tp__edge__base.json",
+        "json_sha256_16": "2719759fadadbfeb",
+        "csv": "/private/tmp/r3-synthetic/artifacts/replay/synthetic/pullback_2__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "2ecc8bf85260563c"
+      },
+      "dev_trades": 600,
+      "expectancy_r": 0.49333333333333335,
+      "sharpe_per_trade": 0.30876318623037124,
+      "skew": 0.13363062095621228,
+      "kurtosis": 1.0178571428571426,
+      "psr0": 0.999999999999994,
+      "sr0": 0.17820750719168552,
+      "dsr": 0.9994480034131727,
+      "pbo": 0.0,
+      "verdict": "PASS",
+      "evidence_status": "EVIDENCE_ELIGIBLE",
+      "reasons": []
+    }
+  ],
+  "superseded_rows": [],
+  "missing_inputs": [],
+  "reasons": [
+    "PSR_BELOW_MIN: 5 row(s)"
+  ],
+  "notes": [
+    "The registry rows carry no per-trade series, standard deviation, skew or kurtosis. Sharpe, skew and kurtosis come from the `*_trades.csv` next to each row's report, and only when that file belongs to the same run (JSON `generated_at` = `run_id`, same policy_hash and cost) and its dev/holdout counts equal the registry's.",
+    "A trial is a distinct (policy_hash, exit_mode) pair over all parseable registry rows, whatever the cost, halts mode or superseded flag. Rows without a usable series still count toward N.",
+    "Cross-trial statistics (variance of Sharpe, CSCV) are computed per group (halts mode, cost profile): SRS-halt runs, edge runs and different cost profiles are not comparable return streams.",
+    "Development trades only (entry_time < holdout_start); the holdout is not used. Unit: r_multiple per trade.",
+    "A PASS here is necessary, not sufficient: the replay still needs an R2 authenticity-gate PASS with matching hashes."
+  ]
+}

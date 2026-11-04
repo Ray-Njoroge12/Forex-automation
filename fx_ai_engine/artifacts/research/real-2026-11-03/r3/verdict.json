@@ -1,0 +1,1839 @@
+{
+  "tool": "r3_multiple_testing",
+  "verdict": "INCONCLUSIVE",
+  "evidence_status": "NOT_EVIDENCE",
+  "registry": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/experiments/registry.jsonl",
+  "registry_sha256_16": "95a510f00d5db123",
+  "root": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine",
+  "rows_read": 57,
+  "unparseable_lines": 0,
+  "rows_evaluated": 39,
+  "trials_n": 18,
+  "trial_keys": [
+    {
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "adx_20_25__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "exit_mode": "hybrid",
+      "labels": [
+        "adx_20_25__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "exit_mode": "policy",
+      "labels": [
+        "adx_20_25__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "coded_defaults__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "exit_mode": "hybrid",
+      "labels": [
+        "coded_defaults__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "exit_mode": "policy",
+      "labels": [
+        "coded_defaults__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "pullback_2__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "exit_mode": "hybrid",
+      "labels": [
+        "pullback_2__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "exit_mode": "policy",
+      "labels": [
+        "pullback_2__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "trend_distance_5pip__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "exit_mode": "hybrid",
+      "labels": [
+        "trend_distance_5pip__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "exit_mode": "policy",
+      "labels": [
+        "trend_distance_5pip__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "rsi_bounded__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "exit_mode": "hybrid",
+      "labels": [
+        "rsi_bounded__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "exit_mode": "policy",
+      "labels": [
+        "rsi_bounded__policy__edge"
+      ]
+    },
+    {
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "exit_mode": "fixed_tp",
+      "labels": [
+        "baseline__fixed_tp__edge"
+      ]
+    },
+    {
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "exit_mode": "hybrid",
+      "labels": [
+        "baseline__hybrid__edge"
+      ]
+    },
+    {
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "exit_mode": "policy",
+      "labels": [
+        "baseline__policy__edge",
+        "baseline__policy__srs"
+      ]
+    }
+  ],
+  "thresholds": {
+    "dsr_min": 0.95,
+    "pbo_max": 0.2,
+    "min_trades": 307,
+    "min_sample_design": {
+      "target_r": 0.25,
+      "reward_r": 2.2,
+      "alpha": 0.05,
+      "power": 0.8,
+      "q": 0.390625,
+      "sigma": 1.5612494995995996,
+      "z_alpha": 1.959963984540054,
+      "z_power": 0.8416212335729143,
+      "n_exact": 306.1063096396144,
+      "n_min": 307,
+      "n_ci_only": 150
+    },
+    "cscv_blocks": 16,
+    "min_weeks": 64
+  },
+  "reason_counts": {
+    "BELOW_MIN_SAMPLE": 3,
+    "SERIES_FILES_MISSING": 18,
+    "PSR_BELOW_MIN": 18
+  },
+  "groups": [
+    {
+      "halts": "edge",
+      "cost": "base",
+      "labels": [
+        "rsi_bounded__policy__edge",
+        "rsi_bounded__fixed_tp__edge",
+        "rsi_bounded__hybrid__edge",
+        "adx_20_25__policy__edge",
+        "adx_20_25__fixed_tp__edge",
+        "adx_20_25__hybrid__edge",
+        "trend_distance_5pip__policy__edge",
+        "trend_distance_5pip__fixed_tp__edge",
+        "trend_distance_5pip__hybrid__edge",
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "baseline__hybrid__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "coded_defaults__hybrid__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge",
+        "pullback_2__hybrid__edge"
+      ],
+      "series_labels": [
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "baseline__hybrid__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "coded_defaults__hybrid__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge",
+        "pullback_2__hybrid__edge"
+      ],
+      "missing_labels": [
+        "rsi_bounded__policy__edge",
+        "rsi_bounded__fixed_tp__edge",
+        "rsi_bounded__hybrid__edge",
+        "adx_20_25__policy__edge",
+        "adx_20_25__fixed_tp__edge",
+        "adx_20_25__hybrid__edge",
+        "trend_distance_5pip__policy__edge",
+        "trend_distance_5pip__fixed_tp__edge",
+        "trend_distance_5pip__hybrid__edge"
+      ],
+      "sr_variance": 0.0015450747999310227,
+      "sr0": 0.07287100876462885,
+      "status": "OK",
+      "cscv": {
+        "status": "OK",
+        "pbo": 0.0,
+        "splits": 12870,
+        "n_series": 9,
+        "n_rows": 176,
+        "blocks": 16,
+        "reason": null,
+        "lambda_median": 2.1972245773362196,
+        "grid": "2022-12-19/2022-12-25 .. 2026-04-27/2026-05-03"
+      }
+    },
+    {
+      "halts": "edge",
+      "cost": "stress_1_5x",
+      "labels": [
+        "rsi_bounded__policy__edge",
+        "rsi_bounded__fixed_tp__edge",
+        "rsi_bounded__hybrid__edge",
+        "adx_20_25__policy__edge",
+        "adx_20_25__fixed_tp__edge",
+        "adx_20_25__hybrid__edge",
+        "trend_distance_5pip__policy__edge",
+        "trend_distance_5pip__fixed_tp__edge",
+        "trend_distance_5pip__hybrid__edge",
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "baseline__hybrid__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "coded_defaults__hybrid__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge",
+        "pullback_2__hybrid__edge"
+      ],
+      "series_labels": [
+        "baseline__policy__edge",
+        "baseline__fixed_tp__edge",
+        "baseline__hybrid__edge",
+        "coded_defaults__policy__edge",
+        "coded_defaults__fixed_tp__edge",
+        "coded_defaults__hybrid__edge",
+        "pullback_2__policy__edge",
+        "pullback_2__fixed_tp__edge",
+        "pullback_2__hybrid__edge"
+      ],
+      "missing_labels": [
+        "rsi_bounded__policy__edge",
+        "rsi_bounded__fixed_tp__edge",
+        "rsi_bounded__hybrid__edge",
+        "adx_20_25__policy__edge",
+        "adx_20_25__fixed_tp__edge",
+        "adx_20_25__hybrid__edge",
+        "trend_distance_5pip__policy__edge",
+        "trend_distance_5pip__fixed_tp__edge",
+        "trend_distance_5pip__hybrid__edge"
+      ],
+      "sr_variance": 0.0038515643313062394,
+      "sr0": 0.11505317422286629,
+      "status": "OK",
+      "cscv": {
+        "status": "OK",
+        "pbo": 0.007614607614607615,
+        "splits": 12870,
+        "n_series": 9,
+        "n_rows": 176,
+        "blocks": 16,
+        "reason": null,
+        "lambda_median": 2.1972245773362196,
+        "grid": "2022-12-19/2022-12-25 .. 2026-04-27/2026-05-03"
+      }
+    },
+    {
+      "halts": "srs",
+      "cost": "base",
+      "labels": [
+        "baseline__policy__srs"
+      ],
+      "series_labels": [
+        "baseline__policy__srs"
+      ],
+      "missing_labels": [],
+      "sr_variance": null,
+      "sr0": null,
+      "status": "GROUP_TOO_FEW_SERIES",
+      "cscv": {
+        "status": "UNAVAILABLE",
+        "pbo": null,
+        "splits": 0,
+        "n_series": 1,
+        "n_rows": 0,
+        "blocks": 16,
+        "reason": "GROUP_TOO_FEW_SERIES"
+      }
+    },
+    {
+      "halts": "srs",
+      "cost": "stress_1_5x",
+      "labels": [
+        "baseline__policy__srs"
+      ],
+      "series_labels": [
+        "baseline__policy__srs"
+      ],
+      "missing_labels": [],
+      "sr_variance": null,
+      "sr0": null,
+      "status": "GROUP_TOO_FEW_SERIES",
+      "cscv": {
+        "status": "UNAVAILABLE",
+        "pbo": null,
+        "splits": 0,
+        "n_series": 1,
+        "n_rows": 0,
+        "blocks": 16,
+        "reason": "GROUP_TOO_FEW_SERIES"
+      }
+    },
+    {
+      "halts": "srs",
+      "cost": "stress_2x",
+      "labels": [
+        "baseline__policy__srs"
+      ],
+      "series_labels": [
+        "baseline__policy__srs"
+      ],
+      "missing_labels": [],
+      "sr_variance": null,
+      "sr0": null,
+      "status": "GROUP_TOO_FEW_SERIES",
+      "cscv": {
+        "status": "UNAVAILABLE",
+        "pbo": null,
+        "splits": 0,
+        "n_series": 1,
+        "n_rows": 0,
+        "blocks": 16,
+        "reason": "GROUP_TOO_FEW_SERIES"
+      }
+    }
+  ],
+  "variants": [
+    {
+      "label": "baseline__policy__srs",
+      "cost": "base",
+      "run_id": "20261103T174558Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "srs",
+      "registry_line": 1,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__base.json",
+        "json_sha256_16": "948ad5ff6de829cd",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__base_trades.csv",
+        "csv_sha256_16": "8dea8e5ce23b2781"
+      },
+      "dev_trades": 16,
+      "expectancy_r": -0.5420127154508982,
+      "sharpe_per_trade": -0.7938229317772866,
+      "skew": 0.5914846070122088,
+      "kurtosis": 1.6629895823713128,
+      "psr0": 0.007131234783289257,
+      "sr0": null,
+      "dsr": null,
+      "pbo": null,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "BELOW_MIN_SAMPLE"
+      ]
+    },
+    {
+      "label": "baseline__policy__srs",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T174558Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "srs",
+      "registry_line": 2,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_1_5x.json",
+        "json_sha256_16": "24db49cbfe1cd5fb",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_1_5x_trades.csv",
+        "csv_sha256_16": "79a023b15807bb6f"
+      },
+      "dev_trades": 17,
+      "expectancy_r": -0.5386308090468315,
+      "sharpe_per_trade": -0.7036866656925641,
+      "skew": 0.6841648004120258,
+      "kurtosis": 1.6960720674946015,
+      "psr0": 0.012284067289334103,
+      "sr0": null,
+      "dsr": null,
+      "pbo": null,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "BELOW_MIN_SAMPLE"
+      ]
+    },
+    {
+      "label": "baseline__policy__srs",
+      "cost": "stress_2x",
+      "run_id": "20261103T174558Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "srs",
+      "registry_line": 3,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_2x.json",
+        "json_sha256_16": "3e70f4b1be518f85",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_srs/baseline__policy__srs__stress_2x_trades.csv",
+        "csv_sha256_16": "846dc8473c7118fc"
+      },
+      "dev_trades": 16,
+      "expectancy_r": -0.5249083134802404,
+      "sharpe_per_trade": -0.6232922404223874,
+      "skew": 0.6940609759512462,
+      "kurtosis": 1.7958034779112064,
+      "psr0": 0.024732896753566668,
+      "sr0": null,
+      "dsr": null,
+      "pbo": null,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "BELOW_MIN_SAMPLE"
+      ]
+    },
+    {
+      "label": "rsi_bounded__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 22,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__policy__edge__base.json, rsi_bounded__policy__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__policy__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__policy__edge__base_trades.csv"
+      },
+      "dev_trades": 1281,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "rsi_bounded__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 23,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__policy__edge__stress_1_5x.json, rsi_bounded__policy__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__policy__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__policy__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 868,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "rsi_bounded__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 24,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__fixed_tp__edge__base.json, rsi_bounded__fixed_tp__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__fixed_tp__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__fixed_tp__edge__base_trades.csv"
+      },
+      "dev_trades": 1178,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "rsi_bounded__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 25,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__fixed_tp__edge__stress_1_5x.json, rsi_bounded__fixed_tp__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__fixed_tp__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__fixed_tp__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 919,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "rsi_bounded__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 26,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__hybrid__edge__base.json, rsi_bounded__hybrid__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__hybrid__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__hybrid__edge__base_trades.csv"
+      },
+      "dev_trades": 1351,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "rsi_bounded__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "8039b4274be5f8182071a14b32d078575b85034be0088f4522d5ede4508b478e",
+      "variant": "rsi_bounded",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 27,
+      "series_status": "INVALID",
+      "series_detail": "missing rsi_bounded__hybrid__edge__stress_1_5x.json, rsi_bounded__hybrid__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__hybrid__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/rsi_bounded__hybrid__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 958,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 28,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__policy__edge__base.json, adx_20_25__policy__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__policy__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__policy__edge__base_trades.csv"
+      },
+      "dev_trades": 1182,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 29,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__policy__edge__stress_1_5x.json, adx_20_25__policy__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__policy__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__policy__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 801,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 30,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__fixed_tp__edge__base.json, adx_20_25__fixed_tp__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__fixed_tp__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__fixed_tp__edge__base_trades.csv"
+      },
+      "dev_trades": 1136,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 31,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__fixed_tp__edge__stress_1_5x.json, adx_20_25__fixed_tp__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__fixed_tp__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__fixed_tp__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 840,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 32,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__hybrid__edge__base.json, adx_20_25__hybrid__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__hybrid__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__hybrid__edge__base_trades.csv"
+      },
+      "dev_trades": 1163,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "adx_20_25__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "19be79297837f0a97990bea3a7aa4d021277444f119ab057810097f9b289f93d",
+      "variant": "adx_20_25",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 33,
+      "series_status": "INVALID",
+      "series_detail": "missing adx_20_25__hybrid__edge__stress_1_5x.json, adx_20_25__hybrid__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__hybrid__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/adx_20_25__hybrid__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 833,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 34,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__policy__edge__base.json, trend_distance_5pip__policy__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__policy__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__policy__edge__base_trades.csv"
+      },
+      "dev_trades": 1291,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 35,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__policy__edge__stress_1_5x.json, trend_distance_5pip__policy__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__policy__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__policy__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 840,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 36,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__fixed_tp__edge__base.json, trend_distance_5pip__fixed_tp__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__fixed_tp__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__fixed_tp__edge__base_trades.csv"
+      },
+      "dev_trades": 1187,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 37,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__fixed_tp__edge__stress_1_5x.json, trend_distance_5pip__fixed_tp__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__fixed_tp__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__fixed_tp__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 964,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 38,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__hybrid__edge__base.json, trend_distance_5pip__hybrid__edge__base_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__hybrid__edge__base.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__hybrid__edge__base_trades.csv"
+      },
+      "dev_trades": 1341,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.07287100876462885,
+      "dsr": null,
+      "pbo": 0.0,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "trend_distance_5pip__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "policy_hash": "5656aff238ea415d4acda8778b6b488391fa496fbe8c3cd241286c60c89251ae",
+      "variant": "trend_distance_5pip",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 39,
+      "series_status": "INVALID",
+      "series_detail": "missing trend_distance_5pip__hybrid__edge__stress_1_5x.json, trend_distance_5pip__hybrid__edge__stress_1_5x_trades.csv",
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__hybrid__edge__stress_1_5x.json",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/trend_distance_5pip__hybrid__edge__stress_1_5x_trades.csv"
+      },
+      "dev_trades": 930,
+      "expectancy_r": null,
+      "sharpe_per_trade": null,
+      "skew": null,
+      "kurtosis": null,
+      "psr0": null,
+      "sr0": 0.11505317422286629,
+      "dsr": null,
+      "pbo": 0.007614607614607615,
+      "verdict": "INCONCLUSIVE",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "SERIES_FILES_MISSING"
+      ]
+    },
+    {
+      "label": "baseline__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 40,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__base.json",
+        "json_sha256_16": "f7bd9a0bcc2648c2",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__base_trades.csv",
+        "csv_sha256_16": "2547c2ca3b247509"
+      },
+      "dev_trades": 5622,
+      "expectancy_r": -0.34656939126069314,
+      "sharpe_per_trade": -0.3191262756595365,
+      "skew": 1.0903892429742488,
+      "kurtosis": 6.171749074936323,
+      "psr0": 1.973440355815012e-86,
+      "sr0": 0.07287100876462885,
+      "dsr": 2.8765679351653e-129,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 41,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__stress_1_5x.json",
+        "json_sha256_16": "1c8fc00f912784ee",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__policy__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "8ad83bccd72e1804"
+      },
+      "dev_trades": 5556,
+      "expectancy_r": -0.511178575789584,
+      "sharpe_per_trade": -0.4782980296947276,
+      "skew": 1.18885037179351,
+      "kurtosis": 6.673577238460167,
+      "psr0": 2.6278655660061913e-148,
+      "sr0": 0.11505317422286629,
+      "dsr": 5.807162494391476e-227,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 42,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__fixed_tp__edge__base.json",
+        "json_sha256_16": "269af3cb70a861ab",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "736e2844248f0ba8"
+      },
+      "dev_trades": 4039,
+      "expectancy_r": -0.36118850360431104,
+      "sharpe_per_trade": -0.24611835895305192,
+      "skew": 1.2556681050306,
+      "kurtosis": 2.8085784188020693,
+      "psr0": 5.2989476976465705e-42,
+      "sr0": 0.07287100876462885,
+      "dsr": 3.9271089610485873e-69,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 43,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__fixed_tp__edge__stress_1_5x.json",
+        "json_sha256_16": "2b4ba4539b2764f3",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__fixed_tp__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "25d9c4b3e18b5cc7"
+      },
+      "dev_trades": 4040,
+      "expectancy_r": -0.5073063835242555,
+      "sharpe_per_trade": -0.3564702179175056,
+      "skew": 1.3778080507604127,
+      "kurtosis": 3.2067174669983074,
+      "psr0": 9.056372204060852e-74,
+      "sr0": 0.11505317422286629,
+      "dsr": 2.0908433751253872e-127,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 44,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__hybrid__edge__base.json",
+        "json_sha256_16": "c3cb9853c9f5ffb9",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__hybrid__edge__base_trades.csv",
+        "csv_sha256_16": "2c4812f39cbb621a"
+      },
+      "dev_trades": 6016,
+      "expectancy_r": -0.3447274802621188,
+      "sharpe_per_trade": -0.3221458481211271,
+      "skew": 0.7564634052553655,
+      "kurtosis": 3.68992128008858,
+      "psr0": 1.1574163053073579e-105,
+      "sr0": 0.07287100876462885,
+      "dsr": 1.015974461237023e-157,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "baseline__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "f00f1f9c3e9120971378f3c1eb95d28f09d1d5e2ee97035a7f4c00a998535dc8",
+      "variant": "baseline",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 45,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__hybrid__edge__stress_1_5x.json",
+        "json_sha256_16": "392eee4b16f60d64",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/baseline__hybrid__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "0f9b404be2113658"
+      },
+      "dev_trades": 5947,
+      "expectancy_r": -0.5009151074261258,
+      "sharpe_per_trade": -0.4711389414786603,
+      "skew": 0.8823379218165117,
+      "kurtosis": 4.151916281379786,
+      "psr0": 9.08591707105828e-183,
+      "sr0": 0.11505317422286629,
+      "dsr": 1.307900016765926e-281,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 46,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__policy__edge__base.json",
+        "json_sha256_16": "7ee89bd2caa2f364",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__policy__edge__base_trades.csv",
+        "csv_sha256_16": "50f525b4e435806e"
+      },
+      "dev_trades": 2195,
+      "expectancy_r": -0.32201017370249874,
+      "sharpe_per_trade": -0.2939007498236573,
+      "skew": 1.3345507231581717,
+      "kurtosis": 6.955939952210739,
+      "psr0": 3.0967552880023164e-29,
+      "sr0": 0.07287100876462885,
+      "dsr": 2.0620040316415227e-44,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 47,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__policy__edge__stress_1_5x.json",
+        "json_sha256_16": "2b26219c4aeab4a1",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__policy__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "1bdb5b1b2882fdf6"
+      },
+      "dev_trades": 2168,
+      "expectancy_r": -0.5088024858533491,
+      "sharpe_per_trade": -0.47371023591674266,
+      "skew": 1.5257641324669498,
+      "kurtosis": 7.7835348058644955,
+      "psr0": 1.6362090426374294e-52,
+      "sr0": 0.11505317422286629,
+      "dsr": 5.91879861449409e-80,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 48,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__fixed_tp__edge__base.json",
+        "json_sha256_16": "88c5c23172b29f7c",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "f7f0453ab412f7f3"
+      },
+      "dev_trades": 1777,
+      "expectancy_r": -0.34166154283640454,
+      "sharpe_per_trade": -0.2307960029819966,
+      "skew": 1.2205334391382447,
+      "kurtosis": 2.6773661270735745,
+      "psr0": 8.160516454035618e-18,
+      "sr0": 0.07287100876462885,
+      "dsr": 1.891586079559607e-29,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 49,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__fixed_tp__edge__stress_1_5x.json",
+        "json_sha256_16": "402cbe50e694689c",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__fixed_tp__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "830609aac9e0dc93"
+      },
+      "dev_trades": 1777,
+      "expectancy_r": -0.5223590076985722,
+      "sharpe_per_trade": -0.368540788962793,
+      "skew": 1.4038902921422058,
+      "kurtosis": 3.239141105907683,
+      "psr0": 4.316993532626518e-35,
+      "sr0": 0.11505317422286629,
+      "dsr": 6.161600799555939e-59,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 50,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__hybrid__edge__base.json",
+        "json_sha256_16": "84c7e627b86a2f64",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__hybrid__edge__base_trades.csv",
+        "csv_sha256_16": "474b301291f6d091"
+      },
+      "dev_trades": 2250,
+      "expectancy_r": -0.3192501546616426,
+      "sharpe_per_trade": -0.2971194977627803,
+      "skew": 0.8296993063035504,
+      "kurtosis": 2.571260981209196,
+      "psr0": 7.122850256908e-36,
+      "sr0": 0.07287100876462885,
+      "dsr": 1.691114510811823e-54,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "coded_defaults__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "37e1b87aff55dd22478e87e503667bc40f07aa2fa45789be0288d71660504be9",
+      "variant": "coded_defaults",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 51,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__hybrid__edge__stress_1_5x.json",
+        "json_sha256_16": "9030dd9339a1a617",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/coded_defaults__hybrid__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "09cad6bab1c47079"
+      },
+      "dev_trades": 2218,
+      "expectancy_r": -0.5034741938024628,
+      "sharpe_per_trade": -0.476383320911164,
+      "skew": 1.0205491704951302,
+      "kurtosis": 3.014923086419712,
+      "psr0": 1.2264230588466837e-70,
+      "sr0": 0.11505317422286629,
+      "dsr": 1.0989513942749678e-107,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 52,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__policy__edge__base.json",
+        "json_sha256_16": "d0b694ac3b6681b1",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__policy__edge__base_trades.csv",
+        "csv_sha256_16": "b572a075db5268e0"
+      },
+      "dev_trades": 3218,
+      "expectancy_r": -0.34261599826848776,
+      "sharpe_per_trade": -0.3152130119639624,
+      "skew": 1.4146786896944832,
+      "kurtosis": 7.15917901533301,
+      "psr0": 1.0928974513613085e-45,
+      "sr0": 0.07287100876462885,
+      "dsr": 3.6142636778584103e-68,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "policy",
+      "halts": "edge",
+      "registry_line": 53,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__policy__edge__stress_1_5x.json",
+        "json_sha256_16": "c9dca06c733cf3bc",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__policy__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "a27b41662a8c6488"
+      },
+      "dev_trades": 3133,
+      "expectancy_r": -0.5132236383556847,
+      "sharpe_per_trade": -0.4781175720843219,
+      "skew": 1.548137146885393,
+      "kurtosis": 7.771717948858301,
+      "psr0": 1.7750741181718348e-75,
+      "sr0": 0.11505317422286629,
+      "dsr": 5.608891682817367e-115,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 54,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__fixed_tp__edge__base.json",
+        "json_sha256_16": "eac89e5ec5d35485",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__fixed_tp__edge__base_trades.csv",
+        "csv_sha256_16": "7f3ae95f2ce2c20b"
+      },
+      "dev_trades": 2483,
+      "expectancy_r": -0.3407287736138805,
+      "sharpe_per_trade": -0.22940562546529886,
+      "skew": 1.2041072243448818,
+      "kurtosis": 2.6874785071073544,
+      "psr0": 5.632894487495726e-24,
+      "sr0": 0.07287100876462885,
+      "dsr": 3.552529999227595e-40,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "fixed_tp",
+      "halts": "edge",
+      "registry_line": 55,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__fixed_tp__edge__stress_1_5x.json",
+        "json_sha256_16": "fd2052aa52440303",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__fixed_tp__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "3f737b2187b4c61f"
+      },
+      "dev_trades": 2409,
+      "expectancy_r": -0.4838321863567826,
+      "sharpe_per_trade": -0.3341945599176077,
+      "skew": 1.310131871800076,
+      "kurtosis": 3.027233714520134,
+      "psr0": 2.4723867752818827e-41,
+      "sr0": 0.11505317422286629,
+      "dsr": 5.339001106998285e-73,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 56,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__hybrid__edge__base.json",
+        "json_sha256_16": "6c1f243a2e137683",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__hybrid__edge__base_trades.csv",
+        "csv_sha256_16": "73ce37694e520ac5"
+      },
+      "dev_trades": 3307,
+      "expectancy_r": -0.3381257084890921,
+      "sharpe_per_trade": -0.31881033041194473,
+      "skew": 0.8726610761189242,
+      "kurtosis": 2.6049703609551487,
+      "psr0": 1.1929412009673098e-57,
+      "sr0": 0.07287100876462885,
+      "dsr": 6.436587352412346e-86,
+      "pbo": 0.0,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    },
+    {
+      "label": "pullback_2__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T184434Z",
+      "policy_hash": "3cce7b6729284a86fd4ed1162e802d9c5ab3f3ea72bb1e3d8e5d401bef2fc3e6",
+      "variant": "pullback_2",
+      "exit_mode": "hybrid",
+      "halts": "edge",
+      "registry_line": 57,
+      "series_status": "OK",
+      "series_detail": null,
+      "files": {
+        "json": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__hybrid__edge__stress_1_5x.json",
+        "json_sha256_16": "3bab689800985edf",
+        "csv": "/Users/raynj/Desktop/Forex-automation/fx_ai_engine/artifacts/replay/2026-11-03_edge/pullback_2__hybrid__edge__stress_1_5x_trades.csv",
+        "csv_sha256_16": "228b43fba53c2d85"
+      },
+      "dev_trades": 3206,
+      "expectancy_r": -0.5042042261334343,
+      "sharpe_per_trade": -0.47761603732323393,
+      "skew": 1.012731151233513,
+      "kurtosis": 2.981555771521833,
+      "psr0": 6.917241017454176e-102,
+      "sr0": 0.11505317422286629,
+      "dsr": 1.1843499212580535e-155,
+      "pbo": 0.007614607614607615,
+      "verdict": "FAIL",
+      "evidence_status": "NOT_EVIDENCE",
+      "reasons": [
+        "PSR_BELOW_MIN"
+      ]
+    }
+  ],
+  "superseded_rows": [
+    {
+      "label": "baseline__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 4,
+      "superseded_flag": true
+    },
+    {
+      "label": "baseline__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 5,
+      "superseded_flag": true
+    },
+    {
+      "label": "baseline__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 6,
+      "superseded_flag": true
+    },
+    {
+      "label": "baseline__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 7,
+      "superseded_flag": true
+    },
+    {
+      "label": "baseline__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 8,
+      "superseded_flag": true
+    },
+    {
+      "label": "baseline__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 9,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 10,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 11,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 12,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 13,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 14,
+      "superseded_flag": true
+    },
+    {
+      "label": "coded_defaults__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 15,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 16,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 17,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 18,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 19,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "registry_line": 20,
+      "superseded_flag": true
+    },
+    {
+      "label": "pullback_2__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "registry_line": 21,
+      "superseded_flag": true
+    }
+  ],
+  "missing_inputs": [
+    {
+      "label": "rsi_bounded__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__policy__edge__base.json, rsi_bounded__policy__edge__base_trades.csv"
+    },
+    {
+      "label": "rsi_bounded__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__policy__edge__stress_1_5x.json, rsi_bounded__policy__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "rsi_bounded__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__fixed_tp__edge__base.json, rsi_bounded__fixed_tp__edge__base_trades.csv"
+    },
+    {
+      "label": "rsi_bounded__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__fixed_tp__edge__stress_1_5x.json, rsi_bounded__fixed_tp__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "rsi_bounded__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__hybrid__edge__base.json, rsi_bounded__hybrid__edge__base_trades.csv"
+    },
+    {
+      "label": "rsi_bounded__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing rsi_bounded__hybrid__edge__stress_1_5x.json, rsi_bounded__hybrid__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "adx_20_25__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__policy__edge__base.json, adx_20_25__policy__edge__base_trades.csv"
+    },
+    {
+      "label": "adx_20_25__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__policy__edge__stress_1_5x.json, adx_20_25__policy__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "adx_20_25__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__fixed_tp__edge__base.json, adx_20_25__fixed_tp__edge__base_trades.csv"
+    },
+    {
+      "label": "adx_20_25__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__fixed_tp__edge__stress_1_5x.json, adx_20_25__fixed_tp__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "adx_20_25__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__hybrid__edge__base.json, adx_20_25__hybrid__edge__base_trades.csv"
+    },
+    {
+      "label": "adx_20_25__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing adx_20_25__hybrid__edge__stress_1_5x.json, adx_20_25__hybrid__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__policy__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__policy__edge__base.json, trend_distance_5pip__policy__edge__base_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__policy__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__policy__edge__stress_1_5x.json, trend_distance_5pip__policy__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__fixed_tp__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__fixed_tp__edge__base.json, trend_distance_5pip__fixed_tp__edge__base_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__fixed_tp__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__fixed_tp__edge__stress_1_5x.json, trend_distance_5pip__fixed_tp__edge__stress_1_5x_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__hybrid__edge",
+      "cost": "base",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__hybrid__edge__base.json, trend_distance_5pip__hybrid__edge__base_trades.csv"
+    },
+    {
+      "label": "trend_distance_5pip__hybrid__edge",
+      "cost": "stress_1_5x",
+      "run_id": "20261103T175026Z",
+      "reason": "SERIES_FILES_MISSING",
+      "detail": "missing trend_distance_5pip__hybrid__edge__stress_1_5x.json, trend_distance_5pip__hybrid__edge__stress_1_5x_trades.csv"
+    }
+  ],
+  "reasons": [
+    "SERIES_FILES_MISSING: 18 row(s)",
+    "BELOW_MIN_SAMPLE: 3 row(s)",
+    "PSR_BELOW_MIN: 18 row(s)"
+  ],
+  "notes": [
+    "The registry rows carry no per-trade series, standard deviation, skew or kurtosis. Sharpe, skew and kurtosis come from the `*_trades.csv` next to each row's report, and only when that file belongs to the same run (JSON `generated_at` = `run_id`, same policy_hash and cost) and its dev/holdout counts equal the registry's.",
+    "A trial is a distinct (policy_hash, exit_mode) pair over all parseable registry rows, whatever the cost, halts mode or superseded flag. Rows without a usable series still count toward N.",
+    "Cross-trial statistics (variance of Sharpe, CSCV) are computed per group (halts mode, cost profile): SRS-halt runs, edge runs and different cost profiles are not comparable return streams.",
+    "Development trades only (entry_time < holdout_start); the holdout is not used. Unit: r_multiple per trade.",
+    "A PASS here is necessary, not sufficient: the replay still needs an R2 authenticity-gate PASS with matching hashes."
+  ]
+}
