@@ -28,6 +28,8 @@ from core.mt5_bridge import (
     Preserve10ApprovalFacts,
     SymbolExecutionContract,
     _closed_history_summary_from_deals,
+    account_unit_scale,
+    usd_from_account_units,
 )
 
 logger = logging.getLogger("fx_ai_engine.file_bridge")
@@ -95,6 +97,7 @@ class FileBridgeConnection(MT5Connection):
         self.feedback_dir = self.bridge_path / "feedback"
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._cache: dict[Path, _CachedFile] = {}
+        self._last_currency: str | None = None
 
     # ------------------------------------------------------------------
     # File helpers
@@ -166,7 +169,33 @@ class FileBridgeConnection(MT5Connection):
         for key in ("balance", "equity", "margin_free", "floating_pnl"):
             if not _finite_number(snapshot.get(key)):
                 raise FileBridgeDataError(f"account snapshot {key} is not a finite number")
+        currency = snapshot.get("currency")
+        if isinstance(currency, str) and currency.strip():
+            self._last_currency = currency
         return snapshot
+
+    def _account_currency(self) -> str:
+        """Account currency from status.json, else the snapshot, else the last good value, else USD.
+
+        Reads without the freshness requirement and records no error: it only
+        selects the money unit, and the callers validate freshness themselves.
+        """
+        for path, key in (
+            (self.market_dir / "status.json", "account_currency"),
+            (self.feedback_dir / "account_snapshot.json", "currency"),
+        ):
+            try:
+                payload = self._read_json(path)
+            except FileBridgeDataError:
+                continue
+            value = payload.get(key) if isinstance(payload, dict) else None
+            if isinstance(value, str) and value.strip():
+                self._last_currency = value
+                return value
+        return self._last_currency or "USD"
+
+    def _unit_scale(self) -> float:
+        return account_unit_scale(self._account_currency())
 
     def _fail(self, code: str, exc: Exception | str) -> None:
         self._make_error(code, str(exc))
@@ -189,6 +218,9 @@ class FileBridgeConnection(MT5Connection):
                     raise FileBridgeDataError("EA reports no account server")
                 self.login = login
                 self.server = str(status.get("server") or "")
+                currency = status.get("account_currency")
+                if isinstance(currency, str) and currency.strip():
+                    self._last_currency = currency
                 self.connected = True
                 self.last_error = None
                 logger.info(
@@ -248,7 +280,14 @@ class FileBridgeConnection(MT5Connection):
             snapshot = self._account_snapshot_payload()
         except FileBridgeDataError as exc:
             return {"error": self._make_error("FILE_BRIDGE_ACCOUNT_UNAVAILABLE", str(exc)).__dict__}
-        return dict(snapshot)
+        result = dict(snapshot)
+        scale = account_unit_scale(snapshot.get("currency") or self._account_currency())
+        if scale != 1.0:
+            for key in ("balance", "equity", "margin_free", "floating_pnl"):
+                result[key] = usd_from_account_units(snapshot[key], scale)
+            result["money_unit"] = "USD"
+            result["unit_scale"] = scale
+        return result
 
     def get_open_position_tickets(self) -> list[int] | None:
         try:
@@ -324,7 +363,10 @@ class FileBridgeConnection(MT5Connection):
             return None
         matched = [d for d in deals if d.position_id == int(position_ticket)]
         return _closed_history_summary_from_deals(
-            matched, position_ticket_hint=int(position_ticket), constants=DEAL_CONSTANTS
+            matched,
+            position_ticket_hint=int(position_ticket),
+            constants=DEAL_CONSTANTS,
+            unit_scale=self._unit_scale(),
         )
 
     def get_trade_history_summary(self, trade_id: str, *, lookback_days: int = 30) -> dict[str, Any] | None:
@@ -339,7 +381,9 @@ class FileBridgeConnection(MT5Connection):
             return None
         positions = {d.position_id for d in seed if d.position_id > 0}
         matched = [d for d in deals if d.position_id in positions] if positions else seed
-        return _closed_history_summary_from_deals(matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS)
+        return _closed_history_summary_from_deals(
+            matched, trade_id_hint=trade_id, constants=DEAL_CONSTANTS, unit_scale=self._unit_scale()
+        )
 
     # ------------------------------------------------------------------
     # Market data
@@ -457,7 +501,7 @@ class FileBridgeConnection(MT5Connection):
             min_lot=float(values["volume_min"]),
             lot_step=float(values["volume_step"]),
             max_lot=float(values["volume_max"]),
-            tick_value=float(values["tick_value"]),
+            tick_value=usd_from_account_units(float(values["tick_value"]), self._unit_scale()),
             tick_size=float(values["tick_size"]),
             point=float(values["point"]),
         )
