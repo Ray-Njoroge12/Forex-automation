@@ -113,7 +113,7 @@ def test_function_body_helper_ignores_braces_in_strings(source):
 
 
 def test_ea_version_bumped(source):
-    assert '#define EA_VERSION "2026.11.04-2"' in source
+    assert '#define EA_VERSION "2026.11.05-1"' in source
 
 
 def test_envelope_checks_unchanged(source):

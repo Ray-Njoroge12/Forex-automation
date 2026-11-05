@@ -28,7 +28,7 @@ input int    MaxDeviationPoints = 10;      // Maximum price deviation for market
 input int    MarketBarsExport = 400;       // Closed bars exported per symbol and timeframe
 input int    CalendarDaysAhead = 14;       // Economic calendar export horizon (days)
 
-#define EA_VERSION "2026.11.04-2"
+#define EA_VERSION "2026.11.05-1"
 
 CTrade trade;
 
@@ -46,6 +46,16 @@ string   g_symbol_error_log = "";
 string   g_calendar_generated_at = "";
 int      g_calendar_event_count = -1;
 bool     g_calendar_complete = false;
+
+// iATR handles for the trailing stop, one per symbol/timeframe/period, created on
+// first use and released in OnDeinit (creating and releasing a handle on every
+// timer tick cost CPU under Wine and left the indicator no time to calculate).
+#define ATR_CACHE_SIZE 16
+string          g_atr_symbols[ATR_CACHE_SIZE];
+ENUM_TIMEFRAMES g_atr_tfs[ATR_CACHE_SIZE];
+int             g_atr_periods[ATR_CACHE_SIZE];
+int             g_atr_handles[ATR_CACHE_SIZE];
+int             g_atr_count = 0;
 
 // Per-position trade management parameters (indexed by slot 0..MAX_POS-1)
 #define MAX_POS 10
@@ -183,6 +193,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   ReleaseAtrHandles();
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
@@ -819,23 +830,47 @@ void ManageOpenPositions()
 //+------------------------------------------------------------------+
 //| Get ATR value for trailing stop calculation                       |
 //+------------------------------------------------------------------+
+void ReleaseAtrHandles()
+{
+   for(int i = 0; i < g_atr_count; i++)
+   {
+      if(g_atr_handles[i] != INVALID_HANDLE)
+         IndicatorRelease(g_atr_handles[i]);
+      g_atr_handles[i] = INVALID_HANDLE;
+   }
+   g_atr_count = 0;
+}
+
+int CachedAtrHandle(const string sym, const ENUM_TIMEFRAMES tf, const int period)
+{
+   for(int i = 0; i < g_atr_count; i++)
+      if(g_atr_symbols[i] == sym && g_atr_tfs[i] == tf && g_atr_periods[i] == period)
+         return g_atr_handles[i];
+   int handle = iATR(sym, tf, period);
+   if(handle == INVALID_HANDLE) return INVALID_HANDLE;
+   if(g_atr_count >= ATR_CACHE_SIZE)
+      ReleaseAtrHandles(); // more keys than expected (6 symbols, one period): start over
+   g_atr_symbols[g_atr_count] = sym;
+   g_atr_tfs[g_atr_count] = tf;
+   g_atr_periods[g_atr_count] = period;
+   g_atr_handles[g_atr_count] = handle;
+   g_atr_count++;
+   return handle;
+}
+
 double GetATR(string sym, ENUM_TIMEFRAMES tf, int period)
 {
-   int atrHandle = iATR(sym, tf, period);
+   int atrHandle = CachedAtrHandle(sym, tf, period);
    if(atrHandle == INVALID_HANDLE) return 0.0;
    
    double atrBuffer[];
    ArraySetAsSeries(atrBuffer, true);
    
+   // A new handle may still be calculating; the cached handle is read again next tick.
    if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) <= 0)
-   {
-      IndicatorRelease(atrHandle);
       return 0.0;
-   }
    
-   double val = atrBuffer[0];
-   IndicatorRelease(atrHandle);
-   return val;
+   return atrBuffer[0];
 }
 
 void LogDebug(string msg)
