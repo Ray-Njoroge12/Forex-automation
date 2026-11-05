@@ -29,6 +29,12 @@ def run(engine, mode: str, iterations: int = 0) -> None:
         if mode == "demo" and not _demo_account_verified(engine.bridge, use_mock=engine.use_mock):
             logger.error("Demo account verification failed; stopping before processing or routing signals")
             engine._fail_closed_bridge_uncertainty("demo account unverified or changed")
+            # A stale snapshot is also a host guard BLOCK: record it (and the guard
+            # state, for the recovery event after a restart) before stopping.
+            try:
+                engine._poll_host_guard(datetime.now(timezone.utc), force=True)
+            except Exception:
+                logger.exception("Host guard could not be evaluated before the demo stop")
             return
         update_health_status(
             status="running",

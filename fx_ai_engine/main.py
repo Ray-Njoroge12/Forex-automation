@@ -647,8 +647,10 @@ class Engine:
             if host_guard is None
             else host_guard
         )
+        # A BLOCK persisted by an earlier process (or a refused start) is recovered here.
+        host_tolerance.restore_guard_state(self.host_guard, self.repository, self.evidence_context)
         self.outage_monitor = (
-            host_tolerance.build_outage_monitor(use_mock=use_mock, bridge_path=self.bridge_path)
+            host_tolerance.build_outage_monitor(use_mock=use_mock, bridge_path=self.bridge_path, engine_process=True)
             if outage_monitor is None
             else outage_monitor
         )
@@ -797,6 +799,15 @@ class Engine:
     def _insert_risk_event(
         self, rule_name: str, severity: str, reason: str, trade_id: str | None = None, *, alert: bool = True
     ) -> None:
+        if alert and severity in ("BLOCK", "CRITICAL") and self.outage_monitor is not None:
+            # A stale bridge feed is reported by the outage alert (two messages per
+            # outage); the event is still persisted, only its own alert is dropped.
+            try:
+                if self.outage_monitor.reports(rule_name, datetime.now(timezone.utc)):
+                    alert = False
+                    logger.info("Risk alert %s folded into the bridge outage alert", rule_name)
+            except Exception:
+                logger.exception("Outage coverage check failed; sending the risk alert")
         _insert_risk_event_with_context(
             rule_name,
             severity,
@@ -1026,15 +1037,20 @@ class Engine:
     def _decision_cycle(self) -> None:
         decision_cycle.run_decision_cycle(self)
 
-    def _poll_host_guard(self, now: datetime | None = None) -> host_tolerance.HostGuardStatus | None:
+    def _poll_host_guard(
+        self, now: datetime | None = None, *, force: bool = False
+    ) -> host_tolerance.HostGuardStatus | None:
         if self.host_guard is None:
             return None
         # Persisted without a Telegram risk alert: a stale bridge is reported by
         # the outage monitor (two messages per outage), not by this event.
-        return self.host_guard.poll(
-            now or datetime.now(timezone.utc),
+        record = host_tolerance.persisting_recorder(
+            self.host_guard,
             lambda rule, severity, reason: self._insert_risk_event(rule, severity, reason, alert=False),
+            self.repository,
+            self.evidence_context,
         )
+        return self.host_guard.poll(now or datetime.now(timezone.utc), record, force=force)
 
     def _poll_outage_monitor(self, now: datetime | None = None) -> None:
         if self.outage_monitor is None:
@@ -1046,6 +1062,65 @@ class Engine:
 
     def run(self, mode: str, iterations: int = 0) -> None:
         engine_runtime.run(self, mode, iterations)
+
+
+def _resolve_runtime_policy(args: argparse.Namespace) -> dict:
+    """The run's policy before the demo-only experiment gate (main and refused starts)."""
+    if args.policy_mode:
+        os.environ["FX_POLICY_MODE"] = args.policy_mode
+    policy = apply_runtime_experiment_config(get_policy_config(), run_mode=args.mode, env=os.environ)
+    if args.policy_mode and policy["MODE_ID"] != args.policy_mode:
+        policy = apply_runtime_experiment_config(get_policy_config(mode_id=args.policy_mode), run_mode=args.mode, env=os.environ)
+    return policy
+
+
+def _record_host_guard_at_refused_start(
+    args: argparse.Namespace, bridge: MT5Connection, *, repository: EngineRepository, use_mock: bool
+) -> None:
+    """A demo start refused for want of a fresh demo snapshot still runs the host guard.
+
+    The BLOCK (for example a stale snapshot) is persisted with the evidence context
+    the engine would have used, together with the guard state, so the engine that
+    starts once the host passes records HOST_GUARD_RECOVERED. The start stays refused.
+    """
+    try:
+        context = build_runtime_evidence_context(
+            _resolve_runtime_policy(args),
+            use_mock=use_mock,
+            login=getattr(bridge, "login", 0),
+            server=getattr(bridge, "server", ""),
+        )
+        guard = host_tolerance.build_host_guard(use_mock=use_mock, run_mode=args.mode, bridge_path=get_mt5_bridge_path())
+        host_tolerance.restore_guard_state(guard, repository, context)
+        record = host_tolerance.persisting_recorder(
+            guard,
+            lambda rule, severity, reason: _insert_risk_event_with_context(
+                rule, severity, reason, evidence_context=context, repository=repository, alert=False
+            ),
+            repository,
+            context,
+        )
+        status = guard.poll(datetime.now(timezone.utc), record, force=True)
+        if status.blocked:
+            logger.error("Host guard BLOCK at the refused start: %s", status.details)
+    except Exception:
+        logger.exception("Host guard could not be evaluated at the refused start")
+
+
+def _send_start_notice(mode: str, *, use_mock: bool) -> None:
+    """The "engine started" message, unless it belongs to an outage already reported."""
+    from core.alerts import send_telegram_message
+
+    try:
+        monitor = None if use_mock else host_tolerance.build_outage_monitor(
+            use_mock=False, bridge_path=get_mt5_bridge_path()
+        )
+        if monitor is not None and not monitor.claim_start_notice():
+            logger.info("Engine start notice folded into the bridge outage alert")
+            return
+    except Exception:
+        logger.exception("Outage state unavailable; sending the start notice")
+    send_telegram_message("🚀 <b>FX AI Engine Started</b>\nMode: " + mode)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1111,6 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.mode == "demo" and not _demo_account_verified(bridge, use_mock=use_mock):
         logger.error("Demo mode requires a verified MT5 demo account; refusing to start")
+        _record_host_guard_at_refused_start(args, bridge, repository=repository, use_mock=use_mock)
         return 2
 
     live_session = None
@@ -1126,16 +1202,12 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["FX_POLICY_MODE"] = live_gate.LIVE_POLICY_MODE
 
     start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
-    from core.alerts import send_telegram_message
-    send_telegram_message("🚀 <b>FX AI Engine Started</b>\nMode: " + args.mode)
+    _send_start_notice(args.mode, use_mock=use_mock)
 
     try:
-        if args.policy_mode:
-            os.environ["FX_POLICY_MODE"] = args.policy_mode
-        policy = apply_runtime_experiment_config(get_policy_config(), run_mode=args.mode, env=os.environ)
-        if args.policy_mode and policy["MODE_ID"] != args.policy_mode:
-            policy = apply_runtime_experiment_config(get_policy_config(mode_id=args.policy_mode), run_mode=args.mode, env=os.environ)
-        policy = _enforce_demo_only_experiment_account_gate(policy, bridge=bridge, use_mock=use_mock)
+        policy = _enforce_demo_only_experiment_account_gate(
+            _resolve_runtime_policy(args), bridge=bridge, use_mock=use_mock
+        )
         startup_evidence_context = build_runtime_evidence_context(
             policy,
             use_mock=use_mock,

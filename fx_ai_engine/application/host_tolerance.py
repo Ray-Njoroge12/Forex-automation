@@ -8,7 +8,10 @@ the decision cycle refuses new entries (funnel stage ``HOST``, reason
 positions, feedback and exit processing are not touched. ``HOST_GUARD_RECOVERED``
 is persisted when the host passes again. The engine persists host guard events
 without a Telegram risk alert: the outage alert below is the one notification
-for a stale bridge.
+for a stale bridge. The blocked state is kept in ``engine_runtime_state``
+(``HOST_GUARD_STATE_KEY``), so the guard of a restarted engine process records
+the recovery, and a refused demo start (no fresh demo snapshot) still evaluates
+the guard and records the BLOCK before it exits.
 
 The first evaluation inside the trading window of each UTC day runs
 ``core.host_rules.window_start_checks`` (every rule that can BLOCK in
@@ -23,7 +26,11 @@ snapshot or the bar exports are stale for more than two minutes during trading
 hours, and one when they recover. The episode state is a small JSON file kept
 under a lock, so the engine and the watchdog (which keeps polling while the
 engine is stopped) share it, and a restart during an outage sends nothing new.
-Nothing is read or sent when no alert channel is configured.
+Nothing is read or sent when no alert channel is configured. Engine risk events
+that describe the same stale feed (``OUTAGE_COVERED_RULES``) are persisted
+without their Telegram alert while this alert covers the feed, and the engine's
+"started" message is folded into the episode when the engine starts during or
+after an outage it did not run through.
 
 Probes are injected; mock mode and tests never evaluate the real host.
 """
@@ -33,6 +40,7 @@ import json
 import logging
 import os
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -64,6 +72,25 @@ DEFAULT_BLOCKED_INTERVAL_SECONDS = 30
 OUTAGE_STALE_AFTER_SECONDS = 120
 M15_SECONDS = 900
 DEFAULT_OUTAGE_STATE_PATH = Path(__file__).resolve().parents[1] / "database" / "outage_alert_state.json"
+HOST_GUARD_STATE_KEY = "host_guard_state"
+# The engine's six symbols (application.market_data_service.SYMBOLS, pinned by a
+# test). Not imported from there so the watchdog does not load pandas.
+BAR_EXPORT_SYMBOLS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF")
+ACCOUNT_SNAPSHOT_FILE = ("feedback/account_snapshot.json", "timestamp")
+MARKET_STATUS_FILE = ("market/status.json", "generated_at")
+# Engine risk events that describe a stale bridge file, with that file. While the
+# file is older than the bridge's 30 s freshness limit and the outage alert covers
+# it (an episode is active, or it is trading hours so a stale feed past 2 minutes
+# is reported), the event is persisted without its own Telegram alert.
+OUTAGE_COVERED_RULES: dict[str, tuple[str, str]] = {
+    "STATE_RECONCILIATION_FAILED": ACCOUNT_SNAPSHOT_FILE,
+    "STATE_STALE": ACCOUNT_SNAPSHOT_FILE,
+    "LIVE_EQUITY_STALE": ACCOUNT_SNAPSHOT_FILE,
+    "LIVE_EA_STATUS_UNAVAILABLE": MARKET_STATUS_FILE,
+}
+# Outage-state flag: the next engine start sends no "started" message (it is
+# part of the outage that was already reported).
+START_NOTICE_FOLDED = "fold_next_start_notice"
 
 Evaluator = Callable[[datetime], list[Check]]
 Recorder = Callable[[str, str, str], None]
@@ -128,12 +155,23 @@ class HostGuard:
         interval = self.blocked_interval_seconds if self._status.blocked else self.interval_seconds
         return (now - self._last_evaluated).total_seconds() >= interval
 
-    def poll(self, now: datetime, record: Recorder) -> HostGuardStatus:
-        """Re-evaluate when due (or at the first poll inside today's trading window)."""
+    def restore_blocked(self, failed: tuple[str, ...], details: str) -> None:
+        """Start from the blocked state a previous engine process persisted.
+
+        The next poll evaluates the host: a pass records ``HOST_GUARD_RECOVERED``,
+        the same failures record nothing new (one BLOCK per episode across restarts).
+        """
+        if not self.enabled:
+            return
+        self._status = HostGuardStatus(True, True, tuple(failed), details or "restored blocked state", None)
+        self._last_evaluated = None
+
+    def poll(self, now: datetime, record: Recorder, *, force: bool = False) -> HostGuardStatus:
+        """Re-evaluate when due, when forced, or at the first poll inside today's trading window."""
         if not self.enabled:
             return self._status
         daily_due = self._in_trading_window(now) and self._daily_check_day != now.date()
-        if not (daily_due or self._due(now)):
+        if not (force or daily_due or self._due(now)):
             return self._status
 
         # At the window start the full set (a superset of the guard rules) is
@@ -205,29 +243,96 @@ def build_host_guard(*, use_mock: bool, run_mode: str, bridge_path: Path) -> Hos
     )
 
 
+def restore_guard_state(guard: HostGuard, repository, evidence_context) -> None:
+    """Seed *guard* with the blocked state the last engine process persisted (if any)."""
+    if not guard.enabled:
+        return
+    try:
+        raw = repository.get_engine_runtime_state(HOST_GUARD_STATE_KEY, evidence_context=evidence_context)
+        data = json.loads(raw) if raw else None
+    except Exception:
+        logger.warning("Host guard state unreadable; starting unblocked", exc_info=True)
+        return
+    if isinstance(data, dict) and data.get("blocked") is True:
+        failed = tuple(str(f) for f in data.get("failed") or ())
+        guard.restore_blocked(failed, str(data.get("details") or ""))
+        logger.info("Host guard restored blocked state: %s", ",".join(failed) or "-")
+
+
+def save_guard_state(guard: HostGuard, repository, evidence_context) -> None:
+    status = guard.status
+    value = json.dumps({
+        "blocked": status.blocked,
+        "failed": list(status.failed),
+        "details": status.details,
+        "evaluated_at": status.evaluated_at.isoformat() if status.evaluated_at else None,
+    })
+    try:
+        repository.set_engine_runtime_state(HOST_GUARD_STATE_KEY, value, evidence_context=evidence_context)
+    except Exception:
+        logger.warning("Host guard state not persisted; a restart may miss the recovery event", exc_info=True)
+
+
+def persisting_recorder(guard: HostGuard, insert: Recorder, repository, evidence_context) -> Recorder:
+    """Persist the risk event, then the guard state on each BLOCK or recovery."""
+
+    def record(rule: str, severity: str, reason: str) -> None:
+        insert(rule, severity, reason)
+        if rule in (HOST_GUARD_BLOCK, HOST_GUARD_RECOVERED):
+            save_guard_state(guard, repository, evidence_context)
+
+    return record
+
+
 # ----------------------------------------------------------------------
 # Outage alert
 # ----------------------------------------------------------------------
+_last_bar_cache: dict[Path, tuple[int, int, int]] = {}  # path -> (mtime_ns, size, last bar open)
+
+
+def last_m15_bar_open(path: Path) -> int | None:
+    """Open time (epoch s) of the last bar in an EA bar export; None if missing or unreadable.
+
+    Parsed only when the file's mtime or size changes, so polling every few
+    seconds does not re-read six bar files.
+    """
+    try:
+        stat = path.stat()
+        cached = _last_bar_cache.get(path)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            return cached[2]
+        payload = json.loads(path.read_text())
+        last_open = payload["bars"][-1][0]
+        if type(last_open) is not int or last_open <= 0:
+            return None
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+    # A file modified within the last second may be rewritten again with the same
+    # mtime and size (coarse timestamps); cache it only once that window has passed.
+    if time.time() - stat.st_mtime_ns / 1e9 > 1.0:
+        _last_bar_cache[path] = (stat.st_mtime_ns, stat.st_size, last_open)
+    return last_open
+
+
 def bridge_freshness(bridge_path: Path, now: datetime) -> dict[str, float | None]:
     """Seconds of staleness per feed; None means missing or unreadable.
 
     ``account_snapshot``: age of feedback/account_snapshot.json ``timestamp``.
-    ``bar_exports``: the larger of the market/status.json ``generated_at`` age and
-    the time since the next M15 bar after the oldest ``latest_closed_bars`` entry
-    should have closed (the EA writes bar files only on a new bar).
+    ``bar_exports``: the larger of the market/status.json ``generated_at`` age
+    (the EA heartbeat) and, over the M15 bar files of every engine symbol, the
+    time since the bar after each file's last bar should have closed. The EA
+    writes a bar file on each new bar, so a file that failed to export goes stale
+    here even while status.json keeps advancing. Any missing or unreadable file
+    makes the feed None.
     """
-    snapshot = host_rules.snapshot_age_seconds(bridge_path / "feedback" / "account_snapshot.json", now)
-    status_path = bridge_path / "market" / "status.json"
-    status_age = host_rules.snapshot_age_seconds(status_path, now, key="generated_at")
-    bars: float | None = None
-    if status_age is not None:
-        try:
-            latest = json.loads(status_path.read_text())["latest_closed_bars"]
-            opens = [int(per_symbol["M15"]) for per_symbol in latest.values()]
-            next_close = min(opens) + 2 * M15_SECONDS
-            bars = max(status_age, now.timestamp() - next_close)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            bars = None
+    snapshot = host_rules.snapshot_age_seconds(bridge_path / Path(ACCOUNT_SNAPSHOT_FILE[0]), now, ACCOUNT_SNAPSHOT_FILE[1])
+    status_age = host_rules.snapshot_age_seconds(bridge_path / Path(MARKET_STATUS_FILE[0]), now, MARKET_STATUS_FILE[1])
+    bars: float | None = status_age
+    for symbol in BAR_EXPORT_SYMBOLS:
+        if bars is None:
+            break
+        last_open = last_m15_bar_open(bridge_path / "market" / f"bars_{symbol}_M15.json")
+        bars = None if last_open is None else max(bars, now.timestamp() - (last_open + 2 * M15_SECONDS))
     return {"account_snapshot": snapshot, "bar_exports": bars}
 
 
@@ -284,7 +389,8 @@ class OutageState:
 class OutageMonitor:
     """Two messages per outage: one when a feed is stale > 2 min in trading hours, one on recovery.
 
-    ``send``, ``is_configured`` and ``in_trading_hours`` default to
+    ``reports`` tells the engine which of its own risk alerts this one replaces,
+    and ``claim_start_notice`` whether an engine start may announce itself. ``send``, ``is_configured`` and ``in_trading_hours`` default to
     ``core.alerts.send_telegram_message``, ``core.alerts.alerts_configured`` and
     ``is_tradeable_session``, looked up at each poll.
     """
@@ -298,6 +404,8 @@ class OutageMonitor:
         is_configured: Callable[[], bool] | None = None,
         stale_after_seconds: float = OUTAGE_STALE_AFTER_SECONDS,
         in_trading_hours: Callable[[datetime], bool] | None = None,
+        bridge_path: Path | None = None,
+        engine_process: bool = False,
     ):
         self._probe = probe
         self.state = state
@@ -305,28 +413,76 @@ class OutageMonitor:
         self._is_configured = is_configured
         self.stale_after_seconds = float(stale_after_seconds)
         self._in_trading_hours = in_trading_hours
+        # Where OUTAGE_COVERED_RULES files are read; None: reports() is always False.
+        self.bridge_path = bridge_path
+        # True for the monitor inside a running engine: an episode it ran through
+        # needs no folded start notice, so it clears the flag.
+        self.engine_process = engine_process
         self.active = False
+
+    def _configured(self) -> bool:
+        is_configured = self._is_configured if self._is_configured is not None else alerts.alerts_configured
+        return bool(is_configured())
+
+    def _in_hours(self, now: datetime) -> bool:
+        return bool((self._in_trading_hours if self._in_trading_hours is not None else is_tradeable_session)(now))
+
+    def reports(self, rule_name: str, now: datetime) -> bool:
+        """True when the risk event *rule_name* describes a stale feed this alert reports.
+
+        The event's file must be missing or older than the bridge's 30 s limit, and
+        an episode must be active or it must be trading hours (a stale feed past
+        2 minutes is then reported; one that recovers sooner is not an outage).
+        """
+        target = OUTAGE_COVERED_RULES.get(rule_name)
+        if target is None or self.bridge_path is None or not self._configured():
+            return False
+        age = host_rules.snapshot_age_seconds(self.bridge_path / Path(target[0]), now, target[1])
+        if age is not None and age <= host_rules.SNAPSHOT_FRESH_SECONDS:
+            return False
+        return self._in_hours(now) or bool(self.state.load().get("active"))
+
+    def claim_start_notice(self) -> bool:
+        """Whether an engine start may send its "started" message.
+
+        False while an outage episode is active, and once after an episode that
+        the engine did not run through (the restart is part of that outage).
+        """
+        if not self._configured():
+            return True
+        with self.state.locked():
+            current = self.state.load()
+            if current.get("active"):
+                return False
+            if current.get(START_NOTICE_FOLDED):
+                self.state.save({**current, START_NOTICE_FOLDED: False})
+                return False
+        return True
 
     def poll(self, now: datetime) -> str | None:
         """Returns "OUTAGE" or "RECOVERED" when a message was attempted, else None."""
-        is_configured = self._is_configured if self._is_configured is not None else alerts.alerts_configured
-        if not is_configured():
+        if not self._configured():
             return None
         ages = self._probe(now)
         stale = tuple(sorted(k for k, age in ages.items() if age is None or age > self.stale_after_seconds))
-        in_hours = (self._in_trading_hours if self._in_trading_hours is not None else is_tradeable_session)(now)
+        in_hours = self._in_hours(now)
         # Decide and persist under the lock; deliver after releasing it.
         with self.state.locked():
             current = self.state.load()
             active = bool(current.get("active"))
             if not active and stale and in_hours:
                 event = "OUTAGE"
-                self.state.save({"active": True, "stale_feeds": list(stale), "since": now.isoformat()})
+                self.state.save({"active": True, "stale_feeds": list(stale), "since": now.isoformat(),
+                                 START_NOTICE_FOLDED: True})
             elif active and not stale:
                 event = "RECOVERED"
                 feeds = [str(f) for f in current.get("stale_feeds") or []]
-                self.state.save({"active": False, "stale_feeds": feeds, "recovered_at": now.isoformat()})
+                fold = bool(current.get(START_NOTICE_FOLDED)) and not self.engine_process
+                self.state.save({"active": False, "stale_feeds": feeds, "recovered_at": now.isoformat(),
+                                 START_NOTICE_FOLDED: fold})
             else:
+                if not active and self.engine_process and current.get(START_NOTICE_FOLDED):
+                    self.state.save({**current, START_NOTICE_FOLDED: False})
                 self.active = active
                 return None
         self.active = event == "OUTAGE"
@@ -359,12 +515,14 @@ class OutageMonitor:
 
 
 def build_outage_monitor(
-    *, use_mock: bool, bridge_path: Path, state_path: Path | None = None
+    *, use_mock: bool, bridge_path: Path, state_path: Path | None = None, engine_process: bool = False
 ) -> OutageMonitor | None:
-    """The production monitor (engine and watchdog); None in mock mode."""
+    """The production monitor (engine, engine start and watchdog); None in mock mode."""
     if use_mock:
         return None
     return OutageMonitor(
         lambda now: bridge_freshness(bridge_path, now),
         state=OutageState(state_path or DEFAULT_OUTAGE_STATE_PATH),
+        bridge_path=bridge_path,
+        engine_process=engine_process,
     )

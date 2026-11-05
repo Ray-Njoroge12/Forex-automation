@@ -21,12 +21,16 @@ from application.host_tolerance import (
     bridge_freshness,
     host_guard_disabled_reason,
 )
-from core import alerts, host_rules
+from core import alerts, host_rules, live_gate
+from core.file_bridge_connection import FileBridgeConnection
 from core.host_rules import BLOCK, PASS, WARN, Check
+from core.metrics import init_metrics
+from core.observability import init_tracing
 from tests.engine_harness import make_file_bridge_engine
 from tests.test_engine_file_bridge import isolated_db  # noqa: F401  (fixture)
 from tests.test_file_bridge_connection import build_bridge
 from tests.test_host_check import NOW, _bridge, _fake_runner, _mt5_dir
+from tests.test_live_mode_main import _live_scenario, runtime  # noqa: F401  (runtime is a fixture)
 
 T0 = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)  # Wednesday, London session
 
@@ -367,22 +371,93 @@ def test_alerts_configured_needs_flag_token_and_chat(monkeypatch):
     assert not alerts.alerts_configured()
 
 
-def test_bridge_freshness_reads_snapshot_status_and_bar_lag(tmp_path):
+def _age_bar_file(bridge_dir, symbol, seconds):
+    """Shift the last bar of one M15 export back: that export stopped *seconds* ago."""
+    path = bridge_dir / "market" / f"bars_{symbol}_M15.json"
+    payload = json.loads(path.read_text())
+    for row in payload["bars"]:
+        row[0] -= seconds
+    path.write_text(json.dumps(payload))
+
+
+def _advance_status(bridge_dir, now):
+    """The EA heartbeat keeps running: status.json is fresh and reports the current iTime bars."""
+    path = bridge_dir / "market" / "status.json"
+    status = json.loads(path.read_text())
+    status["generated_at"] = now.isoformat().replace("+00:00", "Z")
+    current_open = int(now.timestamp()) // 900 * 900
+    for per_symbol in status["latest_closed_bars"].values():
+        per_symbol["M15"] = current_open - 900
+    path.write_text(json.dumps(status))
+
+
+def test_bar_export_symbols_are_the_engine_symbols():
+    from application.market_data_service import SYMBOLS
+
+    assert host_tolerance.BAR_EXPORT_SYMBOLS == tuple(SYMBOLS)
+
+
+def test_bridge_freshness_reads_the_snapshot_the_status_and_every_bar_file(tmp_path):
     now = datetime.now(timezone.utc)
     bridge_dir = build_bridge(tmp_path / "bridge", now, open_tickets=())
     ages = bridge_freshness(bridge_dir, now)
     assert 0 <= ages["account_snapshot"] < 10
     assert 0 <= ages["bar_exports"] < 10
 
-    status_path = bridge_dir / "market" / "status.json"
-    status = json.loads(status_path.read_text())
-    for per_symbol in status["latest_closed_bars"].values():
-        per_symbol["M15"] -= 3600  # bars stopped an hour ago while status.json kept updating
-    status_path.write_text(json.dumps(status))
-    assert bridge_freshness(bridge_dir, now)["bar_exports"] > 120
+    _advance_status(bridge_dir, now)
+    _age_bar_file(bridge_dir, "USDCHF", 3600)  # one export stopped an hour ago; status.json is current
+    assert bridge_freshness(bridge_dir, now)["bar_exports"] > 3000
+
+    (bridge_dir / "market" / "bars_USDCHF_M15.json").unlink()
+    assert bridge_freshness(bridge_dir, now)["bar_exports"] is None
 
     (bridge_dir / "feedback" / "account_snapshot.json").unlink()
     assert bridge_freshness(bridge_dir, now)["account_snapshot"] is None
+
+
+def test_bar_files_are_parsed_again_only_when_they_change(tmp_path, monkeypatch):
+    import os
+
+    bridge_dir = build_bridge(tmp_path / "bridge", datetime.now(timezone.utc), open_tickets=())
+    path = bridge_dir / "market" / "bars_EURUSD_M15.json"
+    old = datetime.now(timezone.utc).timestamp() - 60
+    os.utime(path, (old, old))
+    reads: list[str] = []
+    real_read = type(path).read_text
+    monkeypatch.setattr(type(path), "read_text", lambda self, *a, **k: (reads.append(self.name), real_read(self, *a, **k))[1])
+    first = host_tolerance.last_m15_bar_open(path)
+    assert host_tolerance.last_m15_bar_open(path) == first and reads == [path.name]
+    _age_bar_file(bridge_dir, "EURUSD", 900)  # rewritten now: parsed again, and not cached while racy
+    assert host_tolerance.last_m15_bar_open(path) == first - 900
+    assert host_tolerance.last_m15_bar_open(path) == first - 900
+    assert reads.count(path.name) >= 3
+
+
+@pytest.mark.parametrize("failure", ["stale", "missing"])
+def test_a_failed_bar_export_alerts_while_status_stays_fresh_and_advances(failure, tmp_path, monkeypatch):
+    """HT-005: status.json reports current iTime bars, but one bar file is not written."""
+    sent = _configure_telegram(monkeypatch)
+    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: True)
+    now = datetime.now(timezone.utc)
+    bridge_dir = build_bridge(tmp_path / "bridge", now, open_tickets=())
+    monitor = host_tolerance.build_outage_monitor(use_mock=False, bridge_path=bridge_dir)
+    bar_file = bridge_dir / "market" / "bars_GBPUSD_M15.json"
+    good = bar_file.read_text()
+
+    if failure == "stale":
+        _age_bar_file(bridge_dir, "GBPUSD", 1800)  # two bars missed
+    else:
+        bar_file.unlink()
+    for step in range(3):
+        _advance_status(bridge_dir, now + timedelta(seconds=20 * step))
+        event = monitor.poll(now + timedelta(seconds=20 * step))
+        assert event == ("OUTAGE" if step == 0 else None)
+    assert "bar_exports" in sent[0] and "account_snapshot" not in sent[0]
+
+    bar_file.write_text(good)  # the export is written again
+    _advance_status(bridge_dir, now + timedelta(seconds=60))
+    assert monitor.poll(now + timedelta(seconds=60)) == "RECOVERED"
+    assert len(sent) == 2
 
 
 def test_engine_polls_the_outage_monitor_in_the_run_loop(tmp_path, monkeypatch, isolated_db):
@@ -453,52 +528,211 @@ def _configure_telegram(monkeypatch):
     return sent
 
 
-def test_snapshot_outage_sends_two_messages_through_the_production_paths(tmp_path, monkeypatch, isolated_db):
-    """Engine risk recorder, demo run loop, an engine restart and the watchdog: one outage, two messages."""
-    sent = _configure_telegram(monkeypatch)
-    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: True)
-    now = datetime.now(timezone.utc)
-    bridge_dir = build_bridge(tmp_path / "bridge", now, open_tickets=())
-    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
-    run = _fake_runner()  # healthy host; only the bridge goes stale
-    engine.host_guard = HostGuard(lambda t: host_rules.guard_checks(run, bridge_dir, t), in_trading_window=lambda t: False)
-
-    snapshot_path = bridge_dir / "feedback" / "account_snapshot.json"
-    snapshot = json.loads(snapshot_path.read_text())
-    snapshot["timestamp"] = (now - timedelta(seconds=150)).isoformat().replace("+00:00", "Z")
-    snapshot_path.write_text(json.dumps(snapshot))  # the EA stopped writing 150 s ago
-
-    status = engine._poll_host_guard(now)  # production recorder: Engine._insert_risk_event
-    assert status.blocked and status.failed == ("bridge_snapshot_fresh",)
-    engine.run(mode="demo", iterations=1)  # stops: the demo account cannot be verified on a stale snapshot
-    assert sent == []
-    assert (HOST_GUARD_BLOCK, "BLOCK") in _rows(isolated_db, "SELECT rule_name, severity FROM risk_events")
-
-    assert engine.outage_monitor.poll(now) == "OUTAGE"
-    watchdog_monitor = host_tolerance.build_outage_monitor(use_mock=False, bridge_path=bridge_dir)
-    assert watchdog_monitor.poll(now + timedelta(seconds=30)) is None
-    restarted_engine_monitor = host_tolerance.build_outage_monitor(use_mock=False, bridge_path=bridge_dir)
-    assert restarted_engine_monitor.poll(now + timedelta(seconds=45)) is None
-
-    snapshot["timestamp"] = (now + timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
-    snapshot_path.write_text(json.dumps(snapshot))  # the EA writes again
-    assert watchdog_monitor.poll(now + timedelta(seconds=60)) == "RECOVERED"
-    assert restarted_engine_monitor.poll(now + timedelta(seconds=61)) is None
-    assert not engine._poll_host_guard(now + timedelta(seconds=60)).blocked
-
-    assert len(sent) == 2
-    assert "BRIDGE OUTAGE" in sent[0] and "account_snapshot" in sent[0]
-    assert "BRIDGE RECOVERED" in sent[1]
-    rules = [r[0] for r in _rows(isolated_db, "SELECT rule_name FROM risk_events")]
-    assert rules.count(HOST_GUARD_BLOCK) == 1 and rules.count(HOST_GUARD_RECOVERED) == 1
-
-
 def test_other_engine_block_events_still_alert(tmp_path, monkeypatch, isolated_db):
     sent = _configure_telegram(monkeypatch)
+    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: True)
     bridge_dir = build_bridge(tmp_path / "bridge", datetime.now(timezone.utc), open_tickets=())
+    _age_snapshot(bridge_dir, 150)  # even during a snapshot outage
     engine = make_file_bridge_engine(bridge_dir, monkeypatch)
     engine._insert_risk_event("HARD_RISK", "BLOCK", "daily stop reached")
     assert len(sent) == 1 and "HARD_RISK" in sent[0]
+
+
+def test_reports_covers_only_stale_feeds_the_outage_alert_reports(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    in_hours = {"value": True}
+    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: in_hours["value"])
+    now = datetime.now(timezone.utc)
+    bridge_dir = build_bridge(tmp_path / "bridge", now, open_tickets=())
+    monitor = host_tolerance.build_outage_monitor(use_mock=False, bridge_path=bridge_dir)
+
+    assert not monitor.reports("STATE_STALE", now)  # snapshot fresh: not a bridge outage
+    _age_snapshot(bridge_dir, 45)
+    covered = [r for r in host_tolerance.OUTAGE_COVERED_RULES if monitor.reports(r, now)]
+    assert covered == ["STATE_RECONCILIATION_FAILED", "STATE_STALE", "LIVE_EQUITY_STALE"]  # status.json is fresh
+    assert not monitor.reports("HARD_RISK", now)
+    in_hours["value"] = False  # outside trading hours the outage alert stays silent, so the event alerts
+    assert not monitor.reports("STATE_STALE", now)
+    monitor.state.save({"active": True})  # ... unless an episode that started in hours is still open
+    assert monitor.reports("STATE_STALE", now)
+    monkeypatch.setenv("TELEGRAM_ENABLED", "0")
+    assert not monitor.reports("STATE_STALE", now)
+
+
+# ---------------------------------------------------------------- production paths: main, run loop, watchdog
+def _age_snapshot(bridge_dir, seconds):
+    """The EA last wrote the account snapshot *seconds* ago (relative to the real clock)."""
+    path = bridge_dir / "feedback" / "account_snapshot.json"
+    snapshot = json.loads(path.read_text())
+    snapshot["timestamp"] = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    path.write_text(json.dumps(snapshot))
+
+
+@pytest.fixture
+def demo_runtime(tmp_path, runtime, isolated_db):  # noqa: F811
+    """main.main() in demo mode on a temp file bridge, with a healthy fake host behind the guard."""
+    import main
+
+    bridge_dir = build_bridge(tmp_path / "bridge", datetime.now(timezone.utc), open_tickets=())
+    runtime.setenv("BRIDGE_BASE_PATH", str(bridge_dir))
+    run = _fake_runner()  # power, sleep, App Nap and process probes pass; only the bridge can go stale
+    guards: list[HostGuard] = []
+
+    def build_guard(**kwargs):
+        guard = HostGuard(lambda t: host_rules.guard_checks(run, kwargs["bridge_path"], t),
+                          in_trading_window=lambda t: False)
+        guards.append(guard)
+        return guard
+
+    runtime.setattr(host_tolerance, "build_host_guard", build_guard)
+    created: list = []
+    real_engine = main.Engine
+
+    def recording_engine(*args, **kwargs):
+        created.append(real_engine(*args, **kwargs))
+        return created[-1]
+
+    runtime.setattr(main, "Engine", recording_engine)
+    return SimpleNamespace(
+        bridge_dir=bridge_dir,
+        engines=created,
+        guards=guards,
+        start=lambda: main.main(["--mode", "demo", "--iterations", "1"]),
+    )
+
+
+def _guard_events(isolated_db):
+    return _rows(isolated_db, "SELECT rule_name, evidence_stream, account_scope FROM risk_events "
+                              "WHERE rule_name LIKE 'HOST_GUARD_%' ORDER BY id")
+
+
+def test_refused_demo_start_records_the_guard_block_and_a_later_start_the_recovery(demo_runtime, isolated_db):
+    """HT-004, startup: no fresh demo snapshot means no engine, but the BLOCK is still persisted."""
+    _age_snapshot(demo_runtime.bridge_dir, 45)
+    assert demo_runtime.start() == 2
+    assert demo_runtime.engines == []
+    assert demo_runtime.start() == 2  # the watchdog retries during the outage: no second BLOCK
+    _age_snapshot(demo_runtime.bridge_dir, 0)
+    assert demo_runtime.start() == 0
+
+    events = _guard_events(isolated_db)
+    assert [e[0] for e in events] == [HOST_GUARD_BLOCK, HOST_GUARD_RECOVERED]
+    engine_context = demo_runtime.engines[0].evidence_context
+    assert {e[1:] for e in events} == {(engine_context.evidence_stream, engine_context.account_scope)}
+    reason = _rows(isolated_db, f"SELECT reason FROM risk_events WHERE rule_name='{HOST_GUARD_BLOCK}'")[0][0]
+    assert "bridge_snapshot_fresh=BLOCK" in reason
+
+
+def test_running_demo_engine_records_the_block_before_it_stops(demo_runtime, isolated_db):
+    """HT-004, running loop: the demo-account stop no longer skips the host guard."""
+    assert demo_runtime.start() == 0
+    engine = demo_runtime.engines[0]
+    _age_snapshot(demo_runtime.bridge_dir, 45)
+    engine.run(mode="demo", iterations=1)  # stops at the demo-account check
+    assert engine.account_status.is_trading_halted
+    assert [e[0] for e in _guard_events(isolated_db)] == [HOST_GUARD_BLOCK]
+
+    _age_snapshot(demo_runtime.bridge_dir, 0)
+    assert demo_runtime.start() == 0  # restarted process: the persisted BLOCK is recovered
+    assert [e[0] for e in _guard_events(isolated_db)] == [HOST_GUARD_BLOCK, HOST_GUARD_RECOVERED]
+    assert not demo_runtime.guards[-1].status.blocked
+
+
+@pytest.mark.parametrize("recovery_seen_by", ["watchdog", "engine"])
+def test_demo_outage_with_watchdog_restarts_sends_exactly_two_messages(
+    recovery_seen_by, demo_runtime, monkeypatch, isolated_db
+):
+    """HT-006, demo: engine stop, watchdog restarts, outage, recovery; every Telegram call counted."""
+    import watchdog
+
+    sent = _configure_telegram(monkeypatch)
+    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: True)
+    exits: list[int] = []
+    monkeypatch.setattr(watchdog, "_ensure_mt5_running", lambda: None)
+    monkeypatch.setattr(watchdog, "_get_health", lambda: None)  # the engine is not running
+    monkeypatch.setattr(watchdog, "_engine_is_running", lambda: False)
+    monkeypatch.setattr(watchdog, "_start_engine", lambda: exits.append(demo_runtime.start()))
+    watchdog_monitor = watchdog._build_outage_monitor()
+
+    assert demo_runtime.start() == 0
+    assert len(sent) == 1 and "FX AI Engine Started" in sent[0]  # an ordinary start
+    sent.clear()
+
+    _age_snapshot(demo_runtime.bridge_dir, 45)
+    demo_runtime.engines[0].run(mode="demo", iterations=1)  # the running engine stops
+    watchdog._check_engine()  # restart refused: no demo snapshot
+    _age_snapshot(demo_runtime.bridge_dir, 150)
+    watchdog._poll_outage(watchdog_monitor)  # outage message
+    watchdog._check_engine()  # still refused
+    _age_snapshot(demo_runtime.bridge_dir, 0)
+    if recovery_seen_by == "watchdog":
+        watchdog._poll_outage(watchdog_monitor)  # recovery message
+        watchdog._check_engine()  # the engine starts again
+    else:
+        watchdog._check_engine()  # the engine starts while the episode is open and reports the recovery
+        watchdog._poll_outage(watchdog_monitor)
+    assert exits == [2, 2, 0]
+
+    assert len(sent) == 2, sent
+    assert "BRIDGE OUTAGE" in sent[0] and "account_snapshot" in sent[0]
+    assert "BRIDGE RECOVERED" in sent[1]
+    assert [e[0] for e in _guard_events(isolated_db)] == [HOST_GUARD_BLOCK, HOST_GUARD_RECOVERED]
+
+    assert demo_runtime.start() == 0  # a later start announces itself again
+    assert len(sent) == 3 and "FX AI Engine Started" in sent[2]
+
+
+def test_live_outage_past_the_stale_halt_sends_exactly_two_messages(tmp_path, runtime, isolated_db):  # noqa: F811
+    """HT-006, live: reconciliation failure, live equity stale and STATE_STALE are persisted, not alerted."""
+    import main
+
+    live_gate.reset_active_session()
+    sent = _configure_telegram(runtime)
+    runtime.setattr(host_tolerance, "is_tradeable_session", lambda now: True)
+    scenario = _live_scenario(tmp_path, runtime)
+    conn = FileBridgeConnection(scenario.bridge_dir)
+    assert conn.connect(retry_count=1), conn.last_error
+    scenario.bridge = conn
+    session = scenario.gate(env=None)
+    try:
+        engine = main.Engine(conn, init_tracing("test"), init_metrics(), use_mock=False, run_mode="live",
+                             policy=session.policy)
+        assert session.attach(engine) is True
+        engine._decision_cycle = lambda: None
+        engine.run(mode="live", iterations=1)
+        sent.clear()  # anything the healthy start sent is not part of the outage
+
+        def loop(snapshot_age, *, account_age=None):
+            _age_snapshot(scenario.bridge_dir, snapshot_age)
+            if account_age is not None:
+                engine.account_status.updated_at = datetime.now(timezone.utc) - timedelta(seconds=account_age)
+            engine.run(mode="live", iterations=1)
+
+        loop(45)  # snapshot rejected: STATE_RECONCILIATION_FAILED
+        loop(150, account_age=150)  # live equity stale; the outage message
+        loop(200, account_age=200)  # past 180 s: STATE_STALE
+        loop(0)  # the EA writes again: recovery message
+    finally:
+        live_gate.reset_active_session()
+
+    assert len(sent) == 2, sent
+    assert "BRIDGE OUTAGE" in sent[0] and "BRIDGE RECOVERED" in sent[1]
+    blocks = {r[0] for r in _rows(isolated_db, "SELECT rule_name FROM risk_events WHERE severity IN ('BLOCK','CRITICAL')")}
+    assert {"STATE_RECONCILIATION_FAILED", "LIVE_EQUITY_STALE", "STATE_STALE"} <= blocks
+    infos = {r[0] for r in _rows(isolated_db, "SELECT rule_name FROM risk_events WHERE severity='INFO'")}
+    assert {"STATE_RECONCILED", "STATE_RECOVERED"} <= infos
+
+
+def test_stale_snapshot_outside_trading_hours_still_alerts(tmp_path, monkeypatch, isolated_db):
+    sent = _configure_telegram(monkeypatch)
+    monkeypatch.setattr(host_tolerance, "is_tradeable_session", lambda now: False)
+    bridge_dir = build_bridge(tmp_path / "bridge", datetime.now(timezone.utc), open_tickets=())
+    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
+    _age_snapshot(bridge_dir, 200)
+    engine._insert_risk_event("STATE_STALE", "BLOCK", "Account state stale")
+    assert len(sent) == 1 and "STATE_STALE" in sent[0]
 
 
 # ---------------------------------------------------------------- watchdog
