@@ -1,6 +1,6 @@
 # Running the system on this Mac: limits, causes and operating route
 
-Date: 2026-11-04. Host: MacBook Pro M2 (Mac14,7), 8 GB RAM, 8 cores, macOS 27.2, MT5 build 6296 under MetaQuotes' Wine (x86-64 translated by Rosetta). Every number below was measured on this machine today unless marked otherwise. Tool: `python -m validation.host_check` (read-only).
+Date: 2026-11-04 (section 6 backlog built on 2026-11-05, ADR 0015). Host: MacBook Pro M2 (Mac14,7), 8 GB RAM, 8 cores, macOS 27.2, MT5 build 6296 under MetaQuotes' Wine (x86-64 translated by Rosetta). Every number below was measured on this machine today unless marked otherwise. Tool: `python -m validation.host_check` (read-only).
 
 ## 1. Answer
 
@@ -66,7 +66,7 @@ Settings (MT5 window, then restart MT5):
 - Market Watch: right-click › Hide All, then show only the six traded pairs. Fewer symbols means fewer tick updates to translate.
 - Leave the MT5 AI Assistant idle and its MCP server disabled during trading; use them only in development mode.
 
-EA work per second (development backlog, protected path): `GetATR` creates and releases an indicator handle on every timer tick for each managed position. Caching one handle per symbol removes that cost. The market-data export already writes bars only on new bars. Measure MT5 CPU with `host_check` before and after the settings above, then decide whether the EA change is worth it.
+EA work per second (protected path): `GetATR` used to create and release an indicator handle on every timer tick for each managed position. EA build `2026.11.05-1` caches one handle per symbol and releases the handles in `OnDeinit` (staging compile only; deploy after review and owner approval). The market-data export already writes bars only on new bars. Measure MT5 CPU with `host_check` before and after the settings above and after deploying the build.
 
 ### 4.3 Memory contention
 
@@ -99,6 +99,7 @@ The 15 minutes before a window opens are for switching modes and running `host_c
 - Host: AC power, lid open, App Nap off for MT5, swap below 1.5 GB at the start of the day.
 - Start: `scripts/macos/trading_mode.sh on`, then fix every BLOCK that `host_check` reports, then `scripts/macos/install_launchd.sh --engine`.
 - During the day `python -m validation.host_check` and `python -m validation.burnin_status` can be run at any time; both are read-only.
+- While it runs, the engine re-checks the host-guard rules (section 6) and refuses new entries on a BLOCK. `burnin_status` shows the missed M15 cycles per day; `python -m validation.gate_h1` shows the gate H1 conditions.
 
 ### Mode D: development
 
@@ -125,12 +126,12 @@ A laptop will occasionally lose power, network or the terminal. The system is al
 
 Rule for live use from this Mac: prefer strategies whose exits are fully broker-side (fixed brackets). All three Phase 2b strategies already are. Trailing and break-even remain allowed, but the system must not depend on them to stay within risk.
 
-Development backlog for host tolerance (not built yet; protected paths marked):
-1. **Engine host guard.** Run the `host_check` trading rules at engine start and every few minutes. Refuse to route new entries and raise a risk event on BLOCK (on battery, sleep not prevented, App Nap on, replay running). Existing positions are untouched.
-2. **Missed-cycle counter.** Count expected vs evaluated M15 decisions per session in `burnin_status`, so host problems show up as a number.
-3. **Outage alert.** One message (Telegram is already wired in `core/alerts.py`) when snapshots go stale for more than 2 minutes in trading hours, and when they recover.
-4. **EA CPU** (protected): cache the ATR handle per symbol in `ManageOpenPositions`.
-5. **Reconcile after downtime.** Already covered by the deal-history export and closure recovery; add a test for "position closed by broker-side TP while the engine was down for 8 hours".
+Host tolerance, built 2026-11-05 on branch `host-tolerance` (ADR 0015; protected path marked):
+1. **Engine host guard** (`application/host_tolerance.py`, rules in `core/host_rules.py`, shared with `host_check`). The guard checks the host at engine start, every 5 minutes, every 30 seconds while blocked, and at the first poll inside each day's trading window. It blocks on battery power, sleep not prevented, App Nap not disabled for MT5, a replay or research process running, or an account snapshot older than 30 s; a failed probe also blocks. On a BLOCK the decision cycle refuses new entries (funnel stage `HOST`, reason `HOST_GUARD_BLOCK`) and records a `HOST_GUARD_BLOCK` risk event. It records `HOST_GUARD_RECOVERED` when the host passes again. Open positions, feedback, exits and closure recovery keep running. Each day's first check inside the window is recorded as `HOST_GUARD_DAILY_CHECK`, with swap, for gate H1. The guard runs only in demo or live mode on macOS, never in mock mode. It makes about nine short command calls per check, with no MT5 CPU sampling.
+2. **Missed-cycle counter** (`validation/cycle_counter.py`, printed by `burnin_status`). Per weekday it reports expected M15 cycles (in-session slots), evaluated cycles, cycles blocked by the host guard, and missed cycles (expected minus evaluated). Only engine rows count, not mock runs. Holidays show as missed cycles.
+3. **Outage alert** (`OutageMonitor`). It sends one Telegram message when the account snapshot or the bar exports are more than 2 minutes stale during trading hours, and one when they recover. With no alert channel configured it does nothing.
+4. **EA CPU** (protected): `GetATR` uses a cached `iATR` handle per symbol, released in `OnDeinit`; EA build `2026.11.05-1`. Not deployed.
+5. **Reconcile after downtime**: `tests/test_reconcile_after_downtime.py`. A broker-side TP or SL close during an 8-hour engine outage reconciles to closed exactly once on the first loop after restart, before any decision cycle. A second loop changes nothing, and the close is still applied while the host guard blocks entries.
 
 ## 7. Live trading on this Mac: what must be true first
 
@@ -139,6 +140,15 @@ Host conditions (gate H1, new):
 - MT5 connection drops of 6 or fewer per day during the window.
 - No Sleep or DarkWake events in `pmset -g log` during the window.
 - Swap below 1.5 GB at the start of each window, and the missed-cycle count at zero.
+
+Evaluator: `python -m validation.gate_h1 [--since YYYY-MM-DD] [--json]` (read-only; exit 0 only on PASS). For each completed weekday window it applies these conditions to recorded data:
+- the engine's `HOST_GUARD_DAILY_CHECK` within 15 minutes of the window opening, with status PASS. This covers the host-guard rules only, not memory, disk or MT5 settings;
+- swap from that record;
+- connection drops in the MT5 terminal logs, whose times are local; `--log-utc-offset-hours` overrides the offset;
+- Sleep and DarkWake entries in `pmset -g log`, or a saved copy given with `--pmset-log`;
+- the missed-cycle count.
+
+A condition without data is NO_DATA and does not pass. H1 needs the 5 most recent completed trading days to pass in a row. On 2026-11-05 it reports NOT_YET: the engine has not yet run with the guard, and 11-04 had 20 Sleep/DarkWake entries in the window.
 
 Physical setup (Nairobi-specific; owner to confirm what applies):
 - A small UPS for the router/modem. The laptop battery covers the Mac during a power cut, but not the internet connection.
@@ -163,14 +173,15 @@ The code needs no change to move: on Windows the engine can use the same file br
 
 Once:
 - [ ] `scripts/macos/trading_mode.sh on` (App Nap off for MT5, keep-awake agent installed).
-- [ ] MT5: Max bars 100000, news off, one chart, Market Watch reduced to 6 pairs; restart MT5; re-attach FX_Execution build `2026.11.04-1`.
+- [ ] MT5: Max bars 100000, news off, one chart, Market Watch reduced to 6 pairs; restart MT5; re-attach FX_Execution (build `2026.11.05-1` once the owner approves it; until then the deployed build).
 - [ ] Optional: `sudo pmset -c sleep 0 powernap 0 standby 0 disksleep 0`.
 - [ ] Reboot, then run `python -m validation.host_check` and confirm no BLOCK.
 
 Each trading day:
 - [ ] Charger in, lid open, Kiro and browser closed or minimal, no replays.
 - [ ] `python -m validation.host_check` before the window opens.
-- [ ] Engine running via the watchdog; check `validation.burnin_status` once or twice.
+- [ ] Engine running via the watchdog; check `validation.burnin_status` once or twice (missed cycles should stay at 0).
+- [ ] After a week in Mode T: `python -m validation.gate_h1`.
 
 After trading / weekends:
 - [ ] `scripts/macos/trading_mode.sh off` if switching to heavy development; run replays through `validation.detached_job`.
