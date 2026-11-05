@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Mapping
 
+from application.host_tolerance import HOST_FUNNEL_STAGE, HOST_GUARD_BLOCK
 from application.market_data_service import SYMBOLS
 from application.routing_service import ReservationRejected
 from bridge.signal_router import SignalRouteError
@@ -663,6 +664,23 @@ def run_decision_cycle(engine) -> None:
                     "bridge uncertainty detected during router housekeeping"
                 )
                 return
+
+        # Host guard: an extra fail-closed entry block before any strategy stage;
+        # the Hard Risk Engine still has the final say on anything routed.
+        host_status = engine._poll_host_guard(now_utc)
+        if host_status is not None and host_status.blocked:
+            for sym in SYMBOLS:
+                engine._insert_funnel_event(
+                    decision_time=now_utc,
+                    stage=HOST_FUNNEL_STAGE,
+                    outcome="REJECT",
+                    reason_code=HOST_GUARD_BLOCK,
+                    symbol=sym,
+                    details=host_status.details,
+                )
+            engine.metrics.inc("host_guard_blocked_cycles")
+            logger.warning("Decision cycle skipped: host guard BLOCK (%s)", host_status.details)
+            return
 
         session_name = get_active_session(now_utc)
         for sym in SYMBOLS:

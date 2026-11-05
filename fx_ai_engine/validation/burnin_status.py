@@ -6,6 +6,10 @@ Usage (from fx_ai_engine/):
 
 G1 passes after 5 trading days unattended with every routed signal in a
 terminal state and no unresolved feedback conflicts.
+
+It also prints the missed M15 decision cycles per day (``validation.cycle_counter``),
+the number gate H1 needs at zero; ``python -m validation.gate_h1`` applies all
+H1 host conditions.
 """
 from __future__ import annotations
 
@@ -13,7 +17,10 @@ import argparse
 import json
 import sqlite3
 import urllib.request
+from datetime import date, datetime, timezone
 from pathlib import Path
+
+from validation import cycle_counter
 
 DB = Path(__file__).parents[1] / "database" / "trading_state.db"
 TERMINAL = ("CLOSED_WIN", "CLOSED_LOSS", "CLOSED_BREAKEVEN", "REJECTED")
@@ -42,6 +49,18 @@ def main(argv: list[str] | None = None) -> int:
 
     days = q("SELECT COUNT(DISTINCT substr(timestamp,1,10)) FROM decision_funnel_events WHERE timestamp>=?", since)[0][0]
     print(f"Days with decision cycles since {since}: {days} (G1 needs 5 trading days)")
+
+    now = datetime.now(timezone.utc)
+    print("\nM15 decision cycles in the London/NY sessions (engine rows only; missed = expected - evaluated):")
+    try:
+        cycles = cycle_counter.count_cycles(conn, date.fromisoformat(since[:10]), now.date(), now=now)
+    except sqlite3.OperationalError as exc:  # database without the evidence/decision_time columns
+        print(f"  unavailable: {exc}")
+    else:
+        for line in cycle_counter.format_table(cycles):
+            print(line)
+        print(f"Missed cycles in total: {sum(d.missed for d in cycles)} "
+              f"(host-guard blocked: {sum(d.host_blocked for d in cycles)}; gate H1 needs 0)")
 
     print("\nTrades by status:")
     for status, n in q("SELECT status, COUNT(*) FROM trades WHERE COALESCE(execution_time, '') >= ? OR trade_id LIKE 'AI_%' GROUP BY status", since):

@@ -58,6 +58,11 @@ def run(engine, mode: str, iterations: int = 0) -> None:
             engine._insert_risk_event("STATE_RECOVERED", "INFO", "Account state refreshed; trading unhalted")
             logger.info("Account state recovered after stale episode.")
 
+        # Host tolerance: cheap when not due (operating-model doc, section 6).
+        now_utc = datetime.now(timezone.utc)
+        engine._poll_host_guard(now_utc)
+        engine._poll_outage_monitor(now_utc)
+
         if engine._is_new_m15_candle() and not engine.account_status.is_trading_halted:
             engine._decision_cycle()
 

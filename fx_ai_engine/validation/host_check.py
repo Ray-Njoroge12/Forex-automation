@@ -11,6 +11,10 @@ headroom, no replay jobs, MT5 footprint and settings, bridge freshness and the
 recent connection-drop rate. Research mode answers "can a replay run without
 starving MT5 or the engine?".
 
+The rules live in ``core.host_rules`` and are shared with the engine host
+guard, which re-evaluates the fast subset (``core.host_rules.guard_checks``)
+while it runs and refuses new entries on a BLOCK.
+
 Exit code: 0 = all PASS/WARN, 1 = at least one BLOCK. Nothing is changed.
 See fx_ai_engine/docs/2026-11-04-mac-host-operating-model.md.
 """
@@ -18,121 +22,51 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
-import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
 
-PASS, WARN, BLOCK = "PASS", "WARN", "BLOCK"
-MT5_BUNDLE_ID = "net.metaquotes.wine.MetaTrader5"
-MT5_DATA = Path.home() / "Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5"
-
-# Budgets for an 8 GB Apple Silicon Mac (see the operating-model doc, section 3).
-SWAP_WARN_MB, SWAP_BLOCK_MB = 1500, 4000
-FREE_PCT_WARN, FREE_PCT_BLOCK = 30, 15
-MT5_FOOTPRINT_WARN_MB = 1300
-MT5_CPU_WARN_PCT = 90
-KIRO_TRADING_WARN_MB = 1500
-BROWSER_TRADING_WARN_MB = 600
-DISK_FREE_BLOCK_GB = 5
-DROPS_WARN_24H, DROPS_BLOCK_24H = 6, 30
-MAXBARS_WARN = 1_000_000
-REPLAY_PATTERNS = ("backtesting.run_replay", "backtesting.edge_diagnostics", "research.", "multiprocessing.spawn")
-
-Runner = Callable[[list[str]], str]
-
-
-def _run(cmd: list[str]) -> str:
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-
-
-@dataclass(frozen=True)
-class Check:
-    check_id: str
-    status: str
-    details: str
-    fix: str = ""
-
-
-# ----------------------------------------------------------------------
-# Parsers (pure; unit-tested)
-# ----------------------------------------------------------------------
-def parse_power_source(pmset_batt: str) -> str:
-    if "AC Power" in pmset_batt:
-        return "AC"
-    if "Battery Power" in pmset_batt:
-        return "BATTERY"
-    return "UNKNOWN"
-
-
-def parse_assertions(pmset_assertions: str) -> dict[str, int]:
-    out = {}
-    for key in ("PreventSystemSleep", "PreventUserIdleSystemSleep"):
-        m = re.search(rf"^\s*{key}\s+(\d+)", pmset_assertions, re.MULTILINE)
-        out[key] = int(m.group(1)) if m else 0
-    return out
-
-
-def parse_swap_used_mb(swapusage: str) -> float:
-    m = re.search(r"used = ([\d.]+)M", swapusage)
-    return float(m.group(1)) if m else -1.0
-
-
-def parse_free_pct(memory_pressure: str) -> int:
-    m = re.search(r"free percentage:\s*(\d+)%", memory_pressure)
-    return int(m.group(1)) if m else -1
-
-
-def parse_footprint_mb(footprint: str) -> float:
-    m = re.search(r"Footprint:\s*([\d.]+)\s*(KB|MB|GB)", footprint)
-    if not m:
-        return -1.0
-    value, unit = float(m.group(1)), m.group(2)
-    return value / 1024 if unit == "KB" else value * 1024 if unit == "GB" else value
-
-
-def parse_ini_value(text: str, key: str) -> str | None:
-    m = re.search(rf"^{re.escape(key)}=(.*)$", text, re.MULTILINE)
-    return m.group(1).strip() if m else None
-
-
-def count_connection_drops(log_texts: list[str]) -> int:
-    return sum(len(re.findall(r"connection to \S+ lost", text)) for text in log_texts)
-
-
-def classify(value: float, warn: float, block: float, *, higher_is_worse: bool = True) -> str:
-    if value < 0:
-        return WARN
-    if higher_is_worse:
-        return BLOCK if value >= block else WARN if value >= warn else PASS
-    return BLOCK if value <= block else WARN if value <= warn else PASS
-
-
-# ----------------------------------------------------------------------
-# Probes
-# ----------------------------------------------------------------------
-def _read_utf16(path: Path) -> str:
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return ""
-    for enc in ("utf-16", "utf-8"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("latin-1", errors="replace")
-
-
-def _pids(pattern: str, run: Runner) -> list[int]:
-    return [int(p) for p in run(["pgrep", "-f", pattern]).split() if p.isdigit()]
+from core.host_rules import (  # noqa: F401  (re-exported for callers and tests)
+    BLOCK,
+    BROWSER_TRADING_WARN_MB,
+    DISK_FREE_BLOCK_GB,
+    DROPS_BLOCK_24H,
+    DROPS_WARN_24H,
+    FREE_PCT_BLOCK,
+    FREE_PCT_WARN,
+    KIRO_TRADING_WARN_MB,
+    MAXBARS_WARN,
+    MT5_BUNDLE_ID,
+    MT5_CPU_WARN_PCT,
+    MT5_DATA,
+    MT5_FOOTPRINT_WARN_MB,
+    PASS,
+    REPLAY_PATTERNS,
+    SWAP_BLOCK_MB,
+    SWAP_WARN_MB,
+    WARN,
+    Check,
+    Runner,
+    app_nap_check,
+    classify,
+    count_connection_drops,
+    default_bridge_path,
+    parse_assertions,
+    parse_footprint_mb,
+    parse_free_pct,
+    parse_ini_value,
+    parse_power_source,
+    parse_swap_used_mb,
+    pids as _pids,
+    power_check,
+    read_utf16 as _read_utf16,
+    replay_check,
+    run_command as _run,
+    sleep_check,
+    snapshot_check,
+    swap_check,
+)
 
 
 def _group_footprint_mb(pattern: str, run: Runner) -> float:
@@ -163,35 +97,16 @@ def run_checks(mode: str = "trading", run: Runner = _run, mt5_data: Path = MT5_D
                bridge: Path | None = None, now: datetime | None = None) -> list[Check]:
     now = now or datetime.now(timezone.utc)
     trading = mode == "trading"
-    checks: list[Check] = []
-
-    power = parse_power_source(run(["pmset", "-g", "batt"]))
-    checks.append(Check("power_source", PASS if power == "AC" else (BLOCK if trading else WARN),
-                        f"power={power}", "" if power == "AC" else "Plug in the charger; macOS only blocks sleep on AC power."))
-
-    assertions = parse_assertions(run(["pmset", "-g", "assertions"]))
-    # A user-idle assertion from powerd ("display is on") vanishes when the
-    # display sleeps, so only a running caffeinate or a system-sleep assertion counts.
-    caffeinate = bool(_pids("caffeinate", run))
-    awake = caffeinate or assertions["PreventSystemSleep"] > 0
-    checks.append(Check("sleep_prevented", PASS if awake else (BLOCK if trading else WARN),
-                        f"caffeinate_running={caffeinate} PreventSystemSleep={assertions['PreventSystemSleep']} "
-                        f"PreventUserIdleSystemSleep={assertions['PreventUserIdleSystemSleep']}",
-                        "" if awake else "Run scripts/macos/install_launchd.sh (keep-awake agent) or scripts/macos/trading_mode.sh on."))
-
-    app_nap = run(["defaults", "read", MT5_BUNDLE_ID, "NSAppSleepDisabled"]).strip()
-    nap_off = app_nap in {"1", "YES", "true"}
-    checks.append(Check("mt5_app_nap_disabled", PASS if nap_off else (BLOCK if trading else WARN),
-                        f"NSAppSleepDisabled={app_nap or 'unset'}",
-                        "" if nap_off else f"defaults write {MT5_BUNDLE_ID} NSAppSleepDisabled -bool YES, then restart MT5."))
+    checks: list[Check] = [
+        power_check(run, trading=trading),
+        sleep_check(run, trading=trading),
+        app_nap_check(run, trading=trading),
+    ]
 
     free_pct = parse_free_pct(run(["memory_pressure"]))
     checks.append(Check("memory_free_pct", classify(free_pct, FREE_PCT_WARN, FREE_PCT_BLOCK, higher_is_worse=False),
                         f"free={free_pct}%", "Quit Kiro windows, browsers and replays before trading."))
-    swap = parse_swap_used_mb(run(["sysctl", "vm.swapusage"]))
-    checks.append(Check("swap_used", classify(swap, SWAP_WARN_MB, SWAP_BLOCK_MB),
-                        f"swap_used={swap:.0f} MB",
-                        "Swap only shrinks after a restart or after memory is freed; reboot before a long trading run."))
+    checks.append(swap_check(run))
 
     df = run(["df", "-g", "/"]).splitlines()
     free_gb = -1.0
@@ -204,11 +119,7 @@ def run_checks(mode: str = "trading", run: Runner = _run, mt5_data: Path = MT5_D
     checks.append(Check("disk_free", BLOCK if 0 <= free_gb < DISK_FREE_BLOCK_GB else PASS if free_gb >= 0 else WARN,
                         f"free={free_gb:.0f} GB"))
 
-    replays = [p for pat in REPLAY_PATTERNS for p in _pids(pat, run)]
-    checks.append(Check("no_replay_jobs" if trading else "replay_jobs",
-                        (BLOCK if replays else PASS) if trading else PASS,
-                        f"replay/research processes={len(replays)}",
-                        "Stop replays (python -m validation.detached_job stop <job>) during trading hours." if replays and trading else ""))
+    checks.append(replay_check(run, trading=trading))
 
     mt5_pids = _pids("terminal64.exe", run)
     if not mt5_pids:
@@ -249,16 +160,7 @@ def run_checks(mode: str = "trading", run: Runner = _run, mt5_data: Path = MT5_D
                             "Close extra Kiro windows and pause workflows/agent sessions while trading."))
         checks.append(Check("browser_footprint", WARN if browsers > BROWSER_TRADING_WARN_MB else PASS, f"browsers={browsers:.0f} MB"))
 
-    bridge = bridge or (Path(os.environ["BRIDGE_BASE_PATH"]) if os.getenv("BRIDGE_BASE_PATH") else mt5_data / "MQL5/Files/bridge")
-    snap = bridge / "feedback" / "account_snapshot.json"
-    try:
-        stamp = datetime.fromisoformat(json.loads(snap.read_text())["timestamp"].replace("Z", "+00:00"))
-        age = (now - stamp).total_seconds()
-        status = PASS if age <= 30 else (BLOCK if trading else WARN)
-        checks.append(Check("bridge_snapshot_fresh", status, f"age={age:.0f}s",
-                            "" if status == PASS else "The EA is not writing snapshots: MT5 closed, asleep or EA detached."))
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        checks.append(Check("bridge_snapshot_fresh", BLOCK if trading else WARN, f"unreadable: {type(exc).__name__}"))
+    checks.append(snapshot_check(bridge or default_bridge_path(mt5_data), now, trading=trading))
     return checks
 
 

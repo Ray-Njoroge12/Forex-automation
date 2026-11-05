@@ -7,13 +7,21 @@ from datetime import datetime
 
 logger = logging.getLogger("alerts")
 
+def alerts_configured() -> bool:
+    """True when the Telegram channel is enabled and has a token and a chat id."""
+    return (
+        os.getenv("TELEGRAM_ENABLED", "0") == "1"
+        and bool(os.getenv("TELEGRAM_TOKEN"))
+        and bool(os.getenv("TELEGRAM_CHAT_ID"))
+    )
+
+
 def send_telegram_message(text: str) -> bool:
     """Sends a message via Telegram Bot API using standard library."""
-    enabled = os.getenv("TELEGRAM_ENABLED", "0") == "1"
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-    if not enabled or not token or not chat_id:
+    if not alerts_configured():
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"

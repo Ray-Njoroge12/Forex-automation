@@ -75,7 +75,7 @@ from database.repositories.sqlite import SqliteEngineRepository
 # Engine responsibilities live in application/* (Phase 4 split). main.py is the
 # composition root: start-up approvals, Engine wiring and one-line delegates.
 # Names that moved are re-exported here so existing imports keep working.
-from application import decision_cycle, engine_runtime, feedback_service, market_data_service
+from application import decision_cycle, engine_runtime, feedback_service, host_tolerance, market_data_service
 from application.decision_cycle import (  # noqa: F401
     _format_pre_route_feasibility_event,
     _format_strategic_risk_event,
@@ -556,6 +556,10 @@ class Engine:
     # The class-level SQLite default also covers engines built with
     # Engine.__new__ in tests; __init__ and main() inject the instance used.
     repository: EngineRepository = SqliteEngineRepository()
+    # Host tolerance (application.host_tolerance). None on engines built with
+    # Engine.__new__ in tests; __init__ always sets both (the guard may be disabled).
+    host_guard: host_tolerance.HostGuard | None = None
+    outage_monitor: host_tolerance.OutageMonitor | None = None
 
     def __init__(
         self,
@@ -567,6 +571,8 @@ class Engine:
         run_mode: str,
         policy: Mapping[str, object] | None = None,
         repository: EngineRepository | None = None,
+        host_guard: host_tolerance.HostGuard | None = None,
+        outage_monitor: host_tolerance.OutageMonitor | None = None,
     ):
         # Refuse research-only or unknown strategies before the bridge, the DB,
         # the mock feedback or any agent is touched (owner decision 2026-11-04).
@@ -635,6 +641,16 @@ class Engine:
         self.bridge_path = get_mt5_bridge_path()
         self._validate_bridge_path(self.bridge_path)
         logger.info("Using MT5 bridge path: %s", self.bridge_path)
+        self.host_guard = (
+            host_tolerance.build_host_guard(use_mock=use_mock, run_mode=run_mode, bridge_path=self.bridge_path)
+            if host_guard is None
+            else host_guard
+        )
+        self.outage_monitor = (
+            host_tolerance.build_outage_monitor(use_mock=use_mock, bridge_path=self.bridge_path)
+            if outage_monitor is None
+            else outage_monitor
+        )
 
         self.router = SignalRouter(
             pending_dir=self.bridge_path / "pending_signals",
@@ -1005,6 +1021,19 @@ class Engine:
 
     def _decision_cycle(self) -> None:
         decision_cycle.run_decision_cycle(self)
+
+    def _poll_host_guard(self, now: datetime | None = None) -> host_tolerance.HostGuardStatus | None:
+        if self.host_guard is None:
+            return None
+        return self.host_guard.poll(now or datetime.now(timezone.utc), self._insert_risk_event)
+
+    def _poll_outage_monitor(self, now: datetime | None = None) -> None:
+        if self.outage_monitor is None:
+            return
+        try:
+            self.outage_monitor.poll(now or datetime.now(timezone.utc))
+        except Exception:
+            logger.exception("Outage monitor failed; continuing")
 
     def run(self, mode: str, iterations: int = 0) -> None:
         engine_runtime.run(self, mode, iterations)
