@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from core import host_rules
 from validation import host_check as hc
 
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
@@ -24,7 +29,9 @@ def test_parsers():
     assert hc.count_connection_drops([log, log]) == 4
 
 
-def _fake_runner(*, power="AC", awake=1, nap="1", swap=500.0, free=55, mt5=True, replay=False):
+def _fake_runner(*, power="AC", awake=1, nap="1", swap=500.0, free=55, mt5=True, replay=False,
+                 disk_gb=120, failing_pgrep=()):
+    """Fake host. ``failing_pgrep``: pgrep patterns whose probe raises ProbeError ("*" = all)."""
     def run(cmd):
         key = " ".join(cmd)
         if key == "pmset -g batt":
@@ -38,8 +45,10 @@ def _fake_runner(*, power="AC", awake=1, nap="1", swap=500.0, free=55, mt5=True,
         if key == "sysctl vm.swapusage":
             return f"vm.swapusage: total = 6144.00M  used = {swap:.2f}M  free = 1.00M\n"
         if key == "df -g /":
-            return "Filesystem 1G-blocks Used Available\n/dev/disk3s1s1 228 100 120\n"
+            return f"Filesystem 1G-blocks Used Available\n/dev/disk3s1s1 228 100 {disk_gb}\n"
         if cmd[:2] == ["pgrep", "-f"]:
+            if "*" in failing_pgrep or cmd[2] in failing_pgrep:
+                raise host_rules.ProbeError("pgrep: exit 3")
             if cmd[2] == "caffeinate":
                 return "555\n" if awake else ""
             if cmd[2] == "terminal64.exe":
@@ -99,3 +108,73 @@ def test_research_mode_does_not_block_on_trading_only_rules(tmp_path, monkeypatc
     assert s["power_source"] == hc.WARN and s["sleep_prevented"] == hc.WARN
     assert s["mt5_running"] == hc.PASS and s["replay_jobs"] == hc.PASS
     assert hc.BLOCK not in s.values()
+
+
+# ---------------------------------------------------------------- probe failures (fail closed)
+def test_failed_pgrep_is_never_read_as_no_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(hc.time, "sleep", lambda s: None)
+    run = _fake_runner(failing_pgrep=("*",))
+    checks = {c.check_id: c for c in hc.run_checks("trading", run, _mt5_dir(tmp_path), _bridge(tmp_path), NOW)}
+    assert checks["no_replay_jobs"].status == hc.BLOCK
+    assert "probe failed" in checks["no_replay_jobs"].details
+    assert checks["mt5_running"].status == hc.BLOCK and checks["mt5_running"].details == "terminal64.exe probe failed"
+    # PreventSystemSleep=1 still proves sleep is prevented; caffeinate is reported as unknown.
+    assert checks["sleep_prevented"].status == hc.PASS
+    assert "caffeinate_running=unknown" in checks["sleep_prevented"].details
+
+    research = {c.check_id: c.status for c in hc.run_checks("research", run, _mt5_dir(tmp_path / "r"),
+                                                            _bridge(tmp_path / "r"), NOW)}
+    assert research["replay_jobs"] == hc.WARN
+
+
+def test_one_failing_replay_pattern_blocks_the_guard(tmp_path):
+    run = _fake_runner(failing_pgrep=(host_rules.REPLAY_PATTERNS[-1],))
+    failed = [c.check_id for c in host_rules.blocking_failures(host_rules.guard_checks(run, _bridge(tmp_path), NOW))]
+    assert failed == ["no_replay_jobs"]
+
+
+@pytest.mark.parametrize("outcome", [
+    OSError("pgrep not found"),
+    subprocess.TimeoutExpired(["pgrep"], 30),
+    SimpleNamespace(returncode=2, stdout=""),
+    SimpleNamespace(returncode=3, stdout=""),
+])
+def test_run_command_raises_when_the_probe_did_not_run(monkeypatch, outcome):
+    def fake_run(cmd, **_kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(host_rules.subprocess, "run", fake_run)
+    with pytest.raises(host_rules.ProbeError):
+        host_rules.run_command(["pgrep", "-f", "research."])
+    assert host_rules.read_output(host_rules.run_command, ["pmset", "-g", "batt"]) == ""
+
+
+def test_run_command_reads_exit_one_as_a_result(monkeypatch):
+    monkeypatch.setattr(host_rules.subprocess, "run", lambda cmd, **_k: SimpleNamespace(returncode=1, stdout=""))
+    assert host_rules.run_command(["pgrep", "-f", "research."]) == ""
+    assert host_rules.pids("research.", host_rules.run_command) == []
+
+
+# ---------------------------------------------------------------- window-start rules (gate H1)
+def test_window_start_checks_cover_every_rule_that_can_block_host_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(hc.time, "sleep", lambda s: None)
+    worst = _fake_runner(power="BATTERY", awake=0, nap="", swap=4911.0, free=10, mt5=False, replay=True, disk_gb=2)
+    mt5_dir = _mt5_dir(tmp_path, drops=80)
+    bridge = _bridge(tmp_path, age_s=600)
+    cli_blocks = {c.check_id for c in hc.run_checks("trading", worst, mt5_dir, bridge, NOW) if c.status == hc.BLOCK}
+    window = host_rules.window_start_checks(worst, bridge, NOW, mt5_dir)
+    assert cli_blocks == {c.check_id for c in host_rules.any_blocks(window)}
+    assert {"memory_free_pct", "disk_free", "mt5_running", "mt5_connection_drops_2d"} <= cli_blocks
+
+    healthy = host_rules.window_start_checks(_fake_runner(), _bridge(tmp_path / "ok"), NOW, _mt5_dir(tmp_path / "ok"))
+    assert host_rules.any_blocks(healthy) == []
+    assert [c.check_id for c in healthy][-4:] == ["memory_free_pct", "disk_free", "mt5_running", "mt5_connection_drops_2d"]
+
+
+@pytest.mark.parametrize("runner_kwargs,check_id", [({"free": 10}, "memory_free_pct"), ({"disk_gb": 2}, "disk_free")])
+def test_memory_or_disk_block_shows_in_the_window_record_but_never_blocks_entries(tmp_path, runner_kwargs, check_id):
+    window = host_rules.window_start_checks(_fake_runner(**runner_kwargs), _bridge(tmp_path), NOW, _mt5_dir(tmp_path))
+    assert [c.check_id for c in host_rules.any_blocks(window)] == [check_id]
+    assert host_rules.blocking_failures(window) == []

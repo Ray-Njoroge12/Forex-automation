@@ -40,11 +40,12 @@ def _all_cycles(conn, day: date, *, skip: tuple[int, ...] = (), blocked: tuple[i
             _funnel(conn, when, "SESSION", "PASS", "SESSION_ACTIVE")
 
 
-def _daily_check(conn, when: datetime, *, status="PASS", swap=600) -> None:
+def _daily_check(conn, when: datetime, *, status="PASS", swap=600, scope="host_check", failed=None) -> None:
+    failed = failed or ("-" if status == "PASS" else "power_source")
     conn.execute(
         "INSERT INTO risk_events (timestamp, execution_mode, rule_name, severity, reason) VALUES (?, 'mt5', ?, 'INFO', ?)",
         (when.isoformat(), gate_h1.DAILY_CHECK_RULE,
-         f"status={status} failed={'-' if status == 'PASS' else 'power_source'} swap_used_mb={swap} checks=power_source:{status}"),
+         f"status={status} scope={scope} failed={failed} swap_used_mb={swap} checks=power_source:{status}"),
     )
 
 
@@ -179,6 +180,8 @@ def test_five_clean_trading_days_pass(tmp_path):
 
 @pytest.mark.parametrize("breaker,condition,expected", [
     ("block", "host_check_at_window_start", gate_h1.FAIL),
+    ("memory_block", "host_check_at_window_start", gate_h1.FAIL),
+    ("guard_scope", "host_check_at_window_start", gate_h1.NO_DATA),
     ("late", "host_check_at_window_start", gate_h1.FAIL),
     ("swap", "swap_at_window_start", gate_h1.FAIL),
     ("drops", "mt5_drops_in_window", gate_h1.FAIL),
@@ -193,14 +196,16 @@ def test_each_condition_breaks_the_streak(tmp_path, breaker, condition, expected
     friday = WEEK[-1]
     start = cycle_counter.trading_window(friday)[0]
     pmset = PMSET_HEADER
-    if breaker in ("block", "late", "swap", "no_engine"):
+    if breaker in ("block", "memory_block", "guard_scope", "late", "swap", "no_engine"):
         conn.execute("DELETE FROM risk_events WHERE timestamp >= ?", (friday.isoformat(),))
         if breaker != "no_engine":
             _daily_check(
                 conn,
                 start + timedelta(minutes=40 if breaker == "late" else 1),
-                status="BLOCK" if breaker == "block" else "PASS",
+                status="BLOCK" if breaker in ("block", "memory_block") else "PASS",
                 swap=2048 if breaker == "swap" else 600,
+                scope="guard" if breaker == "guard_scope" else "host_check",
+                failed="memory_free_pct" if breaker == "memory_block" else None,
             )
     elif breaker == "drops":
         _write_log(logs, friday, 7)
@@ -218,6 +223,35 @@ def test_each_condition_breaks_the_streak(tmp_path, breaker, condition, expected
     assert gate_h1.trailing_streak(results) == 0
     if breaker != "pmset_short":
         assert all(r.passed for r in results[:-1])
+
+
+def test_engine_window_record_with_a_memory_only_block_fails_h1(tmp_path):
+    """HostGuard's own record (memory BLOCK, guard rules all PASS) read back by gate H1."""
+    from application.host_tolerance import HostGuard
+    from core.host_rules import BLOCK, PASS, Check
+
+    conn, logs = _good_week(tmp_path)
+    friday = WEEK[-1]
+    start = cycle_counter.trading_window(friday)[0]
+    conn.execute("DELETE FROM risk_events WHERE timestamp >= ?", (friday.isoformat(),))
+    guard_rules = [Check(c, PASS, "") for c in ("power_source", "sleep_prevented", "mt5_app_nap_disabled",
+                                                 "no_replay_jobs", "bridge_snapshot_fresh")]
+    window = [*guard_rules, Check("swap_used", PASS, "swap_used=600 MB"), Check("memory_free_pct", BLOCK, "free=10%")]
+    when = start + timedelta(minutes=1)
+
+    def record(rule, severity, reason):
+        conn.execute(
+            "INSERT INTO risk_events (timestamp, execution_mode, rule_name, severity, reason) VALUES (?, 'mt5', ?, ?, ?)",
+            (when.isoformat(), rule, severity, reason),
+        )
+
+    guard = HostGuard(lambda now: guard_rules, evaluate_window_start=lambda now: window,
+                      in_trading_window=lambda now: True)
+    assert not guard.poll(when, record).blocked  # entries are not refused on memory
+    results = _evaluate(conn, logs)
+    assert results[-1].conditions["host_check_at_window_start"] == gate_h1.FAIL
+    assert "failed=memory_free_pct" in results[-1].details["host_check_at_window_start"]
+    assert gate_h1.trailing_streak(results) == 0
 
 
 def test_incomplete_day_is_reported_but_not_counted(tmp_path):

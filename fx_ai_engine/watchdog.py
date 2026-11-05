@@ -8,6 +8,11 @@ Usage:
     python  watchdog.py          # debugging (console visible)
 
 The watchdog writes a heartbeat log to watchdog.log next to this file.
+
+It also polls the bridge outage alert (application.host_tolerance.OutageMonitor)
+every 30 seconds. The engine stops when the account snapshot goes stale, so the
+watchdog is the process that is still running to report an outage; both share
+the episode state file, so each outage sends one message and one recovery.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from pathlib import Path
 # Config
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL_SECONDS = 300   # 5 minutes — match Task Scheduler trigger
+OUTAGE_POLL_SECONDS = 30       # bridge outage alert (two messages per outage)
 ENGINE_SCRIPT = Path(__file__).parent / "main.py"
 ENGINE_ARGS = ["--mode", "demo"]
 LOG_FILE = Path(__file__).parent / "watchdog.log"
@@ -167,38 +173,73 @@ def _start_engine() -> None:
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _check_engine() -> None:
+    # First, ensure MT5 is up
+    _ensure_mt5_running()
+
+    health = _get_health()
+    if not health:
+        if not _engine_is_running():
+            logger.warning("Engine not detected — restarting…")
+            _start_engine()
+        else:
+            logger.warning("Engine detected but health check failed — waiting for next cycle")
+    elif _is_health_stale(health):
+        logger.warning("Engine health is stale — attempting to restart engine process")
+        # Kill existing engine processes
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+                if any(str(ENGINE_SCRIPT.resolve()) in arg for arg in cmdline):
+                    proc.kill()
+                    logger.info("Killed stale engine process (PID %d)", proc.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        _start_engine()
+    else:
+        logger.info("Engine healthy and running — OK")
+
+
+def _build_outage_monitor():
+    """The engine's outage monitor for the real bridge; None in mock mode or without a bridge."""
+    try:
+        from application import host_tolerance
+        from core.bridge_utils import get_mt5_bridge_path
+        from core.env_loader import load_runtime_env
+
+        load_runtime_env()  # Telegram settings live in fx_ai_engine/.env (never overrides set vars)
+        if os.getenv("USE_MT5_MOCK", "0") == "1":
+            return None
+        return host_tolerance.build_outage_monitor(use_mock=False, bridge_path=get_mt5_bridge_path())
+    except Exception as exc:
+        logger.error("Outage alert unavailable: %s", exc)
+        return None
+
+
+def _poll_outage(monitor) -> None:
+    if monitor is None:
+        return
+    try:
+        event = monitor.poll(datetime.now(timezone.utc))
+        if event:
+            logger.warning("Bridge outage alert: %s", event)
+    except Exception as exc:
+        logger.error("Outage alert poll failed: %s", exc)
+
+
 def main() -> None:
     logger.info("Watchdog started — checking every %ds", CHECK_INTERVAL_SECONDS)
+    monitor = _build_outage_monitor()
+    last_engine_check: float | None = None
     while True:
-        try:
-            # First, ensure MT5 is up
-            _ensure_mt5_running()
-
-            health = _get_health()
-            if not health:
-                if not _engine_is_running():
-                    logger.warning("Engine not detected — restarting…")
-                    _start_engine()
-                else:
-                    logger.warning("Engine detected but health check failed — waiting for next cycle")
-            elif _is_health_stale(health):
-                logger.warning("Engine health is stale — attempting to restart engine process")
-                # Kill existing engine processes
-                for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-                    try:
-                        cmdline = proc.info.get("cmdline") or []
-                        if any(str(ENGINE_SCRIPT.resolve()) in arg for arg in cmdline):
-                            proc.kill()
-                            logger.info("Killed stale engine process (PID %d)", proc.pid)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-                _start_engine()
-            else:
-                logger.info("Engine healthy and running — OK")
-        except Exception as exc:
-            logger.error("Watchdog error: %s", exc)
-
-        time.sleep(CHECK_INTERVAL_SECONDS)
+        if last_engine_check is None or time.monotonic() - last_engine_check >= CHECK_INTERVAL_SECONDS:
+            last_engine_check = time.monotonic()
+            try:
+                _check_engine()
+            except Exception as exc:
+                logger.error("Watchdog error: %s", exc)
+        _poll_outage(monitor)
+        time.sleep(OUTAGE_POLL_SECONDS)
 
 
 if __name__ == "__main__":

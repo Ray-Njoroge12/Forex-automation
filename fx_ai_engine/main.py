@@ -229,8 +229,9 @@ def _insert_risk_event_with_context(
     *,
     evidence_context=None,
     repository: EngineRepository,
+    alert: bool = True,
 ) -> None:
-    if severity in ("BLOCK", "CRITICAL"):
+    if alert and severity in ("BLOCK", "CRITICAL"):
         alert_risk_halt(rule_name, reason, severity)
     try:
         repository.insert_risk_event(
@@ -793,7 +794,9 @@ class Engine:
                 **kwargs,
             )
 
-    def _insert_risk_event(self, rule_name: str, severity: str, reason: str, trade_id: str | None = None) -> None:
+    def _insert_risk_event(
+        self, rule_name: str, severity: str, reason: str, trade_id: str | None = None, *, alert: bool = True
+    ) -> None:
         _insert_risk_event_with_context(
             rule_name,
             severity,
@@ -801,6 +804,7 @@ class Engine:
             trade_id,
             evidence_context=self.evidence_context,
             repository=self.repository,
+            alert=alert,
         )
 
     def _insert_funnel_event(
@@ -1025,7 +1029,12 @@ class Engine:
     def _poll_host_guard(self, now: datetime | None = None) -> host_tolerance.HostGuardStatus | None:
         if self.host_guard is None:
             return None
-        return self.host_guard.poll(now or datetime.now(timezone.utc), self._insert_risk_event)
+        # Persisted without a Telegram risk alert: a stale bridge is reported by
+        # the outage monitor (two messages per outage), not by this event.
+        return self.host_guard.poll(
+            now or datetime.now(timezone.utc),
+            lambda rule, severity, reason: self._insert_risk_event(rule, severity, reason, alert=False),
+        )
 
     def _poll_outage_monitor(self, now: datetime | None = None) -> None:
         if self.outage_monitor is None:

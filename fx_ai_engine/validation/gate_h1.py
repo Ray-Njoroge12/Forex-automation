@@ -9,9 +9,11 @@ Doc: fx_ai_engine/docs/2026-11-04-mac-host-operating-model.md, section 7. For
 each weekday whose trading window (London/NY sessions, UTC) has ended:
 
 1. host_check_at_window_start: the engine's ``HOST_GUARD_DAILY_CHECK`` risk event
-   was recorded within 15 minutes of the window opening with ``status=PASS``.
-   It covers the host-guard rules (power, sleep prevention, App Nap, replay
-   jobs, bridge snapshot); memory, disk and MT5 settings are not recorded.
+   was recorded within 15 minutes of the window opening with ``scope=host_check``
+   and ``status=PASS``. That record covers every rule that can BLOCK in
+   ``validation.host_check`` trading mode (power, sleep prevention, App Nap,
+   replay jobs, bridge snapshot, swap, memory, disk, MT5 running, connection
+   drops). A record with any other scope is NO_DATA.
 2. swap_at_window_start: ``swap_used_mb`` in that event is below 1500.
 3. mt5_drops_in_window: at most 6 "connection to ... lost" lines in the MT5
    terminal logs during the window (log times are local; see --log-utc-offset-hours).
@@ -34,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from core.host_rules import MT5_DATA, SWAP_WARN_MB, read_utf16, run_command
+from core.host_rules import MT5_DATA, SWAP_WARN_MB, read_output, read_utf16, run_command
 from validation import cycle_counter
 
 DB = Path(__file__).parents[1] / "database" / "trading_state.db"
@@ -43,6 +45,7 @@ REQUIRED_DAYS = 5
 MAX_DROPS_PER_WINDOW = 6
 WINDOW_START_GRACE = timedelta(minutes=15)
 DAILY_CHECK_RULE = "HOST_GUARD_DAILY_CHECK"
+DAILY_CHECK_SCOPE = "host_check"  # application.host_tolerance.DAILY_CHECK_SCOPE_FULL
 
 _PMSET_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}) (\S+)")
 _DROP_LINE = re.compile(r"\t(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\t[^\n]*connection to \S+ lost")
@@ -157,10 +160,13 @@ def evaluate(
             stamp, fields = check
             late = stamp > start + WINDOW_START_GRACE
             ok = fields.get("status") == "PASS" and not late
-            res.conditions["host_check_at_window_start"] = PASS if ok else FAIL
+            full = fields.get("scope") == DAILY_CHECK_SCOPE
+            res.conditions["host_check_at_window_start"] = (PASS if ok else FAIL) if full else NO_DATA
             res.details["host_check_at_window_start"] = (
-                f"at {stamp:%H:%M} UTC status={fields.get('status')} failed={fields.get('failed', '-')}"
+                f"at {stamp:%H:%M} UTC status={fields.get('status')} scope={fields.get('scope', '-')} "
+                f"failed={fields.get('failed', '-')}"
                 + (" (later than 15 min after the window opened)" if late else "")
+                + ("" if full else " (record does not cover the full host_check rules)")
             )
             try:
                 swap = float(fields["swap_used_mb"])
@@ -216,7 +222,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     offset = timedelta(hours=args.log_utc_offset_hours) if args.log_utc_offset_hours is not None else _local_offset()
-    pmset_text = args.pmset_log.read_text(errors="replace") if args.pmset_log else run_command(["pmset", "-g", "log"], timeout=60)
+    if args.pmset_log:
+        pmset_text = args.pmset_log.read_text(errors="replace")
+    else:  # an unreadable pmset log leaves sleep_events_in_window at NO_DATA
+        pmset_text = read_output(lambda cmd: run_command(cmd, timeout=60), ["pmset", "-g", "log"])
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
         results = evaluate(
@@ -241,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
             for name in names:
                 print(f"  {res.conditions.get(name, NO_DATA):7} {name}: {res.details.get(name, '')}")
         print(f"\nGate H1: {verdict} (trailing streak {streak} of {REQUIRED_DAYS} completed trading days)")
-        print("Not measured here: Mode T discipline, memory/disk/MT5 settings at window start, physical setup (UPS, backup link).")
+        print("Not measured here: Mode T discipline, WARN-only MT5 settings (Max bars, news, footprint, CPU), "
+              "physical setup (UPS, backup link).")
     return 0 if verdict == PASS else 1
 
 

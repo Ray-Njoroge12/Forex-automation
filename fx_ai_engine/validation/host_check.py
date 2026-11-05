@@ -13,7 +13,10 @@ starving MT5 or the engine?".
 
 The rules live in ``core.host_rules`` and are shared with the engine host
 guard, which re-evaluates the fast subset (``core.host_rules.guard_checks``)
-while it runs and refuses new entries on a BLOCK.
+while it runs and refuses new entries on a BLOCK, and records every rule that
+can BLOCK here (``core.host_rules.window_start_checks``) at the start of each
+trading window for gate H1. A probe command that fails to run is never read as
+a pass: a failed ``pgrep`` makes the replay rule BLOCK in trading mode.
 
 Exit code: 0 = all PASS/WARN, 1 = at least one BLOCK. Nothing is changed.
 See fx_ai_engine/docs/2026-11-04-mac-host-operating-model.md.
@@ -24,7 +27,7 @@ import argparse
 import json
 import time
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from core.host_rules import (  # noqa: F401  (re-exported for callers and tests)
@@ -47,11 +50,17 @@ from core.host_rules import (  # noqa: F401  (re-exported for callers and tests)
     SWAP_WARN_MB,
     WARN,
     Check,
+    ProbeError,
     Runner,
     app_nap_check,
     classify,
     count_connection_drops,
     default_bridge_path,
+    disk_check,
+    drops_check,
+    memory_check,
+    mt5_pids,
+    mt5_running_check,
     parse_assertions,
     parse_footprint_mb,
     parse_free_pct,
@@ -60,6 +69,7 @@ from core.host_rules import (  # noqa: F401  (re-exported for callers and tests)
     parse_swap_used_mb,
     pids as _pids,
     power_check,
+    read_output,
     read_utf16 as _read_utf16,
     replay_check,
     run_command as _run,
@@ -70,20 +80,24 @@ from core.host_rules import (  # noqa: F401  (re-exported for callers and tests)
 
 
 def _group_footprint_mb(pattern: str, run: Runner) -> float:
+    try:
+        found = _pids(pattern, run)
+    except ProbeError:
+        return 0.0
     total = 0.0
-    for pid in _pids(pattern, run):
-        mb = parse_footprint_mb(run(["footprint", "-p", str(pid)]))
+    for pid in found:
+        mb = parse_footprint_mb(read_output(run, ["footprint", "-p", str(pid)]))
         total += max(mb, 0.0)
     return total
 
 
 def _mt5_cpu(run: Runner, samples: int = 3, interval: float = 2.0) -> float:
-    pids = _pids("terminal64.exe", run)
+    pids = mt5_pids(run)
     if not pids:
         return -1.0
     values = []
     for i in range(samples):
-        out = run(["ps", "-o", "pcpu=", "-p", str(pids[0])]).strip()
+        out = read_output(run, ["ps", "-o", "pcpu=", "-p", str(pids[0])]).strip()
         try:
             values.append(float(out))
         except ValueError:
@@ -103,28 +117,14 @@ def run_checks(mode: str = "trading", run: Runner = _run, mt5_data: Path = MT5_D
         app_nap_check(run, trading=trading),
     ]
 
-    free_pct = parse_free_pct(run(["memory_pressure"]))
-    checks.append(Check("memory_free_pct", classify(free_pct, FREE_PCT_WARN, FREE_PCT_BLOCK, higher_is_worse=False),
-                        f"free={free_pct}%", "Quit Kiro windows, browsers and replays before trading."))
+    checks.append(memory_check(run))
     checks.append(swap_check(run))
-
-    df = run(["df", "-g", "/"]).splitlines()
-    free_gb = -1.0
-    if len(df) > 1:
-        parts = df[1].split()
-        try:
-            free_gb = float(parts[3])
-        except (IndexError, ValueError):
-            pass
-    checks.append(Check("disk_free", BLOCK if 0 <= free_gb < DISK_FREE_BLOCK_GB else PASS if free_gb >= 0 else WARN,
-                        f"free={free_gb:.0f} GB"))
-
+    checks.append(disk_check(run))
     checks.append(replay_check(run, trading=trading))
 
-    mt5_pids = _pids("terminal64.exe", run)
-    if not mt5_pids:
-        checks.append(Check("mt5_running", BLOCK if trading else PASS, "terminal64.exe not running",
-                            "Open MetaTrader 5.app and attach FX_Execution." if trading else ""))
+    found = mt5_pids(run)
+    if not found:
+        checks.append(mt5_running_check(found, trading=trading))
     else:
         mt5_mb = _group_footprint_mb("terminal64.exe", run)
         checks.append(Check("mt5_footprint", WARN if mt5_mb > MT5_FOOTPRINT_WARN_MB else PASS, f"footprint={mt5_mb:.0f} MB",
@@ -145,13 +145,7 @@ def run_checks(mode: str = "trading", run: Runner = _run, mt5_data: Path = MT5_D
     checks.append(Check("mt5_news", WARN if news == "1" else PASS, f"NewsEnable={news}",
                         "Tools > Options > Server: untick Enable news (the engine uses its own calendar)."))
 
-    logs = []
-    for day in (now, now - timedelta(days=1)):
-        logs.append(_read_utf16(mt5_data / "logs" / f"{day:%Y%m%d}.log"))
-    drops = count_connection_drops(logs)
-    checks.append(Check("mt5_connection_drops_2d", classify(drops, DROPS_WARN_24H * 2, DROPS_BLOCK_24H * 2),
-                        f"drops today+yesterday={drops}",
-                        "Most drops coincide with system sleep/DarkWake; fix sleep and App Nap first, then check Wi-Fi."))
+    checks.append(drops_check(mt5_data, now))
 
     kiro = _group_footprint_mb("Kiro Helper|Kiro.app", run)
     browsers = _group_footprint_mb("Brave|Google Chrome|Safari|firefox", run)
