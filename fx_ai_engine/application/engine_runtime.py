@@ -106,8 +106,17 @@ def run(engine, mode: str, iterations: int = 0) -> None:
                 engine._update_account_state()
                 engine.mock_feedback.clear_account_snapshot()
 
-        engine.repository.insert_account_metrics(engine.account_status, evidence_context=engine.evidence_context)
-        engine._consecutive_losses_dirty = False
+        if getattr(engine, "_account_values_loaded", True):
+            engine.repository.insert_account_metrics(engine.account_status, evidence_context=engine.evidence_context)
+            engine._consecutive_losses_dirty = False
+            engine._after_account_metrics_persisted()
+        else:
+            # HT-009A-1: no valid snapshot yet in this process (a cold start on a stale or
+            # unreadable bridge). Persisting now would record the constructor defaults
+            # (balance and equity 0) and the fail-closed halt. A pending loss-streak change
+            # goes into a copied checkpoint or the pending runtime state instead.
+            if engine._consecutive_losses_dirty:
+                engine._persist_loss_streak_checkpoint()
         engine.metrics.inc("decision_cycles")
 
         count += 1

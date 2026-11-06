@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from copy import deepcopy
@@ -106,6 +107,9 @@ logger = logging.getLogger("fx_ai_engine.main")
 # The only strategy the live/demo engine runs (ADR 0014). No CLI flag and no
 # environment variable: running another strategy live is an owner/SRS decision.
 LIVE_STRATEGY_ID = DEFAULT_STRATEGY_ID
+
+# HT-009A-1: a loss-streak count that could not go into an account metric yet.
+PENDING_LOSS_STREAK_STATE_KEY = "pending_loss_streak"
 
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
@@ -568,6 +572,9 @@ class Engine:
     # HT-009A-1: False in __init__ until the first valid account snapshot is applied.
     # True here so engines built with Engine.__new__ in tests keep the direct checkpoint.
     _account_values_loaded: bool = True
+    # HT-009A-1: a loss-streak count kept in engine runtime state until a metric holds it.
+    _pending_loss_streak_active: bool = False
+    _pending_loss_streak_value: int | None = None
 
     def __init__(
         self,
@@ -657,6 +664,9 @@ class Engine:
         self._consecutive_losses_dirty = False
         self._consecutive_losses_seeded = False
         self._account_values_loaded = False
+        self._pending_loss_streak_active = False
+        self._pending_loss_streak_value = None
+        self._load_pending_loss_streak()
 
         # Auto-detect MT5 sandbox bridge path
         self.bridge_path = get_mt5_bridge_path()
@@ -1020,6 +1030,7 @@ class Engine:
                 evidence_context=self.evidence_context,
             )
             self._consecutive_losses_dirty = False
+            self._clear_pending_loss_streak()
         except Exception:
             logger.exception("Failed to persist consecutive loss throttle checkpoint; retrying on next cycle")
             self._consecutive_losses_dirty = True
@@ -1032,8 +1043,10 @@ class Engine:
         persist the constructor defaults (balance and equity 0) and, in a
         reconciliation-only engine, the forced halt. The checkpoint copies the latest
         persisted account metric and changes only the consecutive-loss count and the
-        timestamp. With no metric to copy the change stays dirty: the loop persists it
-        with the first account update, and a BLOCK event records the deferral.
+        timestamp. With no metric to copy, the count goes into scoped engine runtime
+        state (``pending_loss_streak``), a BLOCK event records the deferral, and the
+        change stays dirty. The next engine loads that count before any decision; it
+        is cleared only once a metric with real account values (or a copy) holds it.
         """
         losses = self.account_status.consecutive_losses
         try:
@@ -1043,10 +1056,16 @@ class Engine:
             )
             if latest is None:
                 self._consecutive_losses_dirty = True
+                if self._pending_loss_streak_active and self._pending_loss_streak_value == losses:
+                    return  # already pending (the loop retries every iteration while stale)
+                self._set_pending_loss_streak(losses)
                 self._insert_risk_event(
                     "LOSS_STREAK_CHECKPOINT_DEFERRED",
                     "BLOCK",
-                    f"consecutive_losses={losses} not persisted: no account metric to copy before the first account update",
+                    (
+                        f"consecutive_losses={losses} kept as pending runtime state: no account metric to copy "
+                        "before the first account update"
+                    ),
                     alert=False,
                 )
                 return
@@ -1069,9 +1088,67 @@ class Engine:
             )
             self.repository.insert_account_metrics(checkpoint, evidence_context=self.evidence_context)
             self._consecutive_losses_dirty = False
+            self._clear_pending_loss_streak()
         except Exception:
             logger.exception("Failed to persist the loss-streak checkpoint; retrying with the next account update")
             self._consecutive_losses_dirty = True
+
+    def _load_pending_loss_streak(self) -> None:
+        """HT-009A-1: a loss-streak count an earlier process could not put in a metric.
+
+        The count wins over the latest metric, is pushed into the first account update
+        (dirty flag) and so reaches the Hard Risk Engine before any decision cycle.
+        An unreadable value fails closed: the streak is taken as the SRS halt threshold.
+        """
+        try:
+            raw = self.repository.get_engine_runtime_state(
+                PENDING_LOSS_STREAK_STATE_KEY, evidence_context=self.evidence_context
+            )
+        except Exception:
+            logger.exception("Pending loss-streak state unreadable; ignoring it")
+            return
+        if not raw:
+            return
+        try:
+            losses = int(json.loads(raw)["consecutive_losses"])
+            if losses < 0:
+                raise ValueError(losses)
+        except (TypeError, ValueError, KeyError):
+            losses = int(self.policy.get("LOSS_HALT_THRESHOLD") or 3)
+            logger.error("Malformed pending loss-streak state %r; failing closed at %s", raw, losses)
+        self.account_status.consecutive_losses = losses
+        self._consecutive_losses_seeded = True
+        self._consecutive_losses_dirty = True
+        self._pending_loss_streak_active = True
+        self._pending_loss_streak_value = losses
+        logger.warning("Pending loss streak restored: consecutive_losses=%s", losses)
+
+    def _set_pending_loss_streak(self, losses: int) -> None:
+        self.repository.set_engine_runtime_state(
+            PENDING_LOSS_STREAK_STATE_KEY,
+            json.dumps({"consecutive_losses": int(losses), "recorded_at": datetime.now(timezone.utc).isoformat()}),
+            evidence_context=self.evidence_context,
+        )
+        self._pending_loss_streak_active = True
+        self._pending_loss_streak_value = int(losses)
+
+    def _clear_pending_loss_streak(self) -> None:
+        """Called only after a metric with real account values (or a copied one) holds the count."""
+        if not self._pending_loss_streak_active:
+            return
+        try:
+            self.repository.set_engine_runtime_state(
+                PENDING_LOSS_STREAK_STATE_KEY, "", evidence_context=self.evidence_context
+            )
+            self._pending_loss_streak_active = False
+            self._pending_loss_streak_value = None
+        except Exception:
+            logger.exception("Could not clear the pending loss-streak state; it is cleared after the next metric")
+
+    def _after_account_metrics_persisted(self) -> None:
+        """End-of-loop metric write: clears the pending count once real account values hold it."""
+        if self._account_values_loaded:
+            self._clear_pending_loss_streak()
 
     def _record_broker_close_time(self, close_time_value: object) -> None:
         feedback_service.record_broker_close_time(self, close_time_value)

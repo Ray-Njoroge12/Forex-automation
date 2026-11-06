@@ -176,6 +176,8 @@ def test_exit_reconciles_while_the_demo_snapshot_is_stale(tmp_path, monkeypatch,
     assert list((bridge_dir / "exits").glob("exit_*.json")) == []
     assert engine.account_status.is_trading_halted
     assert guard.status.blocked and guard.status.failed == ("bridge_snapshot_fresh",)
+    # HT-009A-1: no valid snapshot yet, so no metric with balance 0 or the fail-closed halt.
+    assert all(m["balance"] > 0 for m in _metrics(isolated_db)), _metrics(isolated_db)
 
     engine.run(mode="demo", iterations=1)  # still stale: nothing is applied twice
     assert _state(isolated_db)["trade"] == state["trade"] and _state(isolated_db)["receipts"] == 1
@@ -187,6 +189,10 @@ def test_exit_reconciles_while_the_demo_snapshot_is_stale(tmp_path, monkeypatch,
     assert after["trade"] == state["trade"] and after["receipts"] == 1 and after["recovered"] == 0
     assert not guard.status.blocked
     assert all(seen["trade"]["status"] == status and seen["pending"] == [] for seen in cycles)
+    metrics = _metrics(isolated_db)
+    assert metrics and all(m["balance"] > 0 for m in metrics), metrics
+    assert metrics[-1]["consecutive_losses"] == (1 if outcome == "SL" else 0)
+    assert _pending_loss_streak(isolated_db) is None
     with isolated_db() as conn:
         rules = [r[0] for r in conn.execute("SELECT rule_name FROM risk_events WHERE rule_name LIKE 'HOST_GUARD%'")]
     assert rules == ["HOST_GUARD_BLOCK", "HOST_GUARD_RECOVERED"]
@@ -401,6 +407,79 @@ def test_refused_start_without_a_prior_account_metric_defers_the_loss_streak_and
         deferred = [r[0] for r in conn.execute(
             "SELECT reason FROM risk_events WHERE rule_name='LOSS_STREAK_CHECKPOINT_DEFERRED' AND severity='BLOCK'")]
     assert len(deferred) == 1 and "consecutive_losses=1" in deferred[0]
+    assert _pending_loss_streak(isolated_db) == 1
+
+    # The next start (fresh snapshot, policy approved) loads the pending count before
+    # any decision, persists it with real account values, and only then clears it.
+    _age_snapshot(_bridge_dir, 0)
+    assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", "legacy_micro_capital"]) == 0
+    metrics = _metrics(isolated_db)
+    assert metrics and all(m["balance"] > 0 for m in metrics) and metrics[-1]["consecutive_losses"] == 1
+    assert _pending_loss_streak(isolated_db) is None
+
+
+def _pending_loss_streak(connection) -> int | None:
+    with connection() as conn:
+        rows = [r[0] for r in conn.execute(
+            "SELECT value FROM engine_runtime_state WHERE key='pending_loss_streak'")]
+    values = [json.loads(v)["consecutive_losses"] for v in rows if v]
+    assert len(values) <= 1
+    return values[0] if values else None
+
+
+def test_deferred_loss_streak_survives_a_restart_and_the_hard_risk_engine_halts_on_it(
+    tmp_path, monkeypatch, isolated_db
+):
+    """HT-009A-1 (review of f8a61de): a count deferred by a reconciliation-only process
+    with no account metric is loaded by the next engine before its first decision, and
+    the SRS three-loss halt applies to it."""
+    import main
+    from core.risk.hard_risk_engine import HardRiskEngine
+
+    seed, bridge_dir, _closed, _pnl, _cycles = _restart(tmp_path, monkeypatch, isolated_db, outcome="SL")
+    evidence = seed.evidence_context
+    # Two losses already pending from an earlier refused start.
+    seed.repository.set_engine_runtime_state(
+        main.PENDING_LOSS_STREAK_STATE_KEY, json.dumps({"consecutive_losses": 2}), evidence_context=evidence)
+    _age_snapshot(bridge_dir, 45)
+
+    refused = make_file_bridge_engine(bridge_dir, monkeypatch)
+    refused.reconcile_only = True
+    assert refused.account_status.consecutive_losses == 2
+    refused.reconcile_once()  # the SL during downtime is the third loss
+    assert _state(isolated_db)["trade"]["status"] == "CLOSED_LOSS"
+    assert _metrics(isolated_db) == [] and _pending_loss_streak(isolated_db) == 3
+
+    _age_snapshot(bridge_dir, 0)
+    restarted = make_file_bridge_engine(bridge_dir, monkeypatch)
+    assert restarted.account_status.consecutive_losses == 3  # loaded before any decision
+    cycles: list[int] = []
+    restarted._decision_cycle = lambda: cycles.append(restarted.account_status.consecutive_losses)
+    restarted.run(mode="demo", iterations=1)
+
+    assert restarted.account_status.consecutive_losses == 3
+    assert all(seen == 3 for seen in cycles)
+    decision = HardRiskEngine(restarted.policy).validate(restarted.account_status, 0.032)
+    assert not decision.approved and decision.reason_code == "RISK_LOSS_STREAK", decision
+    metrics = _metrics(isolated_db)
+    assert metrics and all(m["balance"] > 0 for m in metrics) and metrics[-1]["consecutive_losses"] == 3
+    assert _pending_loss_streak(isolated_db) is None
+    # A later process seeds the halt from the metric now that the pending state is cleared.
+    later = make_file_bridge_engine(bridge_dir, monkeypatch)
+    later._ensure_consecutive_losses_seeded()
+    assert later.account_status.consecutive_losses == 3
+
+
+def test_malformed_pending_loss_streak_fails_closed_at_the_halt_threshold(tmp_path, monkeypatch, isolated_db):
+    import main
+
+    seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+    seed.repository.set_engine_runtime_state(
+        main.PENDING_LOSS_STREAK_STATE_KEY, "{not json", evidence_context=seed.evidence_context)
+
+    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
+
+    assert engine.account_status.consecutive_losses == int(engine.policy["LOSS_HALT_THRESHOLD"]) == 3
 
 
 @pytest.mark.parametrize("outcome,losses", [("TP", 0), ("SL", 2)])
