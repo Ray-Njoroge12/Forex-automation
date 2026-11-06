@@ -603,6 +603,8 @@ class Engine:
     # HT-009A-1: a loss-streak count kept in engine runtime state until a metric holds it.
     _pending_loss_streak_active: bool = False
     _pending_loss_streak_value: int | None = None
+    # HT-009A-1E: True only in a reconciliation-only engine whose pending state was unreadable.
+    _loss_streak_unknown: bool = False
 
     def __init__(
         self,
@@ -1047,6 +1049,27 @@ class Engine:
         else:
             return
 
+        if self._loss_streak_unknown:
+            # HT-009A-1E: the base count could not be read (reconciliation-only pass).
+            if pnl > 0:
+                # A win sets the streak to 0 whatever the base was: the count is known again.
+                self._loss_streak_unknown = False
+            else:
+                # A loss on an unknown base fails closed at the halt threshold and is
+                # persisted, so the halt holds until validation.reset_loss_streak.
+                halt_threshold = int(self.policy.get("LOSS_HALT_THRESHOLD") or 3)
+                self.account_status.consecutive_losses = halt_threshold
+                try:
+                    self._insert_risk_event(
+                        "LOSS_STREAK_UNKNOWN",
+                        "BLOCK",
+                        f"loss applied while the pending loss-streak state was unreadable; "
+                        f"consecutive_losses persisted at the halt threshold {halt_threshold}",
+                        alert=False,
+                    )
+                except Exception:
+                    logger.exception("Could not record LOSS_STREAK_UNKNOWN")
+
         if self.reconcile_only or not self._account_values_loaded:
             self._persist_loss_streak_checkpoint()
             return
@@ -1136,6 +1159,20 @@ class Engine:
                 PENDING_LOSS_STREAK_STATE_KEY, evidence_context=self.evidence_context
             )
         except Exception as exc:
+            if self.reconcile_only:
+                # HT-009A-1E: the reconciliation-only pass must still apply exits. It never
+                # routes. The count is held at the threshold in memory; nothing is persisted
+                # unless a close changes it (see _loss_streak_unknown in
+                # _record_consecutive_loss_update), so a pass without a loss latches nothing.
+                logger.exception(
+                    "Pending loss-streak state unreadable in the reconciliation-only pass; "
+                    "holding consecutive_losses at %s in memory",
+                    halt_threshold,
+                )
+                self.account_status.consecutive_losses = halt_threshold
+                self._consecutive_losses_seeded = True
+                self._loss_streak_unknown = True
+                return
             # Fail closed without latching a halt: a pending count may exist and cannot be
             # read, so the engine does not start (main returns 2 on this RuntimeError).
             raise RuntimeError(f"Pending loss-streak state unreadable: {exc}") from exc

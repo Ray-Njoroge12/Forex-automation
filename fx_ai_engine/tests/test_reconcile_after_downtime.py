@@ -564,6 +564,49 @@ def test_pending_loss_streak_against_an_older_or_unordered_metric(
     assert _pending_loss_streak(isolated_db) == pending  # still pending until a metric holds it
 
 
+@pytest.mark.parametrize("outcome,status,losses,unknown_events", [
+    ("SL", "CLOSED_LOSS", None, 1),  # a loss on an unknown base fails closed at the policy threshold
+    ("TP", "CLOSED_WIN", 0, 0),   # a win resets the streak whatever the base was
+])
+def test_refused_start_with_an_unreadable_pending_loss_streak_still_reconciles_the_exit(
+    tmp_path, monkeypatch, isolated_db, outcome, status, losses, unknown_events
+):
+    """HT-009A-1E: an unreadable pending state must not disable the reconciliation-only
+    pass of a refused start. The close is applied once, nothing is routed, and the
+    persisted streak is the threshold after a loss or 0 after a win."""
+    import main
+    from database.repositories.sqlite import SqliteEngineRepository
+
+    class Unreadable(SqliteEngineRepository):
+        def get_engine_runtime_state(self, key, *, evidence_context):
+            if key == main.PENDING_LOSS_STREAK_STATE_KEY:
+                raise OSError("disk I/O error")
+            return super().get_engine_runtime_state(key, evidence_context=evidence_context)
+
+    main_module, bridge_dir, _pnl, cycles = _main_on_file_bridge(
+        tmp_path, monkeypatch, isolated_db, outcome=outcome, mode_id="legacy_micro_capital", snapshot_age=45
+    )
+    monkeypatch.setattr(main_module, "SqliteEngineRepository", Unreadable)
+
+    assert main_module.main(["--mode", "demo", "--iterations", "1", "--policy-mode", "legacy_micro_capital"]) == 4
+
+    state = _state(isolated_db)
+    assert state["trade"]["status"] == status and state["reservation"] == "CLOSED" and state["receipts"] == 1
+    assert cycles == [] and list((bridge_dir / "pending_signals").iterdir()) == []
+    metrics = _metrics(isolated_db)
+    assert all(m["balance"] == 100000.0 and m["is_trading_halted"] == 0 for m in metrics)
+    if losses is None:
+        from config_microcapital import get_policy_config
+
+        losses = int(get_policy_config(mode_id="legacy_micro_capital", env={"FX_ALLOW_NON_SRS_POLICY": "1"})[
+            "LOSS_HALT_THRESHOLD"])
+        assert losses == 2
+    assert metrics[-1]["consecutive_losses"] == losses
+    with isolated_db() as conn:
+        events = conn.execute("SELECT COUNT(*) FROM risk_events WHERE rule_name='LOSS_STREAK_UNKNOWN'").fetchone()[0]
+    assert events == unknown_events
+
+
 def test_unreadable_pending_loss_streak_refuses_the_engine_start(tmp_path, monkeypatch, isolated_db):
     from database.repositories.sqlite import SqliteEngineRepository
 
