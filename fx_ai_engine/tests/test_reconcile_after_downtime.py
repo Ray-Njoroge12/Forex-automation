@@ -210,3 +210,51 @@ def test_exit_reconciles_while_the_host_guard_blocks_entries(tmp_path, monkeypat
     with isolated_db() as conn:
         rules = [r[0] for r in conn.execute("SELECT rule_name FROM risk_events WHERE rule_name LIKE 'HOST_GUARD%'")]
     assert rules == ["HOST_GUARD_BLOCK"]
+
+
+@pytest.mark.parametrize("outcome,status", [("TP", "CLOSED_WIN"), ("SL", "CLOSED_LOSS")])
+def test_cold_start_with_a_stale_snapshot_reconciles_the_exit_through_main(
+    tmp_path, monkeypatch, isolated_db, outcome, status
+):
+    """HT-009: the engine *starts* after downtime while the snapshot is still stale.
+    main() must not exit before reconciliation: the broker-side close is applied exactly
+    once, no entry is routed, and a later fresh start records the host recovery."""
+    import main
+    from application import host_tolerance
+    from core.evidence import build_runtime_evidence_context
+    from config_microcapital import get_policy_config
+
+    now = datetime.now(timezone.utc)
+    bridge_dir, closed, pnl = _bridge(tmp_path, now, outcome=outcome)
+    _age_snapshot(bridge_dir, 45)
+    monkeypatch.delenv("USE_MT5_MOCK", raising=False)
+    monkeypatch.setenv("MT5_CONNECTION", "file_bridge")
+    monkeypatch.setenv("BRIDGE_BASE_PATH", str(bridge_dir))
+    monkeypatch.setattr(main, "update_health_status", lambda **_: None, raising=False)
+    monkeypatch.setattr(main, "start_health_api", lambda *a, **k: None)
+    run = _fake_runner()
+    monkeypatch.setattr(host_tolerance, "build_host_guard", lambda **kw: HostGuard(
+        lambda t: host_rules.guard_checks(run, kw["bridge_path"], t), in_trading_window=lambda t: False))
+    from core.file_bridge_connection import FileBridgeConnection
+    probe = FileBridgeConnection(bridge_dir)
+    assert probe.connect(retry_count=1), probe.last_error
+    evidence = build_runtime_evidence_context(get_policy_config(mode_id="core_srs", env={}), use_mock=False,
+                                              login=probe.login, server=probe.server)
+    _seed_open_trade(isolated_db, evidence, now - timedelta(hours=9))
+
+    assert main.main(["--mode", "demo", "--iterations", "1"]) == 0
+
+    state = _state(isolated_db)
+    assert state["trade"]["status"] == status and state["reservation"] == "CLOSED" and state["receipts"] == 1
+    assert state["trade"]["profit_loss"] == pytest.approx(pnl)
+    assert state["trades"] == 1
+    assert list((bridge_dir / "pending_signals").iterdir()) == []
+    assert list((bridge_dir / "exits").glob("exit_*.json")) == []
+
+    _age_snapshot(bridge_dir, 0)
+    assert main.main(["--mode", "demo", "--iterations", "1"]) == 0
+    after = _state(isolated_db)
+    assert after["trade"] == state["trade"] and after["receipts"] == 1
+    with isolated_db() as conn:
+        rules = [r[0] for r in conn.execute("SELECT rule_name FROM risk_events WHERE rule_name LIKE 'HOST_GUARD%'")]
+    assert rules == ["HOST_GUARD_BLOCK", "HOST_GUARD_RECOVERED"]

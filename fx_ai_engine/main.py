@@ -83,7 +83,7 @@ from application.decision_cycle import (  # noqa: F401
     _policy_evidence_suffix,
     _with_policy_evidence,
 )
-from application.engine_runtime import _demo_account_verified  # noqa: F401
+from application.engine_runtime import _demo_account_state, _demo_account_verified  # noqa: F401
 from application.feedback_service import (  # noqa: F401
     _estimate_recovered_r_multiple,
     _execution_feedback_dedupe_key,
@@ -1184,10 +1184,22 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("MT5 connection failed: %s", bridge.last_error)
         return 2
 
-    if args.mode == "demo" and not _demo_account_verified(bridge, use_mock=use_mock):
-        logger.error("Demo mode requires a verified MT5 demo account; refusing to start")
-        _record_host_guard_at_refused_start(args, bridge, repository=repository, use_mock=use_mock)
-        return 2
+    account_state: bool | None = True
+    if args.mode == "demo":
+        # HT-009: only a confirmed live account refuses the start. An unverified
+        # demo account (stale or unreadable snapshot, for example after downtime)
+        # starts into the runtime loop, which blocks entries but still applies
+        # feedback, exits and broker closure recovery, and records the host guard.
+        account_state = _demo_account_state(bridge, use_mock=use_mock)
+        if account_state is False:
+            logger.error("Demo mode requires a demo account; the terminal reports a live account; refusing to start")
+            _record_host_guard_at_refused_start(args, bridge, repository=repository, use_mock=use_mock)
+            return 2
+        if account_state is None:
+            logger.warning(
+                "Demo account unverified at start (stale or unreadable snapshot); "
+                "starting with new entries blocked so feedback and exits still reconcile"
+            )
 
     live_session = None
     if args.mode == "live":
@@ -1202,7 +1214,12 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["FX_POLICY_MODE"] = live_gate.LIVE_POLICY_MODE
 
     start_health_api(int(os.getenv("HEALTH_PORT", "8080")))
-    _send_start_notice(args.mode, use_mock=use_mock)
+    if args.mode == "demo" and account_state is None:
+        # The bridge is stale: this start belongs to that episode, which the outage
+        # monitor reports (one outage and one recovery message), not a start notice.
+        logger.info("Engine start notice skipped: demo account unverified (bridge stale)")
+    else:
+        _send_start_notice(args.mode, use_mock=use_mock)
 
     try:
         policy = _enforce_demo_only_experiment_account_gate(

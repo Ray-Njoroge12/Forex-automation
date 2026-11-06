@@ -421,7 +421,9 @@ def test_bridge_freshness_reads_the_snapshot_the_status_and_every_bar_file(tmp_p
 
     _advance_status(bridge_dir, now)
     _age_bar_file(bridge_dir, "USDCHF", 3600)  # one export stopped an hour ago; status.json is current
-    assert bridge_freshness(bridge_dir, now)["bar_exports"] > 3000
+    # An hour old, less up to one M15 bar depending on where the clock sits in the bar
+    # (was > 3000, which failed in the last third of every bar).
+    assert bridge_freshness(bridge_dir, now)["bar_exports"] > 3600 - 900 - 60
 
     (bridge_dir / "market" / "bars_USDCHF_M15.json").unlink()
     assert bridge_freshness(bridge_dir, now)["bar_exports"] is None
@@ -623,12 +625,15 @@ def _guard_events(isolated_db):
                               "WHERE rule_name LIKE 'HOST_GUARD_%' ORDER BY id")
 
 
-def test_refused_demo_start_records_the_guard_block_and_a_later_start_the_recovery(demo_runtime, isolated_db):
-    """HT-004, startup: no fresh demo snapshot means no engine, but the BLOCK is still persisted."""
+def test_unverified_demo_start_runs_blocked_and_records_the_guard_block_then_recovery(demo_runtime, isolated_db):
+    """HT-004 + HT-009, startup: a stale demo snapshot starts the engine with entries blocked
+    (feedback and exits still run), persists one BLOCK, and a fresh start records the recovery."""
     _age_snapshot(demo_runtime.bridge_dir, 45)
-    assert demo_runtime.start() == 2
-    assert demo_runtime.engines == []
-    assert demo_runtime.start() == 2  # the watchdog retries during the outage: no second BLOCK
+    assert demo_runtime.start() == 0
+    assert len(demo_runtime.engines) == 1
+    assert demo_runtime.engines[0].account_status.is_trading_halted
+    assert list((demo_runtime.bridge_dir / "pending_signals").iterdir()) == []
+    assert demo_runtime.start() == 0  # the watchdog restarts during the outage: no second BLOCK
     _age_snapshot(demo_runtime.bridge_dir, 0)
     assert demo_runtime.start() == 0
 
@@ -638,6 +643,17 @@ def test_refused_demo_start_records_the_guard_block_and_a_later_start_the_recove
     assert {e[1:] for e in events} == {(engine_context.evidence_stream, engine_context.account_scope)}
     reason = _rows(isolated_db, f"SELECT reason FROM risk_events WHERE rule_name='{HOST_GUARD_BLOCK}'")[0][0]
     assert "bridge_snapshot_fresh=BLOCK" in reason
+
+
+def test_confirmed_live_account_still_refuses_a_demo_start(demo_runtime, monkeypatch, isolated_db):
+    """HT-009 keeps the demo-only rule: a terminal reporting a live account never starts in demo mode."""
+    import main
+    from core.file_bridge_connection import FileBridgeConnection
+
+    monkeypatch.setattr(FileBridgeConnection, "is_demo_account", lambda self: False)
+    assert demo_runtime.start() == 2
+    assert demo_runtime.engines == []
+    assert list((demo_runtime.bridge_dir / "pending_signals").iterdir()) == []
 
 
 def test_running_demo_engine_records_the_block_when_the_snapshot_goes_stale(demo_runtime, isolated_db):
@@ -677,10 +693,10 @@ def test_demo_outage_with_watchdog_restarts_sends_exactly_two_messages(
 
     _age_snapshot(demo_runtime.bridge_dir, 45)
     demo_runtime.engines[0].run(mode="demo", iterations=1)  # its last loop, then the process ends
-    watchdog._check_engine()  # restart refused: no demo snapshot
+    watchdog._check_engine()  # restarts with entries blocked (HT-009): demo unverified
     _age_snapshot(demo_runtime.bridge_dir, 150)
     watchdog._poll_outage(watchdog_monitor)  # outage message
-    watchdog._check_engine()  # still refused
+    watchdog._check_engine()  # restarts again, still blocked
     _age_snapshot(demo_runtime.bridge_dir, 0)
     if recovery_seen_by == "watchdog":
         watchdog._poll_outage(watchdog_monitor)  # recovery message
@@ -688,7 +704,7 @@ def test_demo_outage_with_watchdog_restarts_sends_exactly_two_messages(
     else:
         watchdog._check_engine()  # the engine starts while the episode is open and reports the recovery
         watchdog._poll_outage(watchdog_monitor)
-    assert exits == [2, 2, 0]
+    assert exits == [0, 0, 0]  # HT-009: an unverified demo start runs with entries blocked
 
     assert len(sent) == 2, sent
     assert "BRIDGE OUTAGE" in sent[0] and "account_snapshot" in sent[0]
