@@ -111,6 +111,34 @@ LIVE_STRATEGY_ID = DEFAULT_STRATEGY_ID
 # HT-009A-1: a loss-streak count that could not go into an account metric yet.
 PENDING_LOSS_STREAK_STATE_KEY = "pending_loss_streak"
 
+
+def _strict_non_negative_int(value: object) -> int | None:
+    """A whole number >= 0; None for booleans, fractions, strings and anything else."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _parse_pending_loss_streak(raw: str) -> tuple[int | None, datetime | None]:
+    """(count, recorded_at) from the pending state; count None when malformed."""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, RecursionError):
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    return _strict_non_negative_int(payload.get("consecutive_losses")), _parse_utc_timestamp(payload.get("recorded_at"))
+
 PRESERVE_10_COMMISSION_PER_LOT_ENV = "PRESERVE_10_COMMISSION_PER_LOT_USD"
 PRESERVE_10_LOT_SIZE = 0.01
 PRESERVE_10_REFERENCE_BALANCE_USD = 10.0
@@ -1096,26 +1124,62 @@ class Engine:
     def _load_pending_loss_streak(self) -> None:
         """HT-009A-1: a loss-streak count an earlier process could not put in a metric.
 
-        The count wins over the latest metric, is pushed into the first account update
-        (dirty flag) and so reaches the Hard Risk Engine before any decision cycle.
-        An unreadable value fails closed: the streak is taken as the SRS halt threshold.
+        The count is pushed into the first account update (dirty flag) and so reaches
+        the Hard Risk Engine before any decision cycle. A metric written after it holds
+        the newer count and wins (the stale pending state is cleared); when the order
+        is unknown the higher count wins. A malformed value (not a non-negative whole
+        number) fails closed at the halt threshold; an unreadable state refuses the start.
         """
+        halt_threshold = int(self.policy.get("LOSS_HALT_THRESHOLD") or 3)
         try:
             raw = self.repository.get_engine_runtime_state(
                 PENDING_LOSS_STREAK_STATE_KEY, evidence_context=self.evidence_context
             )
-        except Exception:
-            logger.exception("Pending loss-streak state unreadable; ignoring it")
-            return
+        except Exception as exc:
+            # Fail closed without latching a halt: a pending count may exist and cannot be
+            # read, so the engine does not start (main returns 2 on this RuntimeError).
+            raise RuntimeError(f"Pending loss-streak state unreadable: {exc}") from exc
         if not raw:
             return
+        pending, recorded_at = _parse_pending_loss_streak(raw)
+        if pending is None:
+            # HT-009A-1D: anything but a non-negative whole number fails closed.
+            logger.error("Malformed pending loss-streak state %r; failing closed at %s", raw, halt_threshold)
+            self._apply_pending_loss_streak(halt_threshold)
+            return
+
+        # HT-009A-1C: a metric written after the pending count (the clear failed or the
+        # process stopped between the two writes) holds the newer, authoritative count.
         try:
-            losses = int(json.loads(raw)["consecutive_losses"])
-            if losses < 0:
-                raise ValueError(losses)
-        except (TypeError, ValueError, KeyError):
-            losses = int(self.policy.get("LOSS_HALT_THRESHOLD") or 3)
-            logger.error("Malformed pending loss-streak state %r; failing closed at %s", raw, losses)
+            latest = self.repository.get_latest_account_metric(
+                evidence_stream=self.evidence_context.evidence_stream,
+                account_scope=self.evidence_context.account_scope,
+            )
+        except Exception:
+            logger.exception("Latest account metric unreadable; using the pending loss streak")
+            latest = None
+        if latest is not None:
+            metric_losses = _strict_non_negative_int(latest.get("consecutive_losses"))
+            metric_at = _parse_utc_timestamp(latest.get("timestamp"))
+            if metric_losses is None:
+                logger.error("Latest metric has a malformed loss streak; failing closed at %s", halt_threshold)
+                self._apply_pending_loss_streak(max(pending, halt_threshold))
+                return
+            if metric_at is not None and recorded_at is not None and metric_at > recorded_at:
+                logger.warning(
+                    "Stale pending loss streak %s ignored: newer metric (%s) holds consecutive_losses=%s",
+                    pending, metric_at.isoformat(), metric_losses,
+                )
+                self.account_status.consecutive_losses = metric_losses
+                self._consecutive_losses_seeded = True
+                self._pending_loss_streak_active = True
+                self._clear_pending_loss_streak()
+                return
+            if metric_at is None or recorded_at is None or metric_at == recorded_at:
+                pending = max(pending, metric_losses)  # order unknown: the higher count
+        self._apply_pending_loss_streak(pending)
+
+    def _apply_pending_loss_streak(self, losses: int) -> None:
         self.account_status.consecutive_losses = losses
         self._consecutive_losses_seeded = True
         self._consecutive_losses_dirty = True

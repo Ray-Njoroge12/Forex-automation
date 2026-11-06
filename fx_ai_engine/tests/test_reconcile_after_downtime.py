@@ -470,16 +470,113 @@ def test_deferred_loss_streak_survives_a_restart_and_the_hard_risk_engine_halts_
     assert later.account_status.consecutive_losses == 3
 
 
-def test_malformed_pending_loss_streak_fails_closed_at_the_halt_threshold(tmp_path, monkeypatch, isolated_db):
+@pytest.mark.parametrize("raw", [
+    "{not json",
+    '{"consecutive_losses": false}',
+    '{"consecutive_losses": true}',
+    '{"consecutive_losses": 2.9}',
+    '{"consecutive_losses": 1e400}',
+    '{"consecutive_losses": "2"}',
+    '{"consecutive_losses": -1}',
+    '{"consecutive_losses": null}',
+    '{"recorded_at": "2026-11-06T00:00:00+00:00"}',
+    '[2]',
+    '2',
+])
+def test_malformed_pending_loss_streak_fails_closed_at_the_halt_threshold(tmp_path, monkeypatch, isolated_db, raw):
+    """HT-009A-1D: only a non-negative whole number is accepted; booleans and fractions are not."""
     import main
+    from core.risk.hard_risk_engine import HardRiskEngine
 
     seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
     seed.repository.set_engine_runtime_state(
-        main.PENDING_LOSS_STREAK_STATE_KEY, "{not json", evidence_context=seed.evidence_context)
+        main.PENDING_LOSS_STREAK_STATE_KEY, raw, evidence_context=seed.evidence_context)
 
     engine = make_file_bridge_engine(bridge_dir, monkeypatch)
 
     assert engine.account_status.consecutive_losses == int(engine.policy["LOSS_HALT_THRESHOLD"]) == 3
+    status = engine.account_status
+    status.state_reconciled, status.is_trading_halted = True, False
+    decision = HardRiskEngine(engine.policy).validate(status, 0.032)
+    assert not decision.approved and decision.reason_code == "RISK_LOSS_STREAK"
+
+
+def _set_pending(engine, losses: int, recorded_at: datetime | None) -> None:
+    import main
+
+    payload = {"consecutive_losses": losses}
+    if recorded_at is not None:
+        payload["recorded_at"] = recorded_at.isoformat()
+    engine.repository.set_engine_runtime_state(
+        main.PENDING_LOSS_STREAK_STATE_KEY, json.dumps(payload), evidence_context=engine.evidence_context)
+
+
+def test_a_newer_metric_wins_over_a_stale_pending_loss_streak_and_clears_it(tmp_path, monkeypatch, isolated_db):
+    """HT-009A-1C: the metric was written after the pending count but the clear never ran
+    (crash or clear failure). The newer, higher count reaches the Hard Risk Engine."""
+    from core.risk.hard_risk_engine import HardRiskEngine
+
+    seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+    now = datetime.now(timezone.utc)
+    _set_pending(seed, 1, now - timedelta(hours=2))
+    _seed_account_metric(seed.evidence_context, now - timedelta(hours=1), consecutive_losses=3)
+
+    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
+
+    assert engine.account_status.consecutive_losses == 3
+    assert _pending_loss_streak(isolated_db) is None
+    status = engine.account_status
+    status.state_reconciled, status.is_trading_halted = True, False
+    decision = HardRiskEngine(engine.policy).validate(status, 0.032)
+    assert not decision.approved and decision.reason_code == "RISK_LOSS_STREAK"
+
+
+def test_a_newer_metric_with_a_reset_streak_wins_over_a_stale_pending_count(tmp_path, monkeypatch, isolated_db):
+    """A later metric is authoritative also when it is lower (a win, or the owner's
+    validation.reset_loss_streak), so a stale pending count cannot re-latch the halt."""
+    seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+    now = datetime.now(timezone.utc)
+    _set_pending(seed, 3, now - timedelta(hours=2))
+    _seed_account_metric(seed.evidence_context, now - timedelta(hours=1), consecutive_losses=0)
+
+    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
+
+    assert engine.account_status.consecutive_losses == 0
+    assert _pending_loss_streak(isolated_db) is None
+
+
+@pytest.mark.parametrize("pending,metric,pending_at_offset_h,expected", [
+    (2, 0, -1, 2),     # pending newer than the metric: pending
+    (1, 2, None, 2),   # order unknown (no recorded_at): the higher count
+    (2, 1, None, 2),
+])
+def test_pending_loss_streak_against_an_older_or_unordered_metric(
+    tmp_path, monkeypatch, isolated_db, pending, metric, pending_at_offset_h, expected
+):
+    seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+    now = datetime.now(timezone.utc)
+    _seed_account_metric(seed.evidence_context, now - timedelta(hours=2), consecutive_losses=metric)
+    _set_pending(seed, pending, None if pending_at_offset_h is None else now + timedelta(hours=pending_at_offset_h))
+
+    engine = make_file_bridge_engine(bridge_dir, monkeypatch)
+
+    assert engine.account_status.consecutive_losses == expected
+    assert _pending_loss_streak(isolated_db) == pending  # still pending until a metric holds it
+
+
+def test_unreadable_pending_loss_streak_refuses_the_engine_start(tmp_path, monkeypatch, isolated_db):
+    from database.repositories.sqlite import SqliteEngineRepository
+
+    _seed, bridge_dir, *_ = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+
+    class Unreadable(SqliteEngineRepository):
+        def get_engine_runtime_state(self, key, *, evidence_context):
+            if key == "pending_loss_streak":
+                raise OSError("disk I/O error")
+            return super().get_engine_runtime_state(key, evidence_context=evidence_context)
+
+    with pytest.raises(RuntimeError, match="Pending loss-streak state unreadable"):
+        make_file_bridge_engine(bridge_dir, monkeypatch, repository=Unreadable())
 
 
 @pytest.mark.parametrize("outcome,losses", [("TP", 0), ("SL", 2)])
