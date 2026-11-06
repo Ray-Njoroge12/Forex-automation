@@ -218,6 +218,21 @@ def test_failed_replay_probe_blocks_entries(tmp_path):
     assert rec.rules() == [HOST_GUARD_BLOCK]
 
 
+def test_signal_killed_pgrep_blocks_entries(tmp_path, monkeypatch):
+    """HT-008: pgrep through the real run_command, killed by SIGKILL (return code -9)."""
+    monkeypatch.setattr(host_rules.subprocess, "run", lambda cmd, **_k: SimpleNamespace(returncode=-9, stdout=""))
+    fake, bridge = _fake_runner(awake=1), _bridge(tmp_path)
+
+    def run(cmd):
+        return host_rules.run_command(cmd) if cmd[0] == "pgrep" else fake(cmd)
+
+    rec = Recorder()
+    status = _guard(lambda now: host_rules.guard_checks(run, bridge, NOW)).poll(T0, rec)
+    assert status.blocked and "no_replay_jobs" in status.failed
+    assert "killed by signal 9" in status.details
+    assert rec.rules() == [HOST_GUARD_BLOCK]
+
+
 def test_disabled_guard_never_probes():
     rec = Recorder()
     guard = HostGuard.disabled("mock mode")
@@ -625,12 +640,12 @@ def test_refused_demo_start_records_the_guard_block_and_a_later_start_the_recove
     assert "bridge_snapshot_fresh=BLOCK" in reason
 
 
-def test_running_demo_engine_records_the_block_before_it_stops(demo_runtime, isolated_db):
-    """HT-004, running loop: the demo-account stop no longer skips the host guard."""
+def test_running_demo_engine_records_the_block_when_the_snapshot_goes_stale(demo_runtime, isolated_db):
+    """HT-004/HT-007, running loop: an unverified demo account records the host guard BLOCK."""
     assert demo_runtime.start() == 0
     engine = demo_runtime.engines[0]
     _age_snapshot(demo_runtime.bridge_dir, 45)
-    engine.run(mode="demo", iterations=1)  # stops at the demo-account check
+    engine.run(mode="demo", iterations=1)  # entries blocked; feedback and exits still processed
     assert engine.account_status.is_trading_halted
     assert [e[0] for e in _guard_events(isolated_db)] == [HOST_GUARD_BLOCK]
 
@@ -661,7 +676,7 @@ def test_demo_outage_with_watchdog_restarts_sends_exactly_two_messages(
     sent.clear()
 
     _age_snapshot(demo_runtime.bridge_dir, 45)
-    demo_runtime.engines[0].run(mode="demo", iterations=1)  # the running engine stops
+    demo_runtime.engines[0].run(mode="demo", iterations=1)  # its last loop, then the process ends
     watchdog._check_engine()  # restart refused: no demo snapshot
     _age_snapshot(demo_runtime.bridge_dir, 150)
     watchdog._poll_outage(watchdog_monitor)  # outage message

@@ -138,6 +138,8 @@ def test_one_failing_replay_pattern_blocks_the_guard(tmp_path):
     subprocess.TimeoutExpired(["pgrep"], 30),
     SimpleNamespace(returncode=2, stdout=""),
     SimpleNamespace(returncode=3, stdout=""),
+    SimpleNamespace(returncode=-9, stdout=""),  # HT-008: killed by a signal
+    SimpleNamespace(returncode=-15, stdout=""),
 ])
 def test_run_command_raises_when_the_probe_did_not_run(monkeypatch, outcome):
     def fake_run(cmd, **_kwargs):
@@ -149,6 +151,14 @@ def test_run_command_raises_when_the_probe_did_not_run(monkeypatch, outcome):
     with pytest.raises(host_rules.ProbeError):
         host_rules.run_command(["pgrep", "-f", "research."])
     assert host_rules.read_output(host_rules.run_command, ["pmset", "-g", "batt"]) == ""
+
+
+def test_signal_killed_pgrep_blocks_the_replay_rule(monkeypatch):
+    """HT-008: a pgrep killed by a signal has empty stdout; that is not "no replays"."""
+    monkeypatch.setattr(host_rules.subprocess, "run", lambda cmd, **_k: SimpleNamespace(returncode=-9, stdout=""))
+    check = host_rules.replay_check(host_rules.run_command, trading=True)
+    assert (check.check_id, check.status) == ("no_replay_jobs", host_rules.BLOCK)
+    assert "killed by signal 9" in check.details
 
 
 def test_run_command_reads_exit_one_as_a_result(monkeypatch):

@@ -59,11 +59,13 @@ class ProbeError(RuntimeError):
 
 def run_command(cmd: list[str], timeout: float = 30) -> str:
     """stdout of *cmd*. Exit 0 or 1 is a result (pgrep: match / no match, defaults: key unset);
-    a failure to run, a timeout or exit >= 2 raises ``ProbeError``."""
+    a failure to run, a timeout, exit >= 2 or a signal kill (negative code) raises ``ProbeError``."""
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ProbeError(f"{cmd[0]}: {type(exc).__name__}") from exc
+    if proc.returncode < 0:  # killed by a signal: the output is not a result
+        raise ProbeError(f"{cmd[0]}: killed by signal {-proc.returncode}")
     if proc.returncode > 1:
         raise ProbeError(f"{cmd[0]}: exit {proc.returncode}")
     return proc.stdout

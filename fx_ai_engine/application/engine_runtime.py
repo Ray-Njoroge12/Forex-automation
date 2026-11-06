@@ -12,30 +12,54 @@ from core.mt5_bridge import MT5Connection
 logger = logging.getLogger("fx_ai_engine.main")
 
 
-def _demo_account_verified(bridge: MT5Connection, *, use_mock: bool) -> bool:
-    """Demo mode must never operate against a live or unverified account."""
+def _demo_account_state(bridge: MT5Connection, *, use_mock: bool) -> bool | None:
+    """True: verified demo. False: the terminal reports a live account. None: unverified."""
     if use_mock:
         return True
     try:
-        return bridge.is_demo_account() is True
+        verified = bridge.is_demo_account()
     except Exception:
         logger.exception("Unable to verify MT5 account type")
-        return False
+        return None
+    return verified if verified in (True, False) else None
+
+
+def _demo_account_verified(bridge: MT5Connection, *, use_mock: bool) -> bool:
+    """Demo mode must never operate against a live or unverified account."""
+    return _demo_account_state(bridge, use_mock=use_mock) is True
 
 
 def run(engine, mode: str, iterations: int = 0) -> None:
     count = 0
     while True:
-        if mode == "demo" and not _demo_account_verified(engine.bridge, use_mock=engine.use_mock):
-            logger.error("Demo account verification failed; stopping before processing or routing signals")
-            engine._fail_closed_bridge_uncertainty("demo account unverified or changed")
-            # A stale snapshot is also a host guard BLOCK: record it (and the guard
-            # state, for the recovery event after a restart) before stopping.
-            try:
-                engine._poll_host_guard(datetime.now(timezone.utc), force=True)
-            except Exception:
-                logger.exception("Host guard could not be evaluated before the demo stop")
-            return
+        # Demo mode routes entries only on a verified demo account. A live account
+        # stops the loop before any processing. An unverified one (stale or unreadable
+        # snapshot, also a host guard BLOCK) blocks entries but keeps feedback, exits,
+        # closure recovery, the host guard and the outage alert running.
+        demo_unverified = False
+        if mode == "demo":
+            account_state = _demo_account_state(engine.bridge, use_mock=engine.use_mock)
+            if account_state is False:
+                logger.error("Connected MT5 account is not a demo account; stopping before processing or routing signals")
+                engine._fail_closed_bridge_uncertainty("demo account unverified or changed")
+                try:
+                    engine._poll_host_guard(datetime.now(timezone.utc), force=True)
+                except Exception:
+                    logger.exception("Host guard could not be evaluated before the demo stop")
+                return
+            demo_unverified = account_state is None
+            if demo_unverified:
+                if not getattr(engine, "_demo_unverified", False):
+                    logger.error("Demo account unverified; new entries blocked, feedback and exits still processed")
+                    # Record the host guard BLOCK at once (a stale snapshot is one).
+                    try:
+                        engine._poll_host_guard(datetime.now(timezone.utc), force=True)
+                    except Exception:
+                        logger.exception("Host guard could not be evaluated for the unverified demo account")
+                engine._fail_closed_bridge_uncertainty("demo account unverified or changed")
+            elif getattr(engine, "_demo_unverified", False):
+                logger.info("Demo account verified again")
+            engine._demo_unverified = demo_unverified
         update_health_status(
             status="running",
             account_balance=engine.account_status.balance,
@@ -46,6 +70,8 @@ def run(engine, mode: str, iterations: int = 0) -> None:
         engine._consume_feedback()
         engine._recover_missing_trade_closures_from_broker()
         engine._update_account_state()
+        if demo_unverified:  # the account update must not lift the demo entry block
+            engine._fail_closed_bridge_uncertainty("demo account unverified or changed")
 
         engine._enforce_execution_feedback_integrity()
 
@@ -69,7 +95,7 @@ def run(engine, mode: str, iterations: int = 0) -> None:
         engine._poll_host_guard(now_utc)
         engine._poll_outage_monitor(now_utc)
 
-        if engine._is_new_m15_candle() and not engine.account_status.is_trading_halted:
+        if engine._is_new_m15_candle() and not engine.account_status.is_trading_halted and not demo_unverified:
             engine._decision_cycle()
 
         if engine.mock_feedback is not None:
