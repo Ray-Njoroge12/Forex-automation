@@ -118,3 +118,27 @@ def run(engine, mode: str, iterations: int = 0) -> None:
             break
 
         time.sleep(5)
+
+
+RECONCILE_ONLY_REASON = "start refused by a policy gate; reconciliation only"
+
+
+def reconcile_once(engine) -> None:
+    """HT-009A: one reconciliation pass for a demo start a policy gate refused.
+
+    Applies execution feedback, final exit files and broker closure recovery, and
+    records the host guard, so a broker-side TP or SL during downtime closes the
+    trade and its reservation even when the start is refused. Entries stay blocked
+    throughout: no decision cycle, no mock fill simulation, nothing is routed, and
+    the forced halt is not persisted as account metrics.
+    """
+    engine._fail_closed_bridge_uncertainty(RECONCILE_ONLY_REASON)
+    engine._consume_feedback()
+    engine._recover_missing_trade_closures_from_broker()
+    engine._update_account_state()
+    engine._fail_closed_bridge_uncertainty(RECONCILE_ONLY_REASON)
+    engine._enforce_execution_feedback_integrity()
+    try:
+        engine._poll_host_guard(datetime.now(timezone.utc), force=True)
+    except Exception:
+        logger.exception("Host guard could not be evaluated during the reconciliation-only pass")

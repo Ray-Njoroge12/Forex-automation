@@ -561,6 +561,10 @@ class Engine:
     # Engine.__new__ in tests; __init__ always sets both (the guard may be disabled).
     host_guard: host_tolerance.HostGuard | None = None
     outage_monitor: host_tolerance.OutageMonitor | None = None
+    # HT-009A: True only for the engine main() builds after a refused demo start.
+    # It reconciles feedback, exits and broker closures once; it never runs the
+    # decision loop or a decision cycle.
+    reconcile_only: bool = False
 
     def __init__(
         self,
@@ -574,6 +578,7 @@ class Engine:
         repository: EngineRepository | None = None,
         host_guard: host_tolerance.HostGuard | None = None,
         outage_monitor: host_tolerance.OutageMonitor | None = None,
+        reconcile_only: bool = False,
     ):
         # Refuse research-only or unknown strategies before the bridge, the DB,
         # the mock feedback or any agent is touched (owner decision 2026-11-04).
@@ -588,6 +593,7 @@ class Engine:
         self.metrics = metrics
         self.use_mock = use_mock
         self.run_mode = run_mode
+        self.reconcile_only = bool(reconcile_only)
         self.account_status = AccountStatus()
         self.reset_scheduler = ResetScheduler()
         base_policy = dict(policy) if policy is not None else apply_runtime_experiment_config(get_policy_config(), run_mode=run_mode)
@@ -604,7 +610,12 @@ class Engine:
             runtime_policy_approval.reason_code,
             runtime_policy_approval.details,
         )
-        if is_non_srs_policy_mode(self.policy["MODE_ID"]) and not runtime_policy_approval.approved:
+        if is_non_srs_policy_mode(self.policy["MODE_ID"]) and not runtime_policy_approval.approved and self.reconcile_only:
+            logger.warning(
+                "Reconciliation-only engine for a blocked non-SRS policy: reason_code=%s",
+                runtime_policy_approval.reason_code,
+            )
+        elif is_non_srs_policy_mode(self.policy["MODE_ID"]) and not runtime_policy_approval.approved:
             raise RuntimeError(
                 "Non-SRS runtime policy blocked: "
                 f"reason_code={runtime_policy_approval.reason_code} details={runtime_policy_approval.details}"
@@ -620,7 +631,12 @@ class Engine:
             preserve_startup_approval.reason_code,
             preserve_startup_approval.details,
         )
-        if self.policy["MODE_ID"] == "preserve_10" and not preserve_startup_approval.approved:
+        if self.policy["MODE_ID"] == "preserve_10" and not preserve_startup_approval.approved and self.reconcile_only:
+            logger.warning(
+                "Reconciliation-only engine for a refused Preserve-$10 start: reason_code=%s",
+                preserve_startup_approval.reason_code,
+            )
+        elif self.policy["MODE_ID"] == "preserve_10" and not preserve_startup_approval.approved:
             raise RuntimeError(
                 "Preserve-$10 startup approval refused: "
                 f"reason_code={preserve_startup_approval.reason_code} details={preserve_startup_approval.details}"
@@ -1035,6 +1051,9 @@ class Engine:
         decision_cycle.evaluate_symbol(self, sym, decision_time, session_name)
 
     def _decision_cycle(self) -> None:
+        if self.reconcile_only:
+            logger.error("Decision cycle refused: reconciliation-only engine (start refused by a policy gate)")
+            return
         decision_cycle.run_decision_cycle(self)
 
     def _poll_host_guard(
@@ -1061,7 +1080,12 @@ class Engine:
             logger.exception("Outage monitor failed; continuing")
 
     def run(self, mode: str, iterations: int = 0) -> None:
+        if self.reconcile_only:
+            raise RuntimeError("A reconciliation-only engine cannot run the decision loop")
         engine_runtime.run(self, mode, iterations)
+
+    def reconcile_once(self) -> None:
+        engine_runtime.reconcile_once(self)
 
 
 def _resolve_runtime_policy(args: argparse.Namespace) -> dict:
@@ -1105,6 +1129,43 @@ def _record_host_guard_at_refused_start(
             logger.error("Host guard BLOCK at the refused start: %s", status.details)
     except Exception:
         logger.exception("Host guard could not be evaluated at the refused start")
+
+
+def _reconcile_before_refused_start(
+    args: argparse.Namespace,
+    bridge: MT5Connection,
+    tracer,
+    metrics,
+    *,
+    policy: Mapping[str, object],
+    repository: EngineRepository,
+    use_mock: bool,
+) -> None:
+    """HT-009A: a demo start refused by a policy gate still reconciles exits once.
+
+    A trade opened under a non-SRS or Preserve-$10 policy can close at the broker
+    (TP or SL) while the host is down. If the next start is refused, for example
+    because the account is unverified on a stale snapshot, the close must still be
+    applied and its reservation released. The reconciliation-only engine never runs
+    a decision cycle or routes a signal; the start stays refused.
+    """
+    if args.mode != "demo":
+        return
+    try:
+        engine = Engine(
+            bridge,
+            tracer,
+            metrics,
+            use_mock=use_mock,
+            run_mode=args.mode,
+            policy=policy,
+            repository=repository,
+            reconcile_only=True,
+        )
+        engine.reconcile_once()
+        logger.info("Reconciliation-only pass completed for the refused start")
+    except Exception:
+        logger.exception("Reconciliation-only pass failed for the refused start")
 
 
 def _send_start_notice(mode: str, *, use_mock: bool) -> None:
@@ -1258,6 +1319,9 @@ def main(argv: list[str] | None = None) -> int:
                     policy_approval.reason_code,
                     policy_approval.details,
                 )
+                _reconcile_before_refused_start(
+                    args, bridge, tracer, metrics, policy=policy, repository=repository, use_mock=use_mock
+                )
                 return 4
         startup_approval = evaluate_preserve_10_startup_approval(
             bridge,
@@ -1284,6 +1348,9 @@ def main(argv: list[str] | None = None) -> int:
                     "Preserve-$10 startup approval refused: reason_code=%s details=%s",
                     startup_approval.reason_code,
                     startup_approval.details,
+                )
+                _reconcile_before_refused_start(
+                    args, bridge, tracer, metrics, policy=policy, repository=repository, use_mock=use_mock
                 )
                 return 3
 

@@ -258,3 +258,115 @@ def test_cold_start_with_a_stale_snapshot_reconciles_the_exit_through_main(
     with isolated_db() as conn:
         rules = [r[0] for r in conn.execute("SELECT rule_name FROM risk_events WHERE rule_name LIKE 'HOST_GUARD%'")]
     assert rules == ["HOST_GUARD_BLOCK", "HOST_GUARD_RECOVERED"]
+
+
+def _main_on_file_bridge(tmp_path, monkeypatch, isolated_db, *, outcome: str, mode_id: str, snapshot_age: float):
+    """A through-main start on a temporary file bridge with one open trade seeded under mode_id."""
+    import main
+    from application import host_tolerance
+    from core.evidence import build_runtime_evidence_context
+    from config_microcapital import ALLOW_NON_SRS_POLICY_ENV, get_policy_config
+    from core.file_bridge_connection import FileBridgeConnection
+
+    now = datetime.now(timezone.utc)
+    bridge_dir, closed, pnl = _bridge(tmp_path, now, outcome=outcome)
+    _age_snapshot(bridge_dir, snapshot_age)
+    monkeypatch.delenv("USE_MT5_MOCK", raising=False)
+    # main() writes FX_POLICY_MODE into os.environ; set it here so monkeypatch restores it.
+    monkeypatch.setenv("FX_POLICY_MODE", mode_id)
+    monkeypatch.delenv(main.PRESERVE_10_COMMISSION_PER_LOT_ENV, raising=False)
+    monkeypatch.setenv(ALLOW_NON_SRS_POLICY_ENV, "1")
+    monkeypatch.setenv("MT5_CONNECTION", "file_bridge")
+    monkeypatch.setenv("BRIDGE_BASE_PATH", str(bridge_dir))
+    monkeypatch.setattr(main, "update_health_status", lambda **_: None, raising=False)
+    monkeypatch.setattr(main, "start_health_api", lambda *a, **k: None)
+    run = _fake_runner()
+    monkeypatch.setattr(host_tolerance, "build_host_guard", lambda **kw: HostGuard(
+        lambda t: host_rules.guard_checks(run, kw["bridge_path"], t), in_trading_window=lambda t: False))
+    cycles: list[str] = []
+    monkeypatch.setattr(main.decision_cycle, "run_decision_cycle", lambda engine: cycles.append(engine.policy["MODE_ID"]))
+    probe = FileBridgeConnection(bridge_dir)
+    assert probe.connect(retry_count=1), probe.last_error
+    policy = get_policy_config(mode_id=mode_id, env={ALLOW_NON_SRS_POLICY_ENV: "1"})
+    evidence = build_runtime_evidence_context(policy, use_mock=False, login=probe.login, server=probe.server)
+    assert evidence.policy_mode != "core_srs"
+    _seed_open_trade(isolated_db, evidence, now - timedelta(hours=9))
+    return main, bridge_dir, pnl, cycles
+
+
+@pytest.mark.parametrize("mode_id", ["legacy_micro_capital", "preserve_10", "micro_live"])
+@pytest.mark.parametrize("outcome,status", [("TP", "CLOSED_WIN"), ("SL", "CLOSED_LOSS")])
+def test_non_srs_cold_start_with_a_stale_snapshot_reconciles_the_exit_before_the_policy_gate_refusal(
+    tmp_path, monkeypatch, isolated_db, mode_id, outcome, status
+):
+    """HT-009A: a non-SRS demo start on a stale snapshot is refused by the policy gate
+    (account unverified, exit code 4), yet the broker-side close is applied exactly once,
+    the reservation is released, no decision cycle runs and nothing is routed."""
+    main, bridge_dir, pnl, cycles = _main_on_file_bridge(
+        tmp_path, monkeypatch, isolated_db, outcome=outcome, mode_id=mode_id, snapshot_age=45
+    )
+
+    assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", mode_id]) == 4
+
+    state = _state(isolated_db)
+    assert state["trade"]["status"] == status and state["reservation"] == "CLOSED" and state["receipts"] == 1
+    assert state["trade"]["profit_loss"] == pytest.approx(pnl)
+    assert state["trades"] == 1
+    assert cycles == []
+    assert list((bridge_dir / "pending_signals").iterdir()) == []
+    assert list((bridge_dir / "exits").glob("exit_*.json")) == []
+    with isolated_db() as conn:
+        blocks = [r[0] for r in conn.execute(
+            "SELECT reason FROM risk_events WHERE rule_name='NON_SRS_POLICY_APPROVAL' AND severity='BLOCK'")]
+    assert len(blocks) == 1 and "NON_SRS_POLICY_REQUIRES_MOCK_OR_DEMO" in blocks[0]
+
+    # Refused again (still stale): nothing is applied twice.
+    assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", mode_id]) == 4
+    again = _state(isolated_db)
+    assert again["trade"] == state["trade"] and again["receipts"] == 1 and again["recovered"] == 0
+    assert cycles == [] and list((bridge_dir / "pending_signals").iterdir()) == []
+
+
+@pytest.mark.parametrize("outcome,status", [("TP", "CLOSED_WIN"), ("SL", "CLOSED_LOSS")])
+def test_preserve_10_startup_refusal_on_a_verified_demo_still_reconciles_the_exit(
+    tmp_path, monkeypatch, isolated_db, outcome, status
+):
+    """HT-009A: the Preserve-$10 startup gate (exit code 3) is the other pre-Engine refusal.
+    The account is a verified demo, but the commission evidence is missing; the close is
+    still applied once and nothing is routed."""
+    main, bridge_dir, pnl, cycles = _main_on_file_bridge(
+        tmp_path, monkeypatch, isolated_db, outcome=outcome, mode_id="preserve_10", snapshot_age=0
+    )
+
+    assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", "preserve_10"]) == 3
+
+    state = _state(isolated_db)
+    assert state["trade"]["status"] == status and state["reservation"] == "CLOSED" and state["receipts"] == 1
+    assert state["trade"]["profit_loss"] == pytest.approx(pnl)
+    assert cycles == []
+    assert list((bridge_dir / "pending_signals").iterdir()) == []
+    assert list((bridge_dir / "exits").glob("exit_*.json")) == []
+    with isolated_db() as conn:
+        refusals = [r[0] for r in conn.execute(
+            "SELECT reason FROM risk_events WHERE rule_name='PRESERVE_10_STARTUP_APPROVAL' AND severity='BLOCK'")]
+    assert len(refusals) == 1
+
+
+def test_reconciliation_only_engine_never_runs_the_loop_or_a_decision_cycle(tmp_path, monkeypatch, isolated_db):
+    import main
+
+    engine, bridge_dir, _closed, _pnl, _cycles = _restart(tmp_path, monkeypatch, isolated_db, outcome="TP")
+    del engine._decision_cycle  # use the real method, not the harness probe
+    engine.reconcile_only = True
+    routed: list[object] = []
+    monkeypatch.setattr(main.decision_cycle, "run_decision_cycle", lambda e: routed.append(e))
+
+    with pytest.raises(RuntimeError, match="reconciliation-only"):
+        engine.run(mode="demo", iterations=1)
+    engine._decision_cycle()
+    engine.reconcile_once()
+
+    assert routed == []
+    assert engine.account_status.is_trading_halted
+    assert _state(isolated_db)["trade"]["status"] == "CLOSED_WIN"
+    assert list((bridge_dir / "pending_signals").iterdir()) == []
