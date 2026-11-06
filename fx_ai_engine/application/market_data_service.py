@@ -124,6 +124,7 @@ def update_account_state(engine) -> None:
         )
         if snapshot and not snapshot.get("error"):
             engine._consecutive_losses_seeded = True
+            engine._account_values_loaded = True  # HT-009A-1: real balance and equity from now on
 
         if not engine.account_status.state_reconciled:
             if engine.account_status.state_reconciliation_reason != engine._last_reconciliation_reason:

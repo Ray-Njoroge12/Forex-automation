@@ -565,6 +565,9 @@ class Engine:
     # It reconciles feedback, exits and broker closures once; it never runs the
     # decision loop or a decision cycle.
     reconcile_only: bool = False
+    # HT-009A-1: False in __init__ until the first valid account snapshot is applied.
+    # True here so engines built with Engine.__new__ in tests keep the direct checkpoint.
+    _account_values_loaded: bool = True
 
     def __init__(
         self,
@@ -653,6 +656,7 @@ class Engine:
         self._latest_broker_close_time_utc: datetime | None = None
         self._consecutive_losses_dirty = False
         self._consecutive_losses_seeded = False
+        self._account_values_loaded = False
 
         # Auto-detect MT5 sandbox bridge path
         self.bridge_path = get_mt5_bridge_path()
@@ -1005,6 +1009,10 @@ class Engine:
         else:
             return
 
+        if self.reconcile_only or not self._account_values_loaded:
+            self._persist_loss_streak_checkpoint()
+            return
+
         try:
             self.account_status.updated_at = datetime.now(timezone.utc)
             self.repository.insert_account_metrics(
@@ -1014,6 +1022,55 @@ class Engine:
             self._consecutive_losses_dirty = False
         except Exception:
             logger.exception("Failed to persist consecutive loss throttle checkpoint; retrying on next cycle")
+            self._consecutive_losses_dirty = True
+
+    def _persist_loss_streak_checkpoint(self) -> None:
+        """HT-009A-1: persist a loss-streak change made before account values were read.
+
+        An exit applied before the first account update (a restart with an exit
+        waiting, or the reconciliation-only pass of a refused start) would otherwise
+        persist the constructor defaults (balance and equity 0) and, in a
+        reconciliation-only engine, the forced halt. The checkpoint copies the latest
+        persisted account metric and changes only the consecutive-loss count and the
+        timestamp. With no metric to copy the change stays dirty: the loop persists it
+        with the first account update, and a BLOCK event records the deferral.
+        """
+        losses = self.account_status.consecutive_losses
+        try:
+            latest = self.repository.get_latest_account_metric(
+                evidence_stream=self.evidence_context.evidence_stream,
+                account_scope=self.evidence_context.account_scope,
+            )
+            if latest is None:
+                self._consecutive_losses_dirty = True
+                self._insert_risk_event(
+                    "LOSS_STREAK_CHECKPOINT_DEFERRED",
+                    "BLOCK",
+                    f"consecutive_losses={losses} not persisted: no account metric to copy before the first account update",
+                    alert=False,
+                )
+                return
+            checkpoint = AccountStatus(
+                balance=float(latest.get("balance") or 0.0),
+                equity=float(latest.get("equity") or 0.0),
+                open_risk_percent=float(latest.get("open_risk_percent") or 0.0),
+                open_usd_exposure_count=int(latest.get("open_usd_exposure_count") or 0),
+                daily_loss_percent=float(latest.get("daily_loss_percent") or 0.0),
+                weekly_loss_percent=float(latest.get("weekly_loss_percent") or 0.0),
+                drawdown_percent=float(latest.get("drawdown_percent") or 0.0),
+                peak_equity=float(latest.get("peak_equity") or 0.0),
+                daily_anchor_date=str(latest.get("daily_anchor_date") or ""),
+                daily_anchor_equity=float(latest.get("daily_anchor_equity") or 0.0),
+                weekly_anchor_key=str(latest.get("weekly_anchor_key") or ""),
+                weekly_anchor_equity=float(latest.get("weekly_anchor_equity") or 0.0),
+                consecutive_losses=losses,
+                is_trading_halted=bool(latest.get("is_trading_halted")),
+                updated_at=datetime.now(timezone.utc),
+            )
+            self.repository.insert_account_metrics(checkpoint, evidence_context=self.evidence_context)
+            self._consecutive_losses_dirty = False
+        except Exception:
+            logger.exception("Failed to persist the loss-streak checkpoint; retrying with the next account update")
             self._consecutive_losses_dirty = True
 
     def _record_broker_close_time(self, close_time_value: object) -> None:

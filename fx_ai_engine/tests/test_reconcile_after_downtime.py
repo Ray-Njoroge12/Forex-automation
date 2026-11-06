@@ -260,7 +260,9 @@ def test_cold_start_with_a_stale_snapshot_reconciles_the_exit_through_main(
     assert rules == ["HOST_GUARD_BLOCK", "HOST_GUARD_RECOVERED"]
 
 
-def _main_on_file_bridge(tmp_path, monkeypatch, isolated_db, *, outcome: str, mode_id: str, snapshot_age: float):
+def _main_on_file_bridge(
+    tmp_path, monkeypatch, isolated_db, *, outcome: str, mode_id: str, snapshot_age: float, seed_metric: bool = True
+):
     """A through-main start on a temporary file bridge with one open trade seeded under mode_id."""
     import main
     from application import host_tolerance
@@ -291,7 +293,27 @@ def _main_on_file_bridge(tmp_path, monkeypatch, isolated_db, *, outcome: str, mo
     evidence = build_runtime_evidence_context(policy, use_mock=False, login=probe.login, server=probe.server)
     assert evidence.policy_mode != "core_srs"
     _seed_open_trade(isolated_db, evidence, now - timedelta(hours=9))
+    if seed_metric:
+        _seed_account_metric(evidence, now - timedelta(hours=9), consecutive_losses=1)
     return main, bridge_dir, pnl, cycles
+
+
+def _seed_account_metric(evidence, at: datetime, *, consecutive_losses: int) -> None:
+    """The last account metric the engine that opened the trade persisted."""
+    from core.account_status import AccountStatus
+    from database.repositories.sqlite import SqliteEngineRepository
+
+    SqliteEngineRepository().insert_account_metrics(
+        AccountStatus(balance=100000.0, equity=100000.0, peak_equity=100000.0,
+                      consecutive_losses=consecutive_losses, is_trading_halted=False, updated_at=at),
+        evidence_context=evidence,
+    )
+
+
+def _metrics(connection) -> list[dict]:
+    with connection() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT balance, equity, consecutive_losses, is_trading_halted FROM account_metrics ORDER BY id")]
 
 
 @pytest.mark.parametrize("mode_id", ["legacy_micro_capital", "preserve_10", "micro_live"])
@@ -319,12 +341,19 @@ def test_non_srs_cold_start_with_a_stale_snapshot_reconciles_the_exit_before_the
         blocks = [r[0] for r in conn.execute(
             "SELECT reason FROM risk_events WHERE rule_name='NON_SRS_POLICY_APPROVAL' AND severity='BLOCK'")]
     assert len(blocks) == 1 and "NON_SRS_POLICY_REQUIRES_MOCK_OR_DEMO" in blocks[0]
+    # HT-009A-1: one truthful loss-streak checkpoint, no zero-balance or forced-halt row.
+    expected_losses = 2 if outcome == "SL" else 0
+    assert _metrics(isolated_db) == [
+        {"balance": 100000.0, "equity": 100000.0, "consecutive_losses": 1, "is_trading_halted": 0},
+        {"balance": 100000.0, "equity": 100000.0, "consecutive_losses": expected_losses, "is_trading_halted": 0},
+    ]
 
     # Refused again (still stale): nothing is applied twice.
     assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", mode_id]) == 4
     again = _state(isolated_db)
     assert again["trade"] == state["trade"] and again["receipts"] == 1 and again["recovered"] == 0
     assert cycles == [] and list((bridge_dir / "pending_signals").iterdir()) == []
+    assert len(_metrics(isolated_db)) == 2
 
 
 @pytest.mark.parametrize("outcome,status", [("TP", "CLOSED_WIN"), ("SL", "CLOSED_LOSS")])
@@ -350,6 +379,45 @@ def test_preserve_10_startup_refusal_on_a_verified_demo_still_reconciles_the_exi
         refusals = [r[0] for r in conn.execute(
             "SELECT reason FROM risk_events WHERE rule_name='PRESERVE_10_STARTUP_APPROVAL' AND severity='BLOCK'")]
     assert len(refusals) == 1
+    metrics = _metrics(isolated_db)
+    assert len(metrics) == 2 and all(m["balance"] == 100000.0 and m["is_trading_halted"] == 0 for m in metrics)
+    assert metrics[-1]["consecutive_losses"] == (2 if outcome == "SL" else 0)
+
+
+def test_refused_start_without_a_prior_account_metric_defers_the_loss_streak_and_writes_no_metric(
+    tmp_path, monkeypatch, isolated_db
+):
+    """HT-009A-1: with no metric to copy, nothing synthetic is persisted; a BLOCK records the deferral."""
+    main, _bridge_dir, _pnl, cycles = _main_on_file_bridge(
+        tmp_path, monkeypatch, isolated_db, outcome="SL", mode_id="legacy_micro_capital", snapshot_age=45,
+        seed_metric=False,
+    )
+
+    assert main.main(["--mode", "demo", "--iterations", "1", "--policy-mode", "legacy_micro_capital"]) == 4
+
+    assert _state(isolated_db)["trade"]["status"] == "CLOSED_LOSS" and cycles == []
+    assert _metrics(isolated_db) == []
+    with isolated_db() as conn:
+        deferred = [r[0] for r in conn.execute(
+            "SELECT reason FROM risk_events WHERE rule_name='LOSS_STREAK_CHECKPOINT_DEFERRED' AND severity='BLOCK'")]
+    assert len(deferred) == 1 and "consecutive_losses=1" in deferred[0]
+
+
+@pytest.mark.parametrize("outcome,losses", [("TP", 0), ("SL", 2)])
+def test_restart_with_a_waiting_exit_writes_no_zero_balance_metric(tmp_path, monkeypatch, isolated_db, outcome, losses):
+    """HT-009A-1 in the normal loop: the exit is applied before the first account update,
+    so its loss-streak checkpoint copies the last persisted metric instead of the defaults."""
+    engine, _bridge_dir, _closed, _pnl, _cycles = _restart(tmp_path, monkeypatch, isolated_db, outcome=outcome)
+    _seed_account_metric(engine.evidence_context, datetime.now(timezone.utc) - timedelta(hours=9), consecutive_losses=1)
+    engine._consecutive_losses_seeded = False  # the engine was built before the metric; a real restart reads it
+
+    engine.run(mode="demo", iterations=1)
+
+    metrics = _metrics(isolated_db)
+    assert all(m["balance"] > 0 and m["equity"] > 0 for m in metrics), metrics
+    assert metrics[1] == {"balance": 100000.0, "equity": 100000.0, "consecutive_losses": losses, "is_trading_halted": 0}
+    assert metrics[-1]["consecutive_losses"] == losses
+    assert engine.account_status.consecutive_losses == losses
 
 
 def test_reconciliation_only_engine_never_runs_the_loop_or_a_decision_cycle(tmp_path, monkeypatch, isolated_db):
